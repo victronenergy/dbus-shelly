@@ -29,6 +29,7 @@ class Meter(object):
 		self.service = None
 		self.errorcount = MAXERROR
 		self.settings = None
+		self.position = None
 	
 	def __hash__(self):
 		return hash(self.host)
@@ -91,6 +92,12 @@ class Meter(object):
 		self.service.add_path('/Role', role, writeable=True,
 			onchangecallback=self.role_changed)
 
+		# Position for pvinverter
+		if role == 'pvinverter':
+			self.position = self.settings.addSetting(path + '/Position', 0, 0, 2)
+			self.service.add_path('/Position', self.position.get_value(),
+				writeable=True, onchangecallback=self.position_changed)
+
 		# Meter paths
 		self.service.add_path('/Ac/Energy/Forward', None)
 		self.service.add_path('/Ac/Energy/Reverse', None)
@@ -121,6 +128,12 @@ class Meter(object):
 		self.destroy() # restart
 		return True
 
+	def position_changed(self, path, val):
+		if not 0 <= val <= 2:
+			return False
+		self.position.set_value(val)
+		return True
+
 	def destroy(self):
 		self.cancel.cancel()
 		if self.service is not None:
@@ -128,6 +141,7 @@ class Meter(object):
 
 		self.service = None
 		self.settings = None
+		self.position = None
 
 	def update(self):
 		self.cancel.reset()
