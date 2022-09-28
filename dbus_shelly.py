@@ -88,7 +88,8 @@ class Meter(object):
 		# role
 		self.service.add_path('/AllowedRoles',
 			['grid', 'pvinverter', 'genset', 'acload'])
-		self.service.add_path('/Role', role)
+		self.service.add_path('/Role', role, writeable=True,
+			onchangecallback=self.role_changed)
 
 		# Meter paths
 		self.service.add_path('/Ac/Energy/Forward', None)
@@ -111,6 +112,14 @@ class Meter(object):
 	def setting_changed(self, name, old, new):
 		# Kill service, driver will restart us soon
 		self.destroy()
+	
+	def role_changed(self, path, val):
+		if val not in ['grid', 'pvinverter', 'genset', 'acload']:
+			return False
+
+		self.settings['instance'] = '%s:%s' % (val, self.role_instance[1])
+		self.destroy() # restart
+		return True
 
 	def destroy(self):
 		self.cancel.cancel()
