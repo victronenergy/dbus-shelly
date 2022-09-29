@@ -3,20 +3,38 @@ MAXERROR = 5
 from __main__ import VERSION
 
 import logging
-import json
 from urllib.parse import urlunparse
+import threading
 
 from gi.repository import GLib, Gio
+import requests
 
 from vedbus import VeDbusService
 from settingsdevice import SettingsDevice
 
 logger = logging.getLogger()
 
+class AsyncHttpRequest(threading.Thread):
+	def __init__(self, url, cb, errhandler, *args, **kwargs):
+		super(AsyncHttpRequest, self).__init__(*args, **kwargs)
+		self.url = url
+		self.cb = cb
+		self.error = errhandler
+
+	def run(self):
+		try:
+			r = requests.get(self.url, timeout=2)
+		except OSError as e:
+			if self.error is not None:
+				GLib.idle_add(self.error, e)
+			else:
+				logger.error("Unable to fetch {}".format(self.url))
+		else:
+			GLib.idle_add(self.cb, r)
+
 class Meter(object):
 	def __init__(self, get_bus, host):
 		self.starting = False
-		self.cancel = Gio.Cancellable()
 		self.host = host
 		self.get_bus = get_bus
 		self.service = None
@@ -40,23 +58,19 @@ class Meter(object):
 		return self.starting or self.service is not None
 	
 	def start(self):
-		self.cancel.reset()
-		f = Gio.File.new_for_uri(urlunparse(
-			('http', self.host, '/shelly', '', '', '')))
-		f.load_contents_async(
-			self.cancel, self.register, None)
+		AsyncHttpRequest(urlunparse(
+			('http', self.host, '/shelly', '', '', '')),
+			self.register, self.start_error).start()
 		self.starting = True
 
-	def register(self, ob, result, userdata):
+	def start_error(self, e):
+		logger.error("Failed to read /shelly for {}".format(self.host))
+		self.starting = False
+
+	def register(self, response):
 		self.starting = False
 		try:
-			success, content, etag = ob.load_contents_finish(result)
-		except GLib.GError:
-			logger.exception("Failed to read /shelly for {}".format(self.host))
-			return
-
-		try:
-			data = json.loads(content)
+			data = response.json()
 		except ValueError:
 			logger.exception("Failed to parse JSON for /shelly call")
 			return
@@ -130,7 +144,6 @@ class Meter(object):
 		return True
 
 	def destroy(self):
-		self.cancel.cancel()
 		if self.service is not None:
 			self.service.__del__()
 
@@ -139,37 +152,32 @@ class Meter(object):
 		self.position = None
 
 	def update(self):
-		self.cancel.reset()
-		f = Gio.File.new_for_uri(
-			urlunparse(('http', self.host, '/status', '', '', '')))
-		f.load_contents_async(self.cancel, self.cb, None)
+		AsyncHttpRequest(urlunparse(
+			('http', self.host, '/status', '', '', '')),
+			self.cb, self.update_error).start()
 		return False
 
-	def cb(self, ob, result, userdata):
+	def update_error(self, e):
+		self.errorcount = max(0, self.errorcount - 1)
+		if self.errorcount == 0:
+			logger.error("Lost connection to {}".format(self.host))
+			self.destroy()
+		else:
+			GLib.timeout_add(2000, self.update)
+
+	def cb(self, response):
 		# If the service was destroyed while a request was in flight,
 		# we need to simply ignore the result
 		if not self.active:
 			return
 
-		try:
-			success, content, etag = ob.load_contents_finish(result)
-		except GLib.GError as e:
-			self.errorcount = max(0, self.errorcount - 1)
-			if e.code == Gio.IOErrorEnum.CANCELLED or self.errorcount == 0:
-				logger.error("Lost connection to {}".format(self.host))
-				self.destroy()
-			else:
-				GLib.timeout_add(2000, self.update)
-			return
-		else:
-			# Schedule the next fetch, this will only actually happen
-			# after cb is completed.
-			GLib.timeout_add(500, self.update)
-		finally:
-			self.cancel.reset()
+		# Schedule the next fetch, this will only actually happen
+		# after cb is completed. Do it now so it doesn't get lost
+		# due to an exception below
+		GLib.timeout_add(500, self.update)
 
 		try:
-			data = json.loads(content)
+			data = response.json()
 		except ValueError:
 			logger.exception("Failed to parse JSON for /status")
 		else:

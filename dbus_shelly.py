@@ -47,7 +47,7 @@ class Driver(object):
 	def setting_changed(self, name, old, new):
 		if name == 'devices':
 			self.set_meters(old, new)
-	
+
 	def set_meters(self, old, new):
 		old = set(filter(None, old.split(',')))
 		new = set(filter(None, new.split(',')))
@@ -82,7 +82,7 @@ class Driver(object):
 				self.meters[h] = Meter(self.get_bus, h)
 
 		return True
-	
+
 def main():
 	parser = ArgumentParser(description=sys.argv[0])
 	parser.add_argument('--dbus', help='dbus bus to use, defaults to system',
