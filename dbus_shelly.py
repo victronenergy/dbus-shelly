@@ -1,5 +1,6 @@
 VERSION = "0.1"
 MAXERROR = 5
+MDNS_QUERY_INTERVAL = 60
 
 import sys, os
 from time import sleep, time
@@ -19,10 +20,13 @@ sys.path.insert(1, os.path.join(os.path.dirname(__file__), 'ext', 'velib_python'
 from vedbus import VeDbusService
 from settingsdevice import SettingsDevice
 
+from mdns import MDNS
+
 logger = logging.getLogger()
 
 class Meter(object):
 	def __init__(self, get_bus, host):
+		self.starting = False
 		self.cancel = Gio.Cancellable()
 		self.host = host
 		self.get_bus = get_bus
@@ -44,7 +48,7 @@ class Meter(object):
 
 	@property
 	def active(self):
-		return self.service is not None
+		return self.starting or self.service is not None
 	
 	def start(self):
 		self.cancel.reset()
@@ -52,8 +56,10 @@ class Meter(object):
 			('http', self.host, '/shelly', '', '', '')))
 		f.load_contents_async(
 			self.cancel, self.register, None)
+		self.starting = True
 
 	def register(self, ob, result, userdata):
+		self.starting = False
 		try:
 			success, content, etag = ob.load_contents_finish(result)
 		except GLib.GError:
@@ -219,11 +225,8 @@ class Meter(object):
 class Driver(object):
 
 	def __init__(self, get_bus):
-		bus = get_bus()
-		self.service = VeDbusService('com.victronenergy.shellyclient', bus=bus)
+		self.get_bus = get_bus
 		self.meters = {}
-
-		self.service.add_path('/Scan', False, writeable=True, onchangecallback=self.scan)
 
 		# Connect to localsettings
 		SETTINGS = {
@@ -231,17 +234,25 @@ class Driver(object):
 			'scanmdns': ['/Settings/Shelly/ScanMdns', 1, 0, 1]
 		}
 		logger.info('Waiting for localsettings')
-		settings = SettingsDevice(bus, SETTINGS,
-				partial(self.setting_changed, get_bus), timeout=10)
+		self.settings = SettingsDevice(get_bus(), SETTINGS,
+				self.setting_changed, timeout=10)
+
+		# MDNS scan, if enabled
+		self.mdns = None
+		self.mdns_query_time = time()
+		if self.settings['scanmdns'] == 1:
+			self.mdns = MDNS()
+			self.mdns.start()
+			self.mdns.req()
 
 		# Start known devices
-		self.set_meters(get_bus, '', settings['devices'])
+		self.set_meters('', self.settings['devices'])
 
-	def setting_changed(self, get_bus, name, old, new):
+	def setting_changed(self, name, old, new):
 		if name == 'devices':
-			self.set_meters(get_bus, old, new)
+			self.set_meters(old, new)
 	
-	def set_meters(self, get_bus, old, new):
+	def set_meters(self, old, new):
 		old = set(filter(None, old.split(',')))
 		new = set(filter(None, new.split(',')))
 		cur = set(self.meters.keys())
@@ -253,7 +264,7 @@ class Driver(object):
 			m.destroy()
 
 		for h in new - cur:
-			self.meters[h] = m = Meter(get_bus, h)
+			self.meters[h] = m = Meter(self.get_bus, h)
 
 	def update(self):
 		try:
@@ -262,12 +273,20 @@ class Driver(object):
 					m.start()
 		except:
 			logger.exception("update")
+
+		# Send new MDNS query every minute
+		now = time()
+		if self.mdns is not None and now - self.mdns_query_time > MDNS_QUERY_INTERVAL:
+			self.mdns_query_time = now
+			self.mdns.req()
+
+		# If mdns scanning is on, then connect to meters found
+		if self.mdns is not None:
+			for h in self.mdns.get_devices() - set(self.meters.keys()):
+				self.meters[h] = Meter(self.get_bus, h)
+
 		return True
 	
-	def scan(self, path, value):
-		# TODO activate mdns scan here
-		return True
-
 def main():
 	parser = ArgumentParser(description=sys.argv[0])
 	parser.add_argument('--dbus', help='dbus bus to use, defaults to system',
