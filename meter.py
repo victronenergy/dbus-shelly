@@ -94,7 +94,7 @@ class Meter(object):
 		self.service.add_path('/Mgmt/ProcessVersion', VERSION)
 		self.service.add_path('/Mgmt/Connection', self.host)
 		self.service.add_path('/DeviceInstance', instance)
-		self.service.add_path('/ProductId', 0) # TODO allocate one
+		self.service.add_path('/ProductId', 0xB034)
 		self.service.add_path('/ProductName', "Shelly energy meter")
 		self.service.add_path('/Connected', 1)
 
