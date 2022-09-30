@@ -1,6 +1,7 @@
 MAXERROR = 5
 
 from __main__ import VERSION
+from __main__ import __file__ as MAIN_FILE
 
 import logging
 from urllib.parse import urlunparse
@@ -87,7 +88,7 @@ class Meter(object):
 		# Set up the service
 		self.service = VeDbusService(
 			"com.victronenergy.{}.{}".format(role, name), bus=bus)
-		self.service.add_path('/Mgmt/ProcessName', __file__)
+		self.service.add_path('/Mgmt/ProcessName', MAIN_FILE)
 		self.service.add_path('/Mgmt/ProcessVersion', VERSION)
 		self.service.add_path('/Mgmt/Connection', self.host)
 		self.service.add_path('/DeviceInstance', instance)
