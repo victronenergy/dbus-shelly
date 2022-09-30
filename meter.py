@@ -16,15 +16,16 @@ from settingsdevice import SettingsDevice
 logger = logging.getLogger()
 
 class AsyncHttpRequest(threading.Thread):
-	def __init__(self, url, cb, errhandler, *args, **kwargs):
+	def __init__(self, session, url, cb, errhandler, *args, **kwargs):
 		super(AsyncHttpRequest, self).__init__(*args, **kwargs)
+		self.session = session
 		self.url = url
 		self.cb = cb
 		self.error = errhandler
 
 	def run(self):
 		try:
-			r = requests.get(self.url, timeout=2)
+			r = self.session.get(self.url, timeout=2)
 		except OSError as e:
 			if self.error is not None:
 				GLib.idle_add(self.error, e)
@@ -42,6 +43,7 @@ class Meter(object):
 		self.errorcount = MAXERROR
 		self.settings = None
 		self.position = None
+		self.session = requests.Session()
 	
 	def __hash__(self):
 		return hash(self.host)
@@ -59,8 +61,8 @@ class Meter(object):
 		return self.starting or self.service is not None
 	
 	def start(self):
-		AsyncHttpRequest(urlunparse(
-			('http', self.host, '/shelly', '', '', '')),
+		AsyncHttpRequest(self.session,
+			urlunparse(('http', self.host, '/shelly', '', '', '')),
 			self.register, self.start_error).start()
 		self.starting = True
 
@@ -153,8 +155,8 @@ class Meter(object):
 		self.position = None
 
 	def update(self):
-		AsyncHttpRequest(urlunparse(
-			('http', self.host, '/status', '', '', '')),
+		AsyncHttpRequest(self.session,
+			urlunparse(('http', self.host, '/status', '', '', '')),
 			self.cb, self.update_error).start()
 		return False
 
