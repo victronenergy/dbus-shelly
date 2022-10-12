@@ -15,6 +15,12 @@ from settingsdevice import SettingsDevice
 
 logger = logging.getLogger()
 
+# Text formatters
+unit_watt = lambda p, v: "{:.0f}W".format(v)
+unit_volt = lambda p, v: "{:.1f}V".format(v)
+unit_amp = lambda p, v: "{:.1f}A".format(v)
+unit_kwh = lambda p, v: "{:.2f}kWh".format(v)
+
 class AsyncHttpRequest(threading.Thread):
 	def __init__(self, session, url, cb, errhandler, *args, **kwargs):
 		super(AsyncHttpRequest, self).__init__(*args, **kwargs)
@@ -111,15 +117,15 @@ class Meter(object):
 				writeable=True, onchangecallback=self.position_changed)
 
 		# Meter paths
-		self.service.add_path('/Ac/Energy/Forward', None)
-		self.service.add_path('/Ac/Energy/Reverse', None)
-		self.service.add_path('/Ac/Power', None)
+		self.service.add_path('/Ac/Energy/Forward', None, gettextcallback=unit_kwh)
+		self.service.add_path('/Ac/Energy/Reverse', None, gettextcallback=unit_kwh)
+		self.service.add_path('/Ac/Power', None, gettextcallback=unit_watt)
 		for prefix in ('/Ac/L{}'.format(x) for x in range(1, 4)):
-			self.service.add_path(prefix + '/Voltage', None)
-			self.service.add_path(prefix + '/Current', None)
-			self.service.add_path(prefix + '/Power', None)
-			self.service.add_path(prefix + '/Energy/Forward', None)
-			self.service.add_path(prefix + '/Energy/Reverse', None)
+			self.service.add_path(prefix + '/Voltage', None, gettextcallback=unit_volt)
+			self.service.add_path(prefix + '/Current', None, gettextcallback=unit_amp)
+			self.service.add_path(prefix + '/Power', None, gettextcallback=unit_watt)
+			self.service.add_path(prefix + '/Energy/Forward', None, gettextcallback=unit_kwh)
+			self.service.add_path(prefix + '/Energy/Reverse', None, gettextcallback=unit_kwh)
 
 		# Start polling
 		self.update()
