@@ -11,7 +11,7 @@ MDNS_IP = '224.0.0.251'
 MDNS_PORT = 5353
 
 SERVICE = '_http._tcp.local.'
-NAMES = ('shellyem-', 'shelly3em-')
+NAMES = ('shellyem-', 'shelly3em-', 'shellyem3-')
 
 def mreqn(maddr):
 	return struct.pack("4sii", socket.inet_aton(maddr), socket.INADDR_ANY, 0)
