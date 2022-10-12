@@ -66,6 +66,7 @@ class Driver(object):
 		try:
 			for m in self.meters.values():
 				if not m.active:
+					logger.info("Starting shelly meter at {}".format(m.host))
 					m.start()
 		except:
 			logger.exception("update")
