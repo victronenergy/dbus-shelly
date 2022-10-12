@@ -113,6 +113,7 @@ class Meter(object):
 		# Meter paths
 		self.service.add_path('/Ac/Energy/Forward', None)
 		self.service.add_path('/Ac/Energy/Reverse', None)
+		self.service.add_path('/Ac/Power', None)
 		for prefix in ('/Ac/L{}'.format(x) for x in range(1, 4)):
 			self.service.add_path(prefix + '/Voltage', None)
 			self.service.add_path(prefix + '/Current', None)
@@ -188,11 +189,13 @@ class Meter(object):
 				meters = data['emeters']
 				forward = 0
 				reverse = 0
+				power = None
 				for phase, meter in zip(range(1, 4), meters):
 
 					# Reading must be valid
 					if not meter['is_valid']: continue
 
+					power = meter['power'] + (0 if power is None else power)
 					self.service['/Ac/L{}/Power'.format(phase)] = meter['power']
 					self.service['/Ac/L{}/Voltage'.format(phase)] = meter['voltage']
 
@@ -215,6 +218,7 @@ class Meter(object):
 			except KeyError:
 				logger.exception("Malformed emeters section in JSON?")
 			else:
+				self.service['/Ac/Power'] = power
 				# Simple aritmetic total. Vector-energy would have been
 				# preferred but we don't have it.
 				self.service['/Ac/Energy/Forward'] = forward
