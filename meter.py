@@ -89,7 +89,7 @@ class Meter(object):
 
 		# Set up the service
 		self.service = VeDbusService(
-			"com.victronenergy.{}.{}".format(role, name), bus=bus)
+			"com.victronenergy.{}.shelly_{}".format(role, name), bus=bus)
 		self.service.add_path('/Mgmt/ProcessName', MAIN_FILE)
 		self.service.add_path('/Mgmt/ProcessVersion', VERSION)
 		self.service.add_path('/Mgmt/Connection', self.host)
