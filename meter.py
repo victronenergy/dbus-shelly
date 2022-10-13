@@ -216,8 +216,8 @@ class Meter(object):
 
 						self.service['/Ac/L{}/Current'.format(phase)] = current
 
-					self.service['/Ac/L{}/Energy/Forward'.format(phase)] = meter['total']
-					self.service['/Ac/L{}/Energy/Reverse'.format(phase)] = meter ['total_returned']
+					self.service['/Ac/L{}/Energy/Forward'.format(phase)] = round(meter['total']/1000, 2)
+					self.service['/Ac/L{}/Energy/Reverse'.format(phase)] = round(meter ['total_returned']/1000, 2)
 
 					forward += meter['total']
 					reverse += meter['total_returned']
@@ -227,7 +227,7 @@ class Meter(object):
 				self.service['/Ac/Power'] = power
 				# Simple aritmetic total. Vector-energy would have been
 				# preferred but we don't have it.
-				self.service['/Ac/Energy/Forward'] = forward
-				self.service['/Ac/Energy/Reverse'] = reverse
+				self.service['/Ac/Energy/Forward'] = round(forward/1000, 2)
+				self.service['/Ac/Energy/Reverse'] = round(reverse/1000, 2)
 
 			self.errorcount = MAXERROR
