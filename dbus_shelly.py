@@ -1,6 +1,6 @@
 #! /usr/bin/python3 -u
 
-VERSION = "0.1"
+VERSION = "0.2"
 MDNS_QUERY_INTERVAL = 60
 
 import sys, os
