@@ -1,21 +1,21 @@
 FILES =					\
 	dbus_shelly.py		\
-	meter.py			\
-	mdns.py
+	meter.py
 
-VELIB =					\
-	settingsdevice.py	\
-	ve_utils.py			\
-	vedbus.py			\
+LIB =					\
+	__init__.py			\
+	service.py			\
+	client.py			\
+	localsettings.py	\
 
 all:
 
 install:
 	install -d $(DESTDIR)$(bindir)
-	install -d $(DESTDIR)$(bindir)/ext/velib_python
+	install -d $(DESTDIR)$(bindir)/ext/aiovelib/aiovelib
 	install -m 0644 $(FILES) $(DESTDIR)$(bindir)
-	install -m 0644 $(addprefix ext/velib_python/,$(VELIB)) \
-		$(DESTDIR)$(bindir)/ext/velib_python
+	install -m 0644 $(addprefix ext/aiovelib/aiovelib/,$(LIB)) \
+		$(DESTDIR)$(bindir)/ext/aiovelib/aiovelib
 	chmod +x $(DESTDIR)$(bindir)/$(firstword $(FILES))
 
 testinstall:

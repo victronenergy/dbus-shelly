@@ -1,233 +1,177 @@
-MAXERROR = 5
+import asyncio
+import logging
+from asyncio.exceptions import TimeoutError # Deprecated in 3.11
+
+from dbus_next.aio import MessageBus
 
 from __main__ import VERSION
 from __main__ import __file__ as MAIN_FILE
 
-import logging
-from urllib.parse import urlunparse
-import threading
+from aiovelib.service import Service, IntegerItem, DoubleItem, TextItem
+from aiovelib.service import TextArrayItem
+from aiovelib.client import Monitor, ServiceHandler
+from aiovelib.localsettings import SettingsService, Setting, SETTINGS_SERVICE
 
-from gi.repository import GLib, Gio
-import requests
+logger = logging.getLogger(__name__)
 
-from vedbus import VeDbusService
-from settingsdevice import SettingsDevice
-
-logger = logging.getLogger()
-
+class LocalSettings(SettingsService, ServiceHandler):
+	pass
+		
 # Text formatters
-unit_watt = lambda p, v: "{:.0f}W".format(v)
-unit_volt = lambda p, v: "{:.1f}V".format(v)
-unit_amp = lambda p, v: "{:.1f}A".format(v)
-unit_kwh = lambda p, v: "{:.2f}kWh".format(v)
-
-class AsyncHttpRequest(threading.Thread):
-	def __init__(self, session, url, cb, errhandler, *args, **kwargs):
-		super(AsyncHttpRequest, self).__init__(*args, **kwargs)
-		self.session = session
-		self.url = url
-		self.cb = cb
-		self.error = errhandler
-
-	def run(self):
-		try:
-			r = self.session.get(self.url, timeout=2)
-		except OSError as e:
-			if self.error is not None:
-				GLib.idle_add(self.error, e)
-			else:
-				logger.error("Unable to fetch {}".format(self.url))
-		else:
-			GLib.idle_add(self.cb, r)
+unit_watt = lambda v: "{:.0f}W".format(v)
+unit_volt = lambda v: "{:.1f}V".format(v)
+unit_amp = lambda v: "{:.1f}A".format(v)
+unit_kwh = lambda v: "{:.2f}kWh".format(v)
+unit_productid = lambda v: "0x{:X}".format(v)
 
 class Meter(object):
-	def __init__(self, get_bus, host):
-		self.starting = False
-		self.host = host
-		self.get_bus = get_bus
+	def __init__(self, bus_type):
+		self.bus_type = bus_type
+		self.monitor = None
 		self.service = None
-		self.errorcount = MAXERROR
-		self.settings = None
 		self.position = None
-		self.session = requests.Session()
-	
-	def __hash__(self):
-		return hash(self.host)
-	
-	def __eq__(self, other):
-		if isinstance(other, type(self)):
-			return self.host == other.host
-		if isinstance(other, str):
-			return self.host == other
+		self.destroyed = False
 
-		return False
-
-	@property
-	def active(self):
-		return self.starting or self.service is not None
-	
-	def start(self):
-		AsyncHttpRequest(self.session,
-			urlunparse(('http', self.host, '/shelly', '', '', '')),
-			self.register, self.start_error).start()
-		self.starting = True
-
-	def start_error(self, e):
-		logger.error("Failed to read /shelly for {}".format(self.host))
-		self.starting = False
-
-	def register(self, response):
-		self.starting = False
+	async def wait_for_settings(self):
+		""" Attempt a connection to localsettings. If it does not show
+		    up within 5 seconds, return None. """
 		try:
-			data = response.json()
-		except ValueError:
-			logger.exception("Failed to parse JSON for /shelly call")
-			return
+			return await asyncio.wait_for(
+				self.monitor.wait_for_service(SETTINGS_SERVICE), 5)
+		except TimeoutError:
+			pass
 
-		name = data['mac']
-		bus = self.get_bus()
-		path = '/Settings/Devices/shelly_' + name
-		SETTINGS = {
-			'instance': [path + '/ClassAndVrmInstance', 'grid:40', 0, 0],
-		}
-		self.settings = SettingsDevice(bus, SETTINGS, self.setting_changed)
-		role, instance = self.role_instance
+		return None
+	
+	def get_settings(self):
+		""" Non-async version of the above. Return the settings object
+		    if known. Otherwise return None. """
+		return self.monitor.get_service(SETTINGS_SERVICE)
+
+	async def start(self, host, port, data):
+		try:
+			mac = data['result']['sys']['mac']
+		except KeyError:
+			return False
+
+		# Connect to dbus, localsettings
+		bus = await MessageBus(bus_type=self.bus_type).connect()
+		self.monitor = await Monitor.create(bus, self.settings_changed)
+
+		settingprefix = '/Settings/Devices/shelly_' + mac
+		logger.info("Waiting for localsettings")
+		settings = await self.wait_for_settings()
+		if settings is None:
+			logger.error("Failed to connect to localsettings")
+			return False
+
+		logger.info("Connected to localsettings")
+
+		await settings.add_settings(
+			Setting(settingprefix + "/ClassAndVrmInstance", "grid:40", 0, 0, alias="instance"),
+			Setting(settingprefix + '/Position', 0, 0, 2, alias="position")
+		)
+
+		# Determine role and instance
+		role, instance = self.role_instance(
+			settings.get_value(settings.alias("instance")))
 
 		# Set up the service
-		self.service = VeDbusService(
-			"com.victronenergy.{}.shelly_{}".format(role, name), bus=bus)
-		self.service.add_path('/Mgmt/ProcessName', MAIN_FILE)
-		self.service.add_path('/Mgmt/ProcessVersion', VERSION)
-		self.service.add_path('/Mgmt/Connection', self.host)
-		self.service.add_path('/DeviceInstance', instance)
-		self.service.add_path('/ProductId', 0xB034)
-		self.service.add_path('/ProductName', "Shelly energy meter")
-		self.service.add_path('/Connected', 1)
+		self.service = await Service.create(bus, "com.victronenergy.{}.shelly_{}".format(role, mac))
 
-		# role
-		self.service.add_path('/AllowedRoles',
-			['grid', 'pvinverter', 'genset', 'acload'])
-		self.service.add_path('/Role', role, writeable=True,
-			onchangecallback=self.role_changed)
+		self.service.add_item(TextItem('/Mgmt/ProcessName', MAIN_FILE))
+		self.service.add_item(TextItem('/Mgmt/ProcessVersion', VERSION))
+		self.service.add_item(TextItem('/Mgmt/Connection', f"{host}:{port}"))
+		self.service.add_item(IntegerItem('/DeviceInstance', instance))
+		self.service.add_item(IntegerItem('/ProductId', 0xB034, text=unit_productid))
+		self.service.add_item(TextItem('/ProductName', "Shelly energy meter"))
+		self.service.add_item(IntegerItem('/Connected', 1))
+		self.service.add_item(IntegerItem('/RefreshTime', 100))
+
+		# Role
+		self.service.add_item(TextArrayItem('/AllowedRoles',
+			['grid', 'pvinverter', 'genset', 'acload']))
+		self.service.add_item(TextItem('/Role', role, writeable=True,
+			onchange=self.role_changed))
 
 		# Position for pvinverter
 		if role == 'pvinverter':
-			self.position = self.settings.addSetting(path + '/Position', 0, 0, 2)
-			self.service.add_path('/Position', self.position.get_value(),
-				writeable=True, onchangecallback=self.position_changed)
+			self.service.add_item(IntegerItem('/Position',
+				settings.get_value(settings.alias("position")),
+				writeable=True, onchange=self.position_changed))
 
 		# Meter paths
-		self.service.add_path('/Ac/Energy/Forward', None, gettextcallback=unit_kwh)
-		self.service.add_path('/Ac/Energy/Reverse', None, gettextcallback=unit_kwh)
-		self.service.add_path('/Ac/Power', None, gettextcallback=unit_watt)
-		for prefix in ('/Ac/L{}'.format(x) for x in range(1, 4)):
-			self.service.add_path(prefix + '/Voltage', None, gettextcallback=unit_volt)
-			self.service.add_path(prefix + '/Current', None, gettextcallback=unit_amp)
-			self.service.add_path(prefix + '/Power', None, gettextcallback=unit_watt)
-			self.service.add_path(prefix + '/Energy/Forward', None, gettextcallback=unit_kwh)
-			self.service.add_path(prefix + '/Energy/Reverse', None, gettextcallback=unit_kwh)
+		self.service.add_item(DoubleItem('/Ac/Energy/Forward', None, text=unit_kwh))
+		self.service.add_item(DoubleItem('/Ac/Energy/Reverse', None, text=unit_kwh))
+		self.service.add_item(DoubleItem('/Ac/Power', None, text=unit_watt))
+		for prefix in (f"/Ac/L{x}" for x in range(1, 4)):
+			self.service.add_item(DoubleItem(prefix + '/Voltage', None, text=unit_volt))
+			self.service.add_item(DoubleItem(prefix + '/Current', None, text=unit_amp))
+			self.service.add_item(DoubleItem(prefix + '/Power', None, text=unit_watt))
+			self.service.add_item(DoubleItem(prefix + '/Energy/Forward', None, text=unit_kwh))
+			self.service.add_item(DoubleItem(prefix + '/Energy/Reverse', None, text=unit_kwh))
 
-		# Start polling
-		self.update()
-
-	@property
-	def role_instance(self):
-		val = self.settings['instance'].split(':')
-		return val[0], int(val[1])
-	
-	def setting_changed(self, name, old, new):
-		# Kill service, driver will restart us soon
-		self.destroy()
-	
-	def role_changed(self, path, val):
-		if val not in ['grid', 'pvinverter', 'genset', 'acload']:
-			return False
-
-		self.settings['instance'] = '%s:%s' % (val, self.role_instance[1])
-		self.destroy() # restart
-		return True
-
-	def position_changed(self, path, val):
-		if not 0 <= val <= 2:
-			return False
-		self.position.set_value(val)
 		return True
 
 	def destroy(self):
 		if self.service is not None:
 			self.service.__del__()
-
 		self.service = None
 		self.settings = None
-		self.position = None
-
-	def update(self):
-		AsyncHttpRequest(self.session,
-			urlunparse(('http', self.host, '/status', '', '', '')),
-			self.cb, self.update_error).start()
-		return False
-
-	def update_error(self, e):
-		self.errorcount = max(0, self.errorcount - 1)
-		if self.errorcount == 0:
-			logger.error("Lost connection to {}".format(self.host))
-			self.destroy()
-		else:
-			GLib.timeout_add(2000, self.update)
-
-	def cb(self, response):
-		# If the service was destroyed while a request was in flight,
-		# we need to simply ignore the result
-		if not self.active:
-			return
-
-		# Schedule the next fetch, this will only actually happen
-		# after cb is completed. Do it now so it doesn't get lost
-		# due to an exception below
-		GLib.timeout_add(500, self.update)
-
-		try:
-			data = response.json()
-		except ValueError:
-			logger.exception("Failed to parse JSON for /status")
-		else:
+		self.destroyed = True
+	
+	async def update(self, data):
+		# NotifyStatus has power current power values
+		if self.service and data.get('method') == 'NotifyStatus':
 			try:
-				meters = data['emeters']
-				forward = 0
-				reverse = 0
-				power = None
-				for phase, meter in zip(range(1, 4), meters):
-
-					# Reading must be valid
-					if not meter['is_valid']: continue
-
-					power = meter['power'] + (0 if power is None else power)
-					self.service['/Ac/L{}/Power'.format(phase)] = meter['power']
-					self.service['/Ac/L{}/Voltage'.format(phase)] = meter['voltage']
-
-					# Not all meters send current
-					if 'current' in meter:
-						self.service['/Ac/L{}/Current'.format(phase)] = meter['current']
-					else:
-						try:
-							current = meter['power'] / meter['voltage']
-						except ArithmeticError:
-							current = None
-
-						self.service['/Ac/L{}/Current'.format(phase)] = current
-
-					self.service['/Ac/L{}/Energy/Forward'.format(phase)] = round(meter['total']/1000, 2)
-					self.service['/Ac/L{}/Energy/Reverse'.format(phase)] = round(meter ['total_returned']/1000, 2)
-
-					forward += meter['total']
-					reverse += meter['total_returned']
+				d = data['params']['em:0']
 			except KeyError:
-				logger.exception("Malformed emeters section in JSON?")
+				pass
 			else:
-				self.service['/Ac/Power'] = power
-				# Simple aritmetic total. Vector-energy would have been
-				# preferred but we don't have it.
-				self.service['/Ac/Energy/Forward'] = round(forward/1000, 2)
-				self.service['/Ac/Energy/Reverse'] = round(reverse/1000, 2)
+				with self.service as s:
+					s['/Ac/L1/Voltage'] = d["a_voltage"]
+					s['/Ac/L2/Voltage'] = d["b_voltage"]
+					s['/Ac/L3/Voltage'] = d["c_voltage"]
+					s['/Ac/L1/Current'] = d["a_current"]
+					s['/Ac/L2/Current'] = d["b_current"]
+					s['/Ac/L3/Current'] = d["c_current"]
+					s['/Ac/L1/Power'] = d["a_act_power"]
+					s['/Ac/L2/Power'] = d["b_act_power"]
+					s['/Ac/L3/Power'] = d["c_act_power"]
 
-			self.errorcount = MAXERROR
+					s['/Ac/Power'] = d["a_act_power"] + d["b_act_power"] + d["c_act_power"]
+
+	def role_instance(self, value):
+		val = value.split(':')
+		return val[0], int(val[1])
+
+	def settings_changed(self, service, values):
+		# Kill service, driver will restart us soon
+		if service.alias("instance") in values:
+			self.destroy()
+
+	def role_changed(self, val):
+		if val not in ['grid', 'pvinverter', 'genset', 'acload']:
+			return False
+
+		settings = self.get_settings()
+		if settings is None:
+			return False
+
+		p = settings.alias("instance")
+		role, instance = self.role_instance(settings.get_value(p))
+		settings.set_value(p, "{}:{}".format(val, instance))
+
+		self.destroy() # restart
+		return True
+
+	def position_changed(self, val):
+		if not 0 <= val <= 2:
+			return False
+
+		settings = self.get_settings()
+		if settings is None:
+			return False
+
+		settings.set_value(settings.alias("position"), val)
+		return True

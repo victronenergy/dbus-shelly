@@ -1,120 +1,103 @@
-#! /usr/bin/python3 -u
+#!/usr/bin/python3
 
-VERSION = "0.2"
-MDNS_QUERY_INTERVAL = 60
+VERSION = "0.1"
 
-import sys, os
-from time import time
-from argparse import ArgumentParser
+import sys
+import os
+import asyncio
+import websockets
 import logging
+import ssl
+import json
+import itertools
+from argparse import ArgumentParser
 
-import dbus
-from dbus.mainloop.glib import DBusGMainLoop
-from gi.repository import GLib
+import asyncio
 
-sys.path.insert(1, os.path.join(os.path.dirname(__file__), 'ext', 'velib_python'))
-from settingsdevice import SettingsDevice
+# 3rd party
+from dbus_next.constants import BusType
 
+# aiovelib
+sys.path.insert(1, os.path.join(os.path.dirname(__file__), 'ext', 'aiovelib'))
+from aiovelib.service import Service
+
+# local modules
 from meter import Meter
-from mdns import MDNS
 
-logger = logging.getLogger()
+wslogger = logging.getLogger('websockets.server')
+wslogger.setLevel(logging.INFO)
+wslogger.addHandler(logging.StreamHandler())
 
-class Driver(object):
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
-	def __init__(self, get_bus):
-		self.get_bus = get_bus
+tx_count = itertools.cycle(range(1000, 5000))
+
+class Server(object):
+	def __init__(self, make_meter):
 		self.meters = {}
+		self.make_meter = make_meter
 
-		# Connect to localsettings
-		SETTINGS = {
-			'devices': ['/Settings/Shelly/Devices', '', 0, 0],
-			'scanmdns': ['/Settings/Shelly/ScanMdns', 1, 0, 1]
-		}
-		logger.info('Waiting for localsettings')
-		self.settings = SettingsDevice(get_bus(), SETTINGS,
-				self.setting_changed, timeout=10)
+	async def __call__(self, socket, path):
+		# If we have a connection to the meter already, kill it and
+		# make a new one
+		if (m := self.meters.get(socket.remote_address)) is not None:
+			await m.destroy()
+			del self.meters[socket.remote_address]
 
-		# MDNS scan, if enabled
-		self.mdns = None
-		self.mdns_query_time = time()
-		if self.settings['scanmdns'] == 1:
-			self.mdns = MDNS()
-			self.mdns.start()
-			self.mdns.req()
+		self.meters[socket.remote_address] = m = self.make_meter()
 
-		# Start known devices
-		self.set_meters('', self.settings['devices'])
+		# Tell the meter to send a full status
+		await socket.send(json.dumps({
+			"id": "GetStatus-{}".format(next(tx_count)),
+			"method":"Shelly.GetStatus"
+		}))
 
-	def setting_changed(self, name, old, new):
-		if name == 'devices':
-			self.set_meters(old, new)
+		while not m.destroyed:
+			# Decode data, and dispatch it to the gevent mainloop
+			try:
+				data = json.loads(await socket.recv())
+			except ValueError:
+				logger.error("Malformed data in json payload")
+			except websockets.exceptions.WebSocketException:
+				await m.destroy()
+				break
+			else:
+				if str(data.get('id', '')).startswith('GetStatus-'):
+					if not await m.start(*socket.remote_address, data):
+						await m.destroy()
+						break
+				else:
+					await m.update(data)
 
-	def set_meters(self, old, new):
-		old = set(filter(None, old.split(',')))
-		new = set(filter(None, new.split(',')))
-		cur = set(self.meters.keys())
-		rem = old - new
-
-		for h in rem & cur:
-			m = self.meters[h]
-			del self.meters[h]
-			m.destroy()
-
-		for h in new - cur:
-			self.meters[h] = m = Meter(self.get_bus, h)
-
-	def update(self):
-		try:
-			for m in self.meters.values():
-				if not m.active:
-					logger.info("Starting shelly meter at {}".format(m.host))
-					m.start()
-		except:
-			logger.exception("update")
-
-		# Send new MDNS query every minute
-		now = time()
-		if self.mdns is not None and now - self.mdns_query_time > MDNS_QUERY_INTERVAL:
-			self.mdns_query_time = now
-			self.mdns.req()
-
-		# If mdns scanning is on, then connect to meters found
-		if self.mdns is not None:
-			for h in self.mdns.get_devices() - set(self.meters.keys()):
-				self.meters[h] = Meter(self.get_bus, h)
-
-		return True
+		del self.meters[socket.remote_address]
 
 def main():
 	parser = ArgumentParser(description=sys.argv[0])
 	parser.add_argument('--dbus', help='dbus bus to use, defaults to system',
-		default='system')
+			default='system')
 	parser.add_argument('--debug', help='Turn on debug logging',
-		default=False, action='store_true')
+			default=False, action='store_true')
 	args = parser.parse_args()
 
 	logging.basicConfig(format='%(levelname)-8s %(message)s',
 			level=(logging.DEBUG if args.debug else logging.INFO))
 
-	_get_bus = {
-		'system': dbus.Bus.get_system,
-		'session': dbus.Bus.get_session
-	}.get(args.dbus, dbus.Bus.get_session)
+	bus_type = {
+		"system": BusType.SYSTEM,
+		"session": BusType.SESSION
+	}.get(args.dbus, BusType.SESSION)
 
-	get_bus = lambda: _get_bus(private=True)
+	mainloop = asyncio.get_event_loop()
+	mainloop.run_until_complete(
+		websockets.serve(Server(lambda: Meter(bus_type)), '', 8000))
 
-	DBusGMainLoop(set_as_default=True)
-
-	driver = Driver(get_bus)
-	driver.update()
-	GLib.timeout_add(5000, driver.update)
-
-	mainloop = GLib.MainLoop()
 	try:
-		mainloop.run()
+		logger.info("Starting main loop")
+		mainloop.run_forever()
 	except KeyboardInterrupt:
-		pass
+		mainloop.stop()
+
 
 if __name__ == "__main__":
-	main()
+    main()
