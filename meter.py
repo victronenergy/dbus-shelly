@@ -81,7 +81,7 @@ class Meter(object):
 
 		self.service.add_item(TextItem('/Mgmt/ProcessName', MAIN_FILE))
 		self.service.add_item(TextItem('/Mgmt/ProcessVersion', VERSION))
-		self.service.add_item(TextItem('/Mgmt/Connection', f"{host}:{port}"))
+		self.service.add_item(TextItem('/Mgmt/Connection', f"WebSocket {host}:{port}"))
 		self.service.add_item(IntegerItem('/DeviceInstance', instance))
 		self.service.add_item(IntegerItem('/ProductId', 0xB034, text=unit_productid))
 		self.service.add_item(TextItem('/ProductName', "Shelly energy meter"))
