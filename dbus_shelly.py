@@ -42,7 +42,7 @@ class Server(object):
 		# If we have a connection to the meter already, kill it and
 		# make a new one
 		if (m := self.meters.get(socket.remote_address)) is not None:
-			await m.destroy()
+			m.destroy()
 			del self.meters[socket.remote_address]
 
 		self.meters[socket.remote_address] = m = self.make_meter()
@@ -60,12 +60,14 @@ class Server(object):
 			except ValueError:
 				logger.error("Malformed data in json payload")
 			except websockets.exceptions.WebSocketException:
-				await m.destroy()
+				logger.info("Lost connection to " + str(socket.remote_address))
+				m.destroy()
 				break
 			else:
 				if str(data.get('id', '')).startswith('GetStatus-'):
 					if not await m.start(*socket.remote_address, data):
-						await m.destroy()
+						logger.info("Failed to start meter for " + str(socket.remote_address))
+						m.destroy()
 						break
 				else:
 					await m.update(data)
