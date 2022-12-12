@@ -25,3 +25,4 @@ testinstall:
 	-rm -rf $(TMP)
 
 clean:
+distclean:
