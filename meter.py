@@ -149,14 +149,14 @@ class Meter(object):
 				pass
 			else:
 				with self.service as s:
-					s["/Ac/Energy/Forward"] = d["total_act"]
-					s["/Ac/Energy/Reverse"] = d["total_act_ret"]
-					s["/Ac/L1/Energy/Forward"] = d["a_total_act_energy"]
-					s["/Ac/L1/Energy/Reverse"] = d["a_total_act_ret_energy"]
-					s["/Ac/L2/Energy/Forward"] = d["b_total_act_energy"]
-					s["/Ac/L2/Energy/Reverse"] = d["b_total_act_ret_energy"]
-					s["/Ac/L3/Energy/Forward"] = d["c_total_act_energy"]
-					s["/Ac/L3/Energy/Reverse"] = d["c_total_act_ret_energy"]
+					s["/Ac/Energy/Forward"] = round(d["total_act"]/1000, 1)
+					s["/Ac/Energy/Reverse"] = round(d["total_act_ret"]/1000, 1)
+					s["/Ac/L1/Energy/Forward"] = round(d["a_total_act_energy"]/1000, 1)
+					s["/Ac/L1/Energy/Reverse"] = round(d["a_total_act_ret_energy"]/1000, 1)
+					s["/Ac/L2/Energy/Forward"] = round(d["b_total_act_energy"]/1000, 1)
+					s["/Ac/L2/Energy/Reverse"] = round(d["b_total_act_ret_energy"]/1000, 1)
+					s["/Ac/L3/Energy/Forward"] = round(d["c_total_act_energy"]/1000, 1)
+					s["/Ac/L3/Energy/Reverse"] = round(d["c_total_act_ret_energy"]/1000, 1)
 
 	def role_instance(self, value):
 		val = value.split(':')
