@@ -123,7 +123,7 @@ class Meter(object):
 		self.destroyed = True
 	
 	async def update(self, data):
-		# NotifyStatus has power current power values
+		# NotifyStatus has power, current, voltage and energy values
 		if self.service and data.get('method') == 'NotifyStatus':
 			try:
 				d = data['params']['em:0']
@@ -142,6 +142,21 @@ class Meter(object):
 					s['/Ac/L3/Power'] = d["c_act_power"]
 
 					s['/Ac/Power'] = d["a_act_power"] + d["b_act_power"] + d["c_act_power"]
+
+			try:
+				d = data['params']['emdata:0']
+			except KeyError:
+				pass
+			else:
+				with self.service as s:
+					s["/Ac/Energy/Forward"] = d["total_act"]
+					s["/Ac/Energy/Reverse"] = d["total_act_ret"]
+					s["/Ac/L1/Energy/Forward"] = d["a_total_act_energy"]
+					s["/Ac/L1/Energy/Reverse"] = d["a_total_act_ret_energy"]
+					s["/Ac/L2/Energy/Forward"] = d["b_total_act_energy"]
+					s["/Ac/L2/Energy/Reverse"] = d["b_total_act_ret_energy"]
+					s["/Ac/L3/Energy/Forward"] = d["c_total_act_energy"]
+					s["/Ac/L3/Energy/Reverse"] = d["c_total_act_ret_energy"]
 
 	def role_instance(self, value):
 		val = value.split(':')
