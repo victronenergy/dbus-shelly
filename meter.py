@@ -50,7 +50,8 @@ class Meter(object):
 
 	async def start(self, host, port, data):
 		try:
-			mac = data['result']['sys']['mac']
+			mac = data['result']['mac']
+			fw = data['result']['fw_id']
 		except KeyError:
 			return False
 
@@ -85,6 +86,7 @@ class Meter(object):
 		self.service.add_item(IntegerItem('/DeviceInstance', instance))
 		self.service.add_item(IntegerItem('/ProductId', 0xB034, text=unit_productid))
 		self.service.add_item(TextItem('/ProductName', "Shelly energy meter"))
+		self.service.add_item(TextItem('/FirmwareVersion', fw))
 		self.service.add_item(IntegerItem('/Connected', 1))
 		self.service.add_item(IntegerItem('/RefreshTime', 100))
 

@@ -49,8 +49,8 @@ class Server(object):
 
 		# Tell the meter to send a full status
 		await socket.send(json.dumps({
-			"id": "GetStatus-{}".format(next(tx_count)),
-			"method":"Shelly.GetStatus"
+			"id": "GetDeviceInfo-{}".format(next(tx_count)),
+			"method":"Shelly.GetDeviceInfo"
 		}))
 
 		while not m.destroyed:
@@ -64,7 +64,7 @@ class Server(object):
 				m.destroy()
 				break
 			else:
-				if str(data.get('id', '')).startswith('GetStatus-'):
+				if str(data.get('id', '')).startswith('GetDeviceInfo-'):
 					if not await m.start(*socket.remote_address, data):
 						logger.info("Failed to start meter for " + str(socket.remote_address))
 						m.destroy()
