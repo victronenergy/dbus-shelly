@@ -13,18 +13,24 @@ used as an AC-meter. Piggybacking a PV-inverter on L2 is **NOT** supported
 (yet, maybe).
 
 ## HowTo Install:
-First! You must use the beta release of VenusOS (Currently v3.00~42)
-Code only works for the new Shelly Pro EM3 meter
+First! You must use the beta release of VenusOS (Currently v3.00~42) cause it has all the modules you need, saves time and headache.
 
-ssh to VenusOS (for example ssh root@192.168.XX.XX)
+The Code ONLY works for the new Shelly Pro EM3 meter
+
+ssh to VenusOS (for example ssh root@192.168.XX.XX)  (have to enable SSH in remote console/Settings/General/LongPress right on Access Level to get superuser access, then set your root password and enable SSH on LAN)
+
 then run:
-/opt/victronenergy/swupdate-scripts/set-feed.sh candidate
-opkg update && opkg install git
-git -C /data/ clone --recurse-submodules https://github.com/victronenergy/dbus-shelly.git && cd /data/dbus-shelly
-python3 dbus_shelly.py
+`/opt/victronenergy/swupdate-scripts/set-feed.sh candidate`
 
-To update:
-cd /data/dbus-shelly
-git checkout master
-git pull
-git submodule update --init
+`opkg update && opkg install git`
+
+`git -C /data/ clone --recurse-submodules https://github.com/victronenergy/dbus-shelly.git && cd /data/dbus-shelly`
+
+`python3 dbus_shelly.py`
+
+In the future To update just run:
+`cd /data/dbus-shelly`
+
+`git checkout master && git pull`
+
+`git submodule update --init`
