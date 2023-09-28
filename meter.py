@@ -11,19 +11,24 @@ from aiovelib.service import TextArrayItem
 from aiovelib.client import Monitor, ServiceHandler
 from aiovelib.localsettings import SettingsService, Setting, SETTINGS_SERVICE
 
+DBUS_SETTING_PREFIX = '/Settings/Devices/'
+
 logger = logging.getLogger(__name__)
 
 class LocalSettings(SettingsService, ServiceHandler):
 	pass
 		
 # Text formatters
-unit_watt = lambda v: "{:.0f}W".format(v)
-unit_volt = lambda v: "{:.1f}V".format(v)
-unit_amp = lambda v: "{:.1f}A".format(v)
-unit_kwh = lambda v: "{:.2f}kWh".format(v)
-unit_productid = lambda v: "0x{:X}".format(v)
+unit_watt = lambda v: f"{v:.0f}W"
+unit_volt = lambda v: f"{v:.1f}V"
+unit_amp = lambda v: f"{v:.1f}A"
+unit_kwh = lambda v: f"{v:.2f}kWh"
+unit_productid = lambda v: f"0x{v:X}"
 
 class Meter(object):
+
+	DBUS_SETTING_PREFIX = '/Settings/Devices/'
+
 	def __init__(self, bus_type):
 		self.bus_type = bus_type
 		self.monitor = None
@@ -53,9 +58,10 @@ class Meter(object):
 			mac = data['result']['mac']
 			device_id = data['result']['id']
 			app_name = data['result']['app']
-			fw = data['result']['fw_id']
-			# fw = data['result']['ver'] # Use software version in plae of full firmware
-			logger.info(f"Setup meter for device {app_name}_{mac} {fw}")
+			device_name = data['result'].get("name", app_name)
+			# fw = data['result']['fw_id']
+			fw = data['result']['ver'] # Use software version in place of full firmware
+			logger.info(f"Setup meter for device {device_name} {fw}")
 		except KeyError:
 			return False
 
@@ -63,7 +69,7 @@ class Meter(object):
 		bus = await MessageBus(bus_type=self.bus_type).connect()
 		self.monitor = await Monitor.create(bus, self.settings_changed)
 
-		settingprefix = '/Settings/Devices/shelly_' + mac
+		settingprefix =  f"{self.DBUS_SETTING_PREFIX}{device_id.replace('-', '_')}"
 		logger.info("Waiting for localsettings")
 		settings = await self.wait_for_settings()
 		if settings is None:
@@ -113,12 +119,13 @@ class Meter(object):
 		if app_name.endswith("3EM"):
 			logger.info("Setup 3-phase metrics")
 			for prefix in (f"/Ac/L{x}" for x in range(1, 4)):
-				self.service.add_item(DoubleItem(prefix + '/Voltage', None, text=unit_volt))
-				self.service.add_item(DoubleItem(prefix + '/Current', None, text=unit_amp))
-				self.service.add_item(DoubleItem(prefix + '/Power', None, text=unit_watt))
-				self.service.add_item(DoubleItem(prefix + '/Energy/Forward', None, text=unit_kwh))
-				self.service.add_item(DoubleItem(prefix + '/Energy/Reverse', None, text=unit_kwh))
+				self.service.add_item(DoubleItem(f"{prefix}/Voltage", None, text=unit_volt))
+				self.service.add_item(DoubleItem(f"{prefix}/Current", None, text=unit_amp))
+				self.service.add_item(DoubleItem(f"{prefix}/Power", None, text=unit_watt))
+				self.service.add_item(DoubleItem(f"{prefix}/Energy/Forward", None, text=unit_kwh))
+				self.service.add_item(DoubleItem(f"{prefix}/Energy/Reverse", None, text=unit_kwh))
 		else:
+			logger.info("Setup single phase metrics")
 			self.service.add_item(DoubleItem("/Ac/L1/Voltage", None, text=unit_volt))
 			self.service.add_item(DoubleItem("/Ac/L1/Current", None, text=unit_amp))
 			self.service.add_item(DoubleItem("/Ac/L1/Power", None, text=unit_watt))
@@ -194,7 +201,7 @@ class Meter(object):
 
 		p = settings.alias("instance")
 		role, instance = self.role_instance(settings.get_value(p))
-		settings.set_value(p, "{}:{}".format(val, instance))
+		settings.set_value(p, f"{val}:{instance}")
 
 		self.destroy() # restart
 		return True
