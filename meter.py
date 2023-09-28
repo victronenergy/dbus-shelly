@@ -1,6 +1,5 @@
 import asyncio
 import logging
-from asyncio.exceptions import TimeoutError # Deprecated in 3.11
 
 from dbus_next.aio import MessageBus
 
@@ -50,8 +49,13 @@ class Meter(object):
 
 	async def start(self, host, port, data):
 		try:
+			logger.info(f"Received DeviceInfo {data}")
 			mac = data['result']['mac']
+			device_id = data['result']['id']
+			app_name = data['result']['app']
 			fw = data['result']['fw_id']
+			# fw = data['result']['ver'] # Use software version in plae of full firmware
+			logger.info(f"Setup meter for device {app_name}_{mac} {fw}")
 		except KeyError:
 			return False
 
@@ -69,8 +73,8 @@ class Meter(object):
 		logger.info("Connected to localsettings")
 
 		await settings.add_settings(
-			Setting(settingprefix + "/ClassAndVrmInstance", "grid:40", 0, 0, alias="instance"),
-			Setting(settingprefix + '/Position', 0, 0, 2, alias="position")
+			Setting(f"{settingprefix}/ClassAndVrmInstance", "grid:40", 0, 0, alias="instance"),
+			Setting(f"{settingprefix}/Position", 0, 0, 2, alias="position")
 		)
 
 		# Determine role and instance
@@ -78,14 +82,14 @@ class Meter(object):
 			settings.get_value(settings.alias("instance")))
 
 		# Set up the service
-		self.service = await Service.create(bus, "com.victronenergy.{}.shelly_{}".format(role, mac))
+		self.service = await Service.create(bus, f"com.victronenergy.{role}.shelly_{mac}")
 
 		self.service.add_item(TextItem('/Mgmt/ProcessName', MAIN_FILE))
 		self.service.add_item(TextItem('/Mgmt/ProcessVersion', VERSION))
 		self.service.add_item(TextItem('/Mgmt/Connection', f"WebSocket {host}:{port}"))
 		self.service.add_item(IntegerItem('/DeviceInstance', instance))
 		self.service.add_item(IntegerItem('/ProductId', 0xB034, text=unit_productid))
-		self.service.add_item(TextItem('/ProductName', "Shelly energy meter"))
+		self.service.add_item(TextItem('/ProductName', f"Shelly {app_name}"))
 		self.service.add_item(TextItem('/FirmwareVersion', fw))
 		self.service.add_item(IntegerItem('/Connected', 1))
 		self.service.add_item(IntegerItem('/RefreshTime', 100))
@@ -106,12 +110,18 @@ class Meter(object):
 		self.service.add_item(DoubleItem('/Ac/Energy/Forward', None, text=unit_kwh))
 		self.service.add_item(DoubleItem('/Ac/Energy/Reverse', None, text=unit_kwh))
 		self.service.add_item(DoubleItem('/Ac/Power', None, text=unit_watt))
-		for prefix in (f"/Ac/L{x}" for x in range(1, 4)):
-			self.service.add_item(DoubleItem(prefix + '/Voltage', None, text=unit_volt))
-			self.service.add_item(DoubleItem(prefix + '/Current', None, text=unit_amp))
-			self.service.add_item(DoubleItem(prefix + '/Power', None, text=unit_watt))
-			self.service.add_item(DoubleItem(prefix + '/Energy/Forward', None, text=unit_kwh))
-			self.service.add_item(DoubleItem(prefix + '/Energy/Reverse', None, text=unit_kwh))
+		if app_name.endswith("3EM"):
+			logger.info("Setup 3-phase metrics")
+			for prefix in (f"/Ac/L{x}" for x in range(1, 4)):
+				self.service.add_item(DoubleItem(prefix + '/Voltage', None, text=unit_volt))
+				self.service.add_item(DoubleItem(prefix + '/Current', None, text=unit_amp))
+				self.service.add_item(DoubleItem(prefix + '/Power', None, text=unit_watt))
+				self.service.add_item(DoubleItem(prefix + '/Energy/Forward', None, text=unit_kwh))
+				self.service.add_item(DoubleItem(prefix + '/Energy/Reverse', None, text=unit_kwh))
+		else:
+			self.service.add_item(DoubleItem("/Ac/L1/Voltage", None, text=unit_volt))
+			self.service.add_item(DoubleItem("/Ac/L1/Current", None, text=unit_amp))
+			self.service.add_item(DoubleItem("/Ac/L1/Power", None, text=unit_watt))
 
 		return True
 
@@ -127,9 +137,7 @@ class Meter(object):
 		if self.service and data.get('method') == 'NotifyStatus':
 			try:
 				d = data['params']['em:0']
-			except KeyError:
-				pass
-			else:
+
 				with self.service as s:
 					s['/Ac/L1/Voltage'] = d["a_voltage"]
 					s['/Ac/L2/Voltage'] = d["b_voltage"]
@@ -142,12 +150,11 @@ class Meter(object):
 					s['/Ac/L3/Power'] = d["c_act_power"]
 
 					s['/Ac/Power'] = d["a_act_power"] + d["b_act_power"] + d["c_act_power"]
+			except KeyError:
+				pass
 
 			try:
 				d = data['params']['emdata:0']
-			except KeyError:
-				pass
-			else:
 				with self.service as s:
 					s["/Ac/Energy/Forward"] = round(d["total_act"]/1000, 1)
 					s["/Ac/Energy/Reverse"] = round(d["total_act_ret"]/1000, 1)
@@ -157,6 +164,16 @@ class Meter(object):
 					s["/Ac/L2/Energy/Reverse"] = round(d["b_total_act_ret_energy"]/1000, 1)
 					s["/Ac/L3/Energy/Forward"] = round(d["c_total_act_energy"]/1000, 1)
 					s["/Ac/L3/Energy/Reverse"] = round(d["c_total_act_ret_energy"]/1000, 1)
+
+			except KeyError:
+				pass
+
+			try: # plus 1PM
+				d = data['params']['switch:0']["aenergy"]
+				with self.service as s:
+					s["/Ac/Energy/Forward"] = round(d["total"]/1000, 1)
+			except KeyError:
+				pass
 
 	def role_instance(self, value):
 		val = value.split(':')
