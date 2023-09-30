@@ -11,7 +11,6 @@ from aiovelib.service import TextArrayItem
 from aiovelib.client import Monitor, ServiceHandler
 from aiovelib.localsettings import SettingsService, Setting, SETTINGS_SERVICE
 
-DBUS_SETTING_PREFIX = '/Settings/Devices/'
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +56,7 @@ class Meter(object):
 			logger.info(f"Received DeviceInfo {data}")
 			mac = data['result']['mac']
 			device_id = data['result']['id']
+			model_name = data['result']['model']
 			app_name = data['result']['app']
 			device_name = data['result'].get("name", app_name)
 			# fw = data['result']['fw_id']
@@ -97,6 +97,9 @@ class Meter(object):
 		self.service.add_item(IntegerItem('/ProductId', 0xB034, text=unit_productid))
 		self.service.add_item(TextItem('/ProductName', f"Shelly {app_name}"))
 		self.service.add_item(TextItem('/FirmwareVersion', fw))
+		self.service.add_item(TextItem('/HardwareVersion', model_name))
+		self.service.add_item(TextItem('/Serial', mac))
+		self.service.add_item(TextItem('/CustomName', device_name))
 		self.service.add_item(IntegerItem('/Connected', 1))
 		self.service.add_item(IntegerItem('/RefreshTime', 100))
 
@@ -116,19 +119,20 @@ class Meter(object):
 		self.service.add_item(DoubleItem('/Ac/Energy/Forward', None, text=unit_kwh))
 		self.service.add_item(DoubleItem('/Ac/Energy/Reverse', None, text=unit_kwh))
 		self.service.add_item(DoubleItem('/Ac/Power', None, text=unit_watt))
-		if app_name.endswith("3EM"):
-			logger.info("Setup 3-phase metrics")
-			for prefix in (f"/Ac/L{x}" for x in range(1, 4)):
-				self.service.add_item(DoubleItem(f"{prefix}/Voltage", None, text=unit_volt))
-				self.service.add_item(DoubleItem(f"{prefix}/Current", None, text=unit_amp))
-				self.service.add_item(DoubleItem(f"{prefix}/Power", None, text=unit_watt))
-				self.service.add_item(DoubleItem(f"{prefix}/Energy/Forward", None, text=unit_kwh))
-				self.service.add_item(DoubleItem(f"{prefix}/Energy/Reverse", None, text=unit_kwh))
-		else:
-			logger.info("Setup single phase metrics")
-			self.service.add_item(DoubleItem("/Ac/L1/Voltage", None, text=unit_volt))
-			self.service.add_item(DoubleItem("/Ac/L1/Current", None, text=unit_amp))
-			self.service.add_item(DoubleItem("/Ac/L1/Power", None, text=unit_watt))
+		# TODO: Find a way to get only L1 display for single-phase system 
+		# if app_name.endswith("3EM"):
+		# 	logger.info("Setup 3-phase metrics")
+		for prefix in (f"/Ac/L{x}" for x in range(1, 4)):
+			self.service.add_item(DoubleItem(f"{prefix}/Voltage", None, text=unit_volt))
+			self.service.add_item(DoubleItem(f"{prefix}/Current", None, text=unit_amp))
+			self.service.add_item(DoubleItem(f"{prefix}/Power", None, text=unit_watt))
+			self.service.add_item(DoubleItem(f"{prefix}/Energy/Forward", None, text=unit_kwh))
+			self.service.add_item(DoubleItem(f"{prefix}/Energy/Reverse", None, text=unit_kwh))
+		# else:
+		# 	logger.info("Setup single phase metrics")
+		# 	self.service.add_item(DoubleItem("/Ac/L1/Voltage", None, text=unit_volt))
+		# 	self.service.add_item(DoubleItem("/Ac/L1/Current", None, text=unit_amp))
+		# 	self.service.add_item(DoubleItem("/Ac/L1/Power", None, text=unit_watt))
 
 		return True
 
@@ -144,7 +148,6 @@ class Meter(object):
 		if self.service and data.get('method') == 'NotifyStatus':
 			try:
 				d = data['params']['em:0']
-
 				with self.service as s:
 					s['/Ac/L1/Voltage'] = d["a_voltage"]
 					s['/Ac/L2/Voltage'] = d["b_voltage"]
@@ -175,7 +178,7 @@ class Meter(object):
 			except KeyError:
 				pass
 
-			try: # plus 1PM
+			try: # plus 1PM ticket #58041 to ask voltage, current and power metrics support
 				d = data['params']['switch:0']["aenergy"]
 				with self.service as s:
 					s["/Ac/Energy/Forward"] = round(d["total"]/1000, 1)
