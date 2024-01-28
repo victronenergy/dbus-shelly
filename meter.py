@@ -126,6 +126,7 @@ class Meter(object):
 		# NotifyStatus has power, current, voltage and energy values
 		if self.service and data.get('method') == 'NotifyStatus':
 			try:
+				# Shelly 3EM
 				d = data['params']['em:0']
 			except KeyError:
 				pass
@@ -142,6 +143,20 @@ class Meter(object):
 					s['/Ac/L3/Power'] = d["c_act_power"]
 
 					s['/Ac/Power'] = d["a_act_power"] + d["b_act_power"] + d["c_act_power"]
+
+			try: 
+				# Shelly Plus 1PM
+				d = data['params']['switch:0']
+			except KeyError:
+				pass
+			else:
+				with self.service as s:
+					s['/Ac/L1/Voltage'] = d["voltage"]
+					s['/Ac/L1/Current'] = d["current"]
+					s['/Ac/L1/Power'] = d["apower"]
+					s['/Ac/Power'] = d["apower"]
+					s["/Ac/Energy/Forward"] = round(d["aenergy"]["total"]/1000, 1)
+					s["/Ac/L1/Energy/Forward"] = s["/Ac/Energy/Forward"]
 
 			try:
 				d = data['params']['emdata:0']
