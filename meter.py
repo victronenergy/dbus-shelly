@@ -52,6 +52,7 @@ class Meter(object):
 		try:
 			mac = data['result']['mac']
 			fw = data['result']['fw_id']
+			product = data['result']['name']
 		except KeyError:
 			return False
 
@@ -85,7 +86,7 @@ class Meter(object):
 		self.service.add_item(TextItem('/Mgmt/Connection', f"WebSocket {host}:{port}"))
 		self.service.add_item(IntegerItem('/DeviceInstance', instance))
 		self.service.add_item(IntegerItem('/ProductId', 0xB034, text=unit_productid))
-		self.service.add_item(TextItem('/ProductName', "Shelly energy meter"))
+		self.service.add_item(TextItem('/ProductName', product))
 		self.service.add_item(TextItem('/FirmwareVersion', fw))
 		self.service.add_item(IntegerItem('/Connected', 1))
 		self.service.add_item(IntegerItem('/RefreshTime', 100))
@@ -151,13 +152,15 @@ class Meter(object):
 				pass
 			else:
 				with self.service as s:
+					try:
 					s['/Ac/L1/Voltage'] = d["voltage"]
 					s['/Ac/L1/Current'] = d["current"]
 					s['/Ac/L1/Power'] = d["apower"]
 					s['/Ac/Power'] = d["apower"]
-					s["/Ac/Energy/Forward"] = round(d["aenergy"]["total"]/1000, 1)
-					s["/Ac/L1/Energy/Forward"] = s["/Ac/Energy/Forward"]
-
+						s["/Ac/Energy/Forward"] = round(d["aenergy"]["total"]/1000, 2)
+						s["/Ac/L1/Energy/Forward"] = round(d["aenergy"]["total"]/1000, 1)
+					except KeyError:
+						pass
 			try:
 				d = data['params']['emdata:0']
 			except KeyError:
