@@ -153,10 +153,10 @@ class Meter(object):
 			else:
 				with self.service as s:
 					try:
-					s['/Ac/L1/Voltage'] = d["voltage"]
-					s['/Ac/L1/Current'] = d["current"]
-					s['/Ac/L1/Power'] = d["apower"]
-					s['/Ac/Power'] = d["apower"]
+						s['/Ac/L1/Voltage'] = d["voltage"]
+						s['/Ac/L1/Current'] = d["current"]
+						s['/Ac/L1/Power'] = d["apower"]
+						s['/Ac/Power'] = d["apower"]
 						s["/Ac/Energy/Forward"] = round(d["aenergy"]["total"]/1000, 2)
 						s["/Ac/L1/Energy/Forward"] = round(d["aenergy"]["total"]/1000, 1)
 					except KeyError:
