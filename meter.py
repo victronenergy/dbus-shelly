@@ -155,10 +155,8 @@ class Meter(object):
 					try:
 						s['/Ac/L1/Voltage'] = d["voltage"]
 						s['/Ac/L1/Current'] = d["current"]
-						s['/Ac/L1/Power'] = d["apower"]
-						s['/Ac/Power'] = d["apower"]
-						s["/Ac/Energy/Forward"] = round(d["aenergy"]["total"]/1000, 2)
-						s["/Ac/L1/Energy/Forward"] = round(d["aenergy"]["total"]/1000, 1)
+						s['/Ac/L1/Power'] = s['/Ac/Power'] = d.get("apower", 'undefined')
+						s["/Ac/L1/Energy/Forward"] = s["/Ac/Energy/Forward"] = round(d["aenergy"]["total"]/1000, 1)
 					except KeyError:
 						pass
 			try:

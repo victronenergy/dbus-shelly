@@ -50,7 +50,7 @@ class Server(object):
 		# Tell the meter to send a full status
 		await socket.send(json.dumps({
 			"id": "GetDeviceInfo-{}".format(next(tx_count)),
-			"method":"Shelly.GetDeviceInfo"
+			"method": "Shelly.GetDeviceInfo"
 		}))
 
 		while not m.destroyed:
