@@ -1,8 +1,5 @@
 # Venus driver for Shelly energy meters
 
-**NOTE** this project was abandoned before making its way into Venus OS. Therefore, see GX documentation, ie. docs of for example the Cerbo GX, for supported energy meters. And see https://www.victronenergy.com/meters-and-sensors/energy-meter.
-
-
 This is a VenusOS driver for Gen2 Shelly energy meters.
 
 ## Preferred mode of installation
