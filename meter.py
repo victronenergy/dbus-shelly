@@ -1,3 +1,5 @@
+import sys
+import os
 import asyncio
 import logging
 from asyncio.exceptions import TimeoutError # Deprecated in 3.11
@@ -7,6 +9,8 @@ from dbus_next.aio import MessageBus
 from __main__ import VERSION
 from __main__ import __file__ as MAIN_FILE
 
+# aiovelib
+sys.path.insert(1, os.path.join(os.path.dirname(__file__), 'ext', 'aiovelib'))
 from aiovelib.service import Service, IntegerItem, DoubleItem, TextItem
 from aiovelib.service import TextArrayItem
 from aiovelib.client import Monitor, ServiceHandler
@@ -52,7 +56,9 @@ class Meter(object):
 		try:
 			mac = data['result']['mac']
 			fw = data['result']['fw_id']
-			product = data['result']['name']
+			product = data['result']['app']
+			name = data['result']['name'] if data['result']['name'] else 'WS Shelly Power Meter'
+
 		except KeyError:
 			return False
 
@@ -70,8 +76,8 @@ class Meter(object):
 		logger.info("Connected to localsettings")
 
 		await settings.add_settings(
-			Setting(settingprefix + "/ClassAndVrmInstance", "grid:40", 0, 0, alias="instance"),
-			Setting(settingprefix + '/Position', 0, 0, 2, alias="position")
+			Setting(settingprefix + '/ClassAndVrmInstance', 'grid:40', 0, 0, alias='instance'),
+			Setting(settingprefix + '/Position', 0, 0, 2, alias='position')
 		)
 
 		# Determine role and instance
@@ -86,8 +92,10 @@ class Meter(object):
 		self.service.add_item(TextItem('/Mgmt/Connection', f"WebSocket {host}:{port}"))
 		self.service.add_item(IntegerItem('/DeviceInstance', instance))
 		self.service.add_item(IntegerItem('/ProductId', 0xB034, text=unit_productid))
-		self.service.add_item(TextItem('/ProductName', product))
+		self.service.add_item(TextItem('/ProductName', 'Shelly ' + product))
+		self.service.add_item(TextItem('/CustomName', name, writeable=True))
 		self.service.add_item(TextItem('/FirmwareVersion', fw))
+		self.service.add_item(TextItem('/Serial', mac))
 		self.service.add_item(IntegerItem('/Connected', 1))
 		self.service.add_item(IntegerItem('/RefreshTime', 100))
 
@@ -146,19 +154,29 @@ class Meter(object):
 					s['/Ac/Power'] = d["a_act_power"] + d["b_act_power"] + d["c_act_power"]
 
 			try: 
-				# Shelly Plus 1PM
-				d = data['params']['switch:0']
+				# Shelly PM
+				d = data['params']['pm1:0']
 			except KeyError:
 				pass
 			else:
 				with self.service as s:
-					try:
-						s['/Ac/L1/Voltage'] = d["voltage"]
-						s['/Ac/L1/Current'] = d["current"]
-						s['/Ac/L1/Power'] = s['/Ac/Power'] = d.get("apower", 'undefined')
-						s["/Ac/L1/Energy/Forward"] = s["/Ac/Energy/Forward"] = round(d["aenergy"]["total"]/1000, 1)
-					except KeyError:
-						pass
+					voltage = d.get("voltage")
+					if voltage is not None:
+						s['/Ac/L1/Voltage'] = voltage
+
+					current = d.get("current")
+					if current is not None:
+						s['/Ac/L1/Current'] = current
+
+					apower = d.get("apower")
+					if apower is not None:
+						s['/Ac/L1/Power'] = s['/Ac/Power'] = apower
+
+					aenergy = d.get("aenergy")
+					if aenergy is not None and "total" in aenergy:
+						s["/Ac/L1/Energy/Forward"] = s["/Ac/Energy/Forward"] = round(aenergy["total"] / 1000, 1)
+						s["/Ac/L1/Energy/Reverse"] = s["/Ac/Energy/Reverse"] = round(d["ret_aenergy"]["total"] / 1000, 1)
+
 			try:
 				d = data['params']['emdata:0']
 			except KeyError:

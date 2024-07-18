@@ -1,9 +1,8 @@
 #!/usr/bin/python3
 
-VERSION = "0.6"
+VERSION = "0.6.1"
 
 import sys
-import os
 import asyncio
 import websockets
 import logging
@@ -12,14 +11,8 @@ import json
 import itertools
 from argparse import ArgumentParser
 
-import asyncio
-
 # 3rd party
 from dbus_next.constants import BusType
-
-# aiovelib
-sys.path.insert(1, os.path.join(os.path.dirname(__file__), 'ext', 'aiovelib'))
-from aiovelib.service import Service
 
 # local modules
 from meter import Meter
