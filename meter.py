@@ -154,7 +154,7 @@ class Meter(object):
 					s['/Ac/Power'] = d["a_act_power"] + d["b_act_power"] + d["c_act_power"]
 
 			try: 
-				# Shelly PM
+				# Shelly PM mini
 				d = data['params']['pm1:0']
 			except KeyError:
 				pass
@@ -176,6 +176,30 @@ class Meter(object):
 					if aenergy is not None and "total" in aenergy:
 						s["/Ac/L1/Energy/Forward"] = s["/Ac/Energy/Forward"] = round(aenergy["total"] / 1000, 1)
 						s["/Ac/L1/Energy/Reverse"] = s["/Ac/Energy/Reverse"] = round(d["ret_aenergy"]["total"] / 1000, 1)
+      
+      try:
+        # Shelly 1PM mini
+        d = data['params']['switch:0']
+      except KeyError:
+        pass
+      else:
+        with self.service as s:
+          voltage = d.get("voltage")
+          if voltage is not None:
+            s['/Ac/L1/Voltage'] = voltage
+
+          current = d.get("current")
+          if current is not None:
+            s['/Ac/L1/Current'] = current
+
+          apower = d.get("apower")
+          if apower is not None:
+            s['/Ac/L1/Power'] = s['/Ac/Power'] = apower
+
+          aenergy = d.get("aenergy")
+          if aenergy is not None and "total" in aenergy:
+            s["/Ac/L1/Energy/Forward"] = s["/Ac/Energy/Forward"] = round(aenergy["total"] / 1000, 1)
+            s["/Ac/L1/Energy/Reverse"] = s["/Ac/Energy/Reverse"] = round(d["ret_aenergy"]["total"] / 1000, 1)
 
 			try:
 				d = data['params']['emdata:0']
