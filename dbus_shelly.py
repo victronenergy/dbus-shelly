@@ -40,15 +40,19 @@ class Server(object):
 
 		self.meters[socket.remote_address] = m = self.make_meter()
 
-		# Tell the meter to send a full status
+        # Request device info
 		await socket.send(json.dumps({
-			"id": "GetDeviceInfo-{}".format(next(tx_count)),
+            "id": f"GetDeviceInfo-{next(tx_count)}",
 			"method": "Shelly.GetDeviceInfo"
 		}))
+
+        device_info_received = False
+        message_queue = []
 
 		while not m.destroyed:
 			# Decode data, and dispatch it to the gevent mainloop
 			try:
+                # Receive and parse the WebSocket message
 				data = json.loads(await socket.recv())
 			except ValueError:
 				logger.error("Malformed data in json payload")
@@ -57,11 +61,22 @@ class Server(object):
 				m.destroy()
 				break
 			else:
+                # Check if the message is a response to the device info request
 				if str(data.get('id', '')).startswith('GetDeviceInfo-'):
 					if not await m.start(*socket.remote_address, data):
 						logger.info("Failed to start meter for " + str(socket.remote_address))
 						m.destroy()
 						break
+                    # Set the flag to indicate that device info has been received
+                    device_info_received = True
+                    # Process any queued messages
+                    for queued_data in message_queue:
+                        await m.update(queued_data)
+                    message_queue.clear()
+                else:
+                    # Queue messages if device info has not been received
+                    if not device_info_received:
+                        message_queue.append(data)
 				else:
 					await m.update(data)
 
