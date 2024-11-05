@@ -1,3 +1,5 @@
+import sys
+import os
 import asyncio
 import logging
 from asyncio.exceptions import TimeoutError # Deprecated in 3.11
@@ -7,6 +9,8 @@ from dbus_next.aio import MessageBus
 from __main__ import VERSION
 from __main__ import __file__ as MAIN_FILE
 
+# aiovelib
+sys.path.insert(1, os.path.join(os.path.dirname(__file__), 'ext', 'aiovelib'))
 from aiovelib.service import Service, IntegerItem, DoubleItem, TextItem
 from aiovelib.service import TextArrayItem
 from aiovelib.client import Monitor, ServiceHandler
@@ -16,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 class LocalSettings(SettingsService, ServiceHandler):
 	pass
-		
+
 # Text formatters
 unit_watt = lambda v: "{:.0f}W".format(v)
 unit_volt = lambda v: "{:.1f}V".format(v)
@@ -34,7 +38,7 @@ class Meter(object):
 
 	async def wait_for_settings(self):
 		""" Attempt a connection to localsettings. If it does not show
-		    up within 5 seconds, return None. """
+			up within 5 seconds, return None. """
 		try:
 			return await asyncio.wait_for(
 				self.monitor.wait_for_service(SETTINGS_SERVICE), 5)
@@ -42,24 +46,27 @@ class Meter(object):
 			pass
 
 		return None
-	
+
 	def get_settings(self):
 		""" Non-async version of the above. Return the settings object
-		    if known. Otherwise return None. """
+			if known. Otherwise return None. """
 		return self.monitor.get_service(SETTINGS_SERVICE)
 
 	async def start(self, host, port, data):
 		try:
 			mac = data['result']['mac']
 			fw = data['result']['fw_id']
-		except KeyError:
+			product = data['result']['app']
+			name = data['result']['name'] if data['result']['name'] else 'WS Shelly Power Meter'
+		except KeyError as e:
+			logger.error(f"Missing key in data: {e}")
 			return False
 
 		# Connect to dbus, localsettings
 		bus = await MessageBus(bus_type=self.bus_type).connect()
 		self.monitor = await Monitor.create(bus, self.settings_changed)
 
-		settingprefix = '/Settings/Devices/shelly_' + mac
+		settingprefix = f'/Settings/Devices/shelly_{mac}'
 		logger.info("Waiting for localsettings")
 		settings = await self.wait_for_settings()
 		if settings is None:
@@ -68,25 +75,29 @@ class Meter(object):
 
 		logger.info("Connected to localsettings")
 
+		# Get or create settings with default values
 		await settings.add_settings(
-			Setting(settingprefix + "/ClassAndVrmInstance", "grid:40", 0, 0, alias="instance"),
-			Setting(settingprefix + '/Position', 0, 0, 2, alias="position")
+			Setting(settingprefix + '/ClassAndVrmInstance', 'pvinverter:41', 0, 0, alias='instance'),
+			Setting(settingprefix + '/Position', 0, 0, 2, alias='position'),
+			Setting(settingprefix + '/CustomName', name, 0, 0, alias='custom_name')
 		)
 
-		# Determine role and instance
+		# Get current role and instance
 		role, instance = self.role_instance(
 			settings.get_value(settings.alias("instance")))
 
 		# Set up the service
-		self.service = await Service.create(bus, "com.victronenergy.{}.shelly_{}".format(role, mac))
+		self.service = await Service.create(bus, f"com.victronenergy.{role}.shelly_{mac}")
 
+		# Add all the service items
 		self.service.add_item(TextItem('/Mgmt/ProcessName', MAIN_FILE))
 		self.service.add_item(TextItem('/Mgmt/ProcessVersion', VERSION))
 		self.service.add_item(TextItem('/Mgmt/Connection', f"WebSocket {host}:{port}"))
 		self.service.add_item(IntegerItem('/DeviceInstance', instance))
 		self.service.add_item(IntegerItem('/ProductId', 0xB034, text=unit_productid))
-		self.service.add_item(TextItem('/ProductName', "Shelly energy meter"))
+		self.service.add_item(TextItem('/ProductName', 'Shelly ' + product))
 		self.service.add_item(TextItem('/FirmwareVersion', fw))
+		self.service.add_item(TextItem('/Serial', mac))
 		self.service.add_item(IntegerItem('/Connected', 1))
 		self.service.add_item(IntegerItem('/RefreshTime', 100))
 
@@ -102,30 +113,42 @@ class Meter(object):
 				settings.get_value(settings.alias("position")),
 				writeable=True, onchange=self.position_changed))
 
+        # Custom name
+		self.service.add_item(TextItem('/CustomName', 
+			settings.get_value(settings.alias("custom_name")), 
+			writeable=True, onchange=self.name_changed))
+
 		# Meter paths
 		self.service.add_item(DoubleItem('/Ac/Energy/Forward', None, text=unit_kwh))
 		self.service.add_item(DoubleItem('/Ac/Energy/Reverse', None, text=unit_kwh))
-		self.service.add_item(DoubleItem('/Ac/Power', None, text=unit_watt))
-		for prefix in (f"/Ac/L{x}" for x in range(1, 4)):
+		self.service.add_item(DoubleItem('/Ac/Power', 0, text=unit_watt))
+		self.service.add_item(DoubleItem('/Ac/L1/Voltage', 230, text=unit_volt))
+		self.service.add_item(DoubleItem('/Ac/L1/Current', 0, text=unit_amp))
+		self.service.add_item(DoubleItem('/Ac/L1/Power', 0, text=unit_watt))
+		self.service.add_item(DoubleItem('/Ac/L1/Energy/Forward', None, text=unit_kwh))
+		self.service.add_item(DoubleItem('/Ac/L1/Energy/Reverse', None, text=unit_kwh))
+		for prefix in (f"/Ac/L{x}" for x in range(2, 4)):
 			self.service.add_item(DoubleItem(prefix + '/Voltage', None, text=unit_volt))
 			self.service.add_item(DoubleItem(prefix + '/Current', None, text=unit_amp))
 			self.service.add_item(DoubleItem(prefix + '/Power', None, text=unit_watt))
 			self.service.add_item(DoubleItem(prefix + '/Energy/Forward', None, text=unit_kwh))
 			self.service.add_item(DoubleItem(prefix + '/Energy/Reverse', None, text=unit_kwh))
 
+		logger.info("Service items successfully added")
 		return True
 
 	def destroy(self):
 		if self.service is not None:
 			self.service.__del__()
-		self.service = None
+			self.service = None
 		self.settings = None
 		self.destroyed = True
-	
+
 	async def update(self, data):
 		# NotifyStatus has power, current, voltage and energy values
-		if self.service and data.get('method') == 'NotifyStatus':
+		if self.service and data.get('method') in {'NotifyStatus', 'NotifyFullStatus'}:
 			try:
+				# Shelly 3EM
 				d = data['params']['em:0']
 			except KeyError:
 				pass
@@ -142,6 +165,25 @@ class Meter(object):
 					s['/Ac/L3/Power'] = d["c_act_power"]
 
 					s['/Ac/Power'] = d["a_act_power"] + d["b_act_power"] + d["c_act_power"]
+
+			# Process Shelly PM mini and 1PM mini devices
+			d = data['params'].get('pm1:0', data['params'].get('switch:0', None))
+			if d:
+				with self.service as s:
+					voltage = d.get("voltage")
+					if voltage:
+						s['/Ac/L1/Voltage'] = voltage
+					current = d.get("current")
+					if current:
+						s['/Ac/L1/Current'] = abs(current)
+					apower = d.get("apower")
+					if apower:
+						s['/Ac/L1/Power'] = s['/Ac/Power'] = abs(apower)
+
+					aenergy = d.get("aenergy")
+					if aenergy and "total" in aenergy:
+						s["/Ac/L1/Energy/Forward"] = s["/Ac/Energy/Forward"] = round(aenergy["total"] / 1000, 1)
+						s["/Ac/L1/Energy/Reverse"] = s["/Ac/Energy/Reverse"] = round(d.get("ret_aenergy")["total"] / 1000, 1)
 
 			try:
 				d = data['params']['emdata:0']
@@ -191,4 +233,12 @@ class Meter(object):
 			return False
 
 		settings.set_value(settings.alias("position"), val)
+		return True
+
+	def name_changed(self, val):
+		settings = self.get_settings()
+		if settings is None:
+			return False
+
+		settings.set_value(settings.alias("custom_name"), val)
 		return True

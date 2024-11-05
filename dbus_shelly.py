@@ -1,9 +1,8 @@
 #!/usr/bin/python3
 
-VERSION = "0.6"
+VERSION = "0.6.1"
 
 import sys
-import os
 import asyncio
 import websockets
 import logging
@@ -12,14 +11,8 @@ import json
 import itertools
 from argparse import ArgumentParser
 
-import asyncio
-
 # 3rd party
 from dbus_next.constants import BusType
-
-# aiovelib
-sys.path.insert(1, os.path.join(os.path.dirname(__file__), 'ext', 'aiovelib'))
-from aiovelib.service import Service
 
 # local modules
 from meter import Meter
@@ -34,45 +27,60 @@ logger.setLevel(logging.INFO)
 tx_count = itertools.cycle(range(1000, 5000))
 
 class Server(object):
-	def __init__(self, make_meter):
-		self.meters = {}
-		self.make_meter = make_meter
+    def __init__(self, make_meter):
+        self.meters = {}
+        self.make_meter = make_meter
 
-	async def __call__(self, socket, path):
-		# If we have a connection to the meter already, kill it and
-		# make a new one
-		if (m := self.meters.get(socket.remote_address)) is not None:
-			m.destroy()
-			del self.meters[socket.remote_address]
+    async def __call__(self, socket, path):
+        # If we have a connection to the meter already, kill it and
+        # make a new one
+        if (m := self.meters.get(socket.remote_address)) is not None:
+            m.destroy()
+            del self.meters[socket.remote_address]
 
-		self.meters[socket.remote_address] = m = self.make_meter()
+        self.meters[socket.remote_address] = m = self.make_meter()
 
-		# Tell the meter to send a full status
-		await socket.send(json.dumps({
-			"id": "GetDeviceInfo-{}".format(next(tx_count)),
-			"method":"Shelly.GetDeviceInfo"
-		}))
+        # Request device info
+        await socket.send(json.dumps({
+            "id": f"GetDeviceInfo-{next(tx_count)}",
+            "method": "Shelly.GetDeviceInfo"
+        }))
 
-		while not m.destroyed:
+        device_info_received = False
+        message_queue = []
+
+        while not m.destroyed:
 			# Decode data, and dispatch it to the gevent mainloop
-			try:
-				data = json.loads(await socket.recv())
-			except ValueError:
-				logger.error("Malformed data in json payload")
-			except websockets.exceptions.WebSocketException:
-				logger.info("Lost connection to " + str(socket.remote_address))
-				m.destroy()
-				break
-			else:
-				if str(data.get('id', '')).startswith('GetDeviceInfo-'):
-					if not await m.start(*socket.remote_address, data):
-						logger.info("Failed to start meter for " + str(socket.remote_address))
-						m.destroy()
-						break
-				else:
-					await m.update(data)
+            try:
+                # Receive and parse the WebSocket message
+                data = json.loads(await socket.recv())
+            except ValueError:
+                logger.error("Malformed data in json payload")
+            except websockets.exceptions.WebSocketException:
+                logger.info("Lost connection to " + str(socket.remote_address))
+                m.destroy()
+                break
+            else:
+                # Check if the message is a response to the device info request
+                if str(data.get('id', '')).startswith('GetDeviceInfo-'):
+                    if not await m.start(*socket.remote_address, data):
+                        logger.info("Failed to start meter for " + str(socket.remote_address))
+                        m.destroy()
+                        break
+                    # Set the flag to indicate that device info has been received
+                    device_info_received = True
+                    # Process any queued messages
+                    for queued_data in message_queue:
+                        await m.update(queued_data)
+                    message_queue.clear()
+                else:
+                    # Queue messages if device info has not been received
+                    if not device_info_received:
+                        message_queue.append(data)
+                    else:
+                        await m.update(data)
 
-		del self.meters[socket.remote_address]
+        del self.meters[socket.remote_address]
 
 def main():
 	parser = ArgumentParser(description=sys.argv[0])
