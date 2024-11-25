@@ -15,7 +15,10 @@ from argparse import ArgumentParser
 import asyncio
 
 # 3rd party
-from dbus_next.constants import BusType
+try:
+	from dbus_fast.constants import BusType
+except ImportError:
+	from dbus_next.constants import BusType
 
 # aiovelib
 sys.path.insert(1, os.path.join(os.path.dirname(__file__), 'ext', 'aiovelib'))
@@ -84,6 +87,9 @@ def main():
 
 	logging.basicConfig(format='%(levelname)-8s %(message)s',
 			level=(logging.DEBUG if args.debug else logging.INFO))
+
+	logging.info("Using dbus lib {}".format(
+		BusType.__module__.split('.')[0]))
 
 	bus_type = {
 		"system": BusType.SYSTEM,

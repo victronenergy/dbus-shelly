@@ -2,7 +2,10 @@ import asyncio
 import logging
 from asyncio.exceptions import TimeoutError # Deprecated in 3.11
 
-from dbus_next.aio import MessageBus
+try:
+	from dbus_fast.aio import MessageBus
+except ImportError:
+	from dbus_next.aio import MessageBus
 
 from __main__ import VERSION
 from __main__ import __file__ as MAIN_FILE
