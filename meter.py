@@ -78,7 +78,7 @@ class Meter(object):
 			settings.get_value(settings.alias("instance")))
 
 		# Set up the service
-		self.service = await Service.create(bus, "com.victronenergy.{}.shelly_{}".format(role, mac))
+		self.service = Service(bus, "com.victronenergy.{}.shelly_{}".format(role, mac))
 
 		self.service.add_item(TextItem('/Mgmt/ProcessName', MAIN_FILE))
 		self.service.add_item(TextItem('/Mgmt/ProcessVersion', VERSION))
@@ -113,6 +113,7 @@ class Meter(object):
 			self.service.add_item(DoubleItem(prefix + '/Energy/Forward', None, text=unit_kwh))
 			self.service.add_item(DoubleItem(prefix + '/Energy/Reverse', None, text=unit_kwh))
 
+		await self.service.register()
 		return True
 
 	def destroy(self):
