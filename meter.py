@@ -105,6 +105,10 @@ class Meter(object):
 				settings.get_value(settings.alias("position")),
 				writeable=True, onchange=self.position_changed))
 
+		# Indicate when we're masquerading for another device
+		if role != "grid":
+			self.service.add_item(IntegerItem('/IsGenericEnergyMeter', 1))
+
 		# Meter paths
 		self.service.add_item(DoubleItem('/Ac/Energy/Forward', None, text=unit_kwh))
 		self.service.add_item(DoubleItem('/Ac/Energy/Reverse', None, text=unit_kwh))
