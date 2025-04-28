@@ -11,7 +11,7 @@ import ssl
 import json
 import itertools
 from argparse import ArgumentParser
-
+from shelly_switch import ShellyDiscovery
 import asyncio
 
 # 3rd party
@@ -96,9 +96,13 @@ def main():
 		"session": BusType.SESSION
 	}.get(args.dbus, BusType.SESSION)
 
+	shellyDiscovery = ShellyDiscovery(bus_type)
+
 	mainloop = asyncio.get_event_loop()
 	mainloop.run_until_complete(
 		websockets.serve(Server(lambda: Meter(bus_type)), '', 8000))
+
+	mainloop.run_until_complete(shellyDiscovery.start())
 
 	try:
 		logger.info("Starting main loop")
