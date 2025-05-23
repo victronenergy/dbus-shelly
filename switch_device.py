@@ -86,8 +86,16 @@ class SwitchDevice(object):
 		self.service.add_item(IntegerItem('/DeviceInstance', int(self.settings.get_value(self.settings.alias('deviceinstance')).split(':')[-1])))
 
 	@property
+	def serial(self):
+		return self._serial
+
+	@property
 	def customname(self):
 		return self.service.get_item("/CustomName").value
+
+	def add_item_to_service(self, item):
+		""" Add an item to the service. """
+		return self.service.add_item(item)
 
 	@customname.setter
 	def customname(self, v):

@@ -7,7 +7,10 @@ import argparse
 import asyncio
 from functools import partial
 import logging
+import uuid
 import aiohttp
+import datetime
+import pytz
 # aiovelib
 sys.path.insert(1, os.path.join(os.path.dirname(__file__), 'ext', 'aiovelib'))
 from aiovelib.service import Service, IntegerItem, DoubleItem, TextItem
@@ -25,6 +28,36 @@ from zeroconf.asyncio import (
 from aioshelly.common import ConnectionOptions
 from aioshelly.rpc_device import RpcDevice, WsServer
 from aioshelly.rpc_device import RpcDevice, WsServer
+from s2 import S2ResourceManagerItem
+from s2python.s2_control_type import NoControlControlType, OMBCControlType
+from s2python.s2_connection import AssetDetails
+from s2python.generated.gen_s2 import CommodityQuantity, RoleType
+from s2python.common.power_range import PowerRange
+from s2python.common.transition import Transition
+from s2python.common.timer import Timer
+
+from s2python.common import (
+	ReceptionStatusValues,
+	ReceptionStatus,
+	Handshake,
+	EnergyManagementRole,
+	Role,
+	HandshakeResponse,
+	ResourceManagerDetails,
+	Duration,
+	PowerMeasurement,
+	PowerValue,
+	Currency,
+	SelectControlType,
+)
+
+from s2python.ombc import (
+    OMBCInstruction,
+    OMBCOperationMode,
+    OMBCTimerStatus,
+    OMBCStatus,
+    OMBCSystemDescription,
+)
 
 try:
 	from dbus_fast.aio import MessageBus
@@ -42,13 +75,176 @@ VERSION = "0.1"
 logger = logging.getLogger('dbus-shelly')
 logger.setLevel(logging.INFO)
 
+class SwitchResourceManager(OMBCControlType):
+	MINIMUM_POWER_CHANGE = 0.05 # change in percentage before a power measurement is sent
+	_switch = None
+	_rm_item = None
+	_channel = None
+	_previous_power = 0
+	_status = None
+	_id_off = uuid.uuid4()
+	_id_on = uuid.uuid4()
+
+	def __init__(self, switch, channel):
+		super().__init__()
+		self._switch = switch
+
+		if channel >= switch.num_channels:
+			logger.error("Channel %d does not exist on switch %s", channel, switch.serial)
+			return
+		self._channel = channel
+		self._rm_details = ResourceManagerDetails(
+			message_id=uuid.uuid4(),
+			resource_id=uuid.uuid4(),
+			provides_forecast=False,
+			provides_power_measurement_types=[CommodityQuantity.ELECTRIC_POWER_L1],
+			instruction_processing_delay=Duration(0),
+			available_control_types=['OPERATION_MODE_BASED_CONTROL'],
+			roles=[Role(role=RoleType.ENERGY_CONSUMER, commodity='ELECTRICITY')],
+			name="Victron Shelly Switch",
+			manufacturer="Shelly",
+			firmware_version=VERSION,
+			serial_number=switch.serial
+		)
+
+		self._ombc_system_description = OMBCSystemDescription(
+			message_id=uuid.uuid4(),
+			valid_from=datetime.datetime.now(tz=pytz.UTC),
+			operation_modes=[
+				OMBCOperationMode(
+					id=self._id_off,
+					diagnostic_label="off",
+					power_ranges=[
+						PowerRange(
+							start_of_range=0,
+							end_of_range=0,
+							commodity_quantity=CommodityQuantity.ELECTRIC_POWER_L1,
+						)
+					],
+					abnormal_condition_only=False
+				),
+				OMBCOperationMode(
+					id=self._id_on,
+					diagnostic_label="on",
+					power_ranges=[
+						PowerRange(
+							start_of_range=1000,
+							end_of_range=1000,
+							commodity_quantity=CommodityQuantity.ELECTRIC_POWER_L1,
+						)
+					],
+					abnormal_condition_only=False
+				)
+			],
+			transitions=[
+				Transition(
+					id=uuid.uuid4(),
+					from_=self._id_off,
+					to=self._id_on,
+					start_timers=[],
+					blocking_timers=[],
+					abnormal_condition_only=False
+				),
+				Transition(
+					id=uuid.uuid4(),
+					from_=self._id_on,
+					to=self._id_off,
+					start_timers=[],
+					blocking_timers=[],
+					abnormal_condition_only=False
+				)
+			],
+			timers=[
+				Timer(
+					id=uuid.uuid4(),
+					duration=Duration(0),
+				)
+			]
+		)
+
+		self._switch.service.add_item(S2ResourceManagerItem("/SwitchableOutput/%d/S2" % channel, control_types=[OMBCControlType], asset_details=self._rm_details))
+		self._rm_item = self._switch.service.get_item("/SwitchableOutput/%d/S2" % channel)
+		self._switch.set_values_changed_callback(self.on_values_changed)
+
+	def handle_instruction(self, conn, msg, send_okay):
+		logger.debug("Handle instruction: %s", msg)
+		pass
+
+	def activate(self, conn):
+		logger.debug("Activate PEBCControlTypeSwitch")
+
+		try:
+			self._rm_item.send_msg_and_await_reception_status_sync(self._ombc_system_description)
+		except Exception as e:
+			logger.error("Failed to send OMBCSystemDescription: %s", e)
+			return
+
+	def deactivate(self, conn):
+		logger.debug("Deactivate PEBCControlTypeSwitch")
+
+	def on_values_changed(self, values):
+		if 'Status' in values and values['Status'] != self._status:
+			self._status = values['Status']
+
+		if 'P' in values:
+			power = values['P']
+			if power > self._previous_power * 1 + self.MINIMUM_POWER_CHANGE or \
+					power < self._previous_power * 1 - self.MINIMUM_POWER_CHANGE:
+				self._previous_power = power
+				loop = asyncio.get_event_loop()
+				loop.create_task(self.send_power_measurement())
+
+	async def send_status(self):
+		try:
+			await self._rm_item.send_msg_and_await_reception_status(
+				OMBCStatus(
+					message_id=uuid.uuid4(),
+					active_operation_mode_id=self._id_on if self._status == STATUS_ON else self._id_off,
+					operation_mode_factor=1,
+					previous_operation_mode_id=self._id_off if self._status == STATUS_ON else self._id_on,
+					transition_timestamp=datetime.datetime.now(tz=pytz.UTC),
+				)
+			)
+		except Exception as e:
+			logger.error("Failed to send status: %s", e)
+
+
+	async def send_power_measurement(self):
+		try:
+			await self._rm_item.send_msg_and_await_reception_status(
+				PowerMeasurement(
+					message_id=uuid.uuid4(),
+					measurement_timestamp=datetime.datetime.now(tz=pytz.UTC),
+					values=[
+						PowerValue(
+							commodity_quantity=CommodityQuantity.ELECTRIC_POWER_L1,
+							value=self._switch.get_power(self._channel),
+						)
+					]
+				)
+			)
+		except Exception as e:
+			logger.error("Failed to send power measurement: %s", e)
+
 class ShellySwitch(SwitchDevice):
 	shelly_device = None
 	ws_context = None
 	aiohttp_session = None
 	_server = None
 	_mac = None
+	_num_channels = 0
 	_state_change_pending = False
+	_values_changed_callback = None
+
+	@property
+	def num_channels(self):
+		return self._num_channels
+
+	def get_power(self, channel):
+		return self.service.get_item("/SwitchableOutput/{}/P".format(channel)).value
+
+	def set_values_changed_callback(self, callback):
+		self._values_changed_callback = callback
 
 	@classmethod
 	async def create(cls, bus_type, mac, server, version=VERSION, productName="Shelly switch", processName=__file__):
@@ -81,8 +277,8 @@ class ShellySwitch(SwitchDevice):
 
 		await self.init()
 
-		channels = await self.get_number_of_channels()
-		for channel in range(channels):
+		self._num_channels = await self.get_number_of_channels()
+		for channel in range(self._num_channels):
 			await self.add_channel(channel)
 			self.shelly_device.subscribe_updates(partial(self.device_updated, channel))
 			status = await self.request_channel_status(channel)
@@ -122,7 +318,6 @@ class ShellySwitch(SwitchDevice):
 		return resp
 
 	async def close(self):
-		logger.info("Closing shelly device %s", self._mac)
 		await self.shelly_device.shutdown()
 		await self.aiohttp_session.close()
 		if self.service is not None:
@@ -151,25 +346,27 @@ class ShellySwitch(SwitchDevice):
 
 	def parse_status(self, channel, status_json):
 		status = STATUS_ON if status_json["output"] else STATUS_OFF
-		state = self.service.get_item("/SwitchableOutput/{}/State".format(channel)).value
+
+		values = {}
+		try:
+			values['State'] = 1 if status == STATUS_ON else 0
+			values['Status'] = status
+			values['V'] = status_json["voltage"]
+			values['I'] = status_json["current"]
+			values['P'] = status_json["apower"]
+			values['T'] = status_json["temperature"]["tC"]
+		except:
+			pass
+
 		with self.service as s:
-			s["/SwitchableOutput/{}/Status".format(channel)] = status
-			if status == STATUS_ON and state != 1:
-				s["/SwitchableOutput/{}/State".format(channel)] = 1
-			elif status == STATUS_OFF and state != 0:
-				s["/SwitchableOutput/{}/State".format(channel)] = 0
+			for key, value in values.items():
+				if value is not None:
+					if self.service.get_item("/SwitchableOutput/{}/{}".format(channel, key)) is None:
+						self.service.add_item(DoubleItem('/SwitchableOutput/{}/{}'.format(channel, key), value=value))
+					s["/SwitchableOutput/{}/{}".format(channel, key)] = value
 
-		if status_json["voltage"] is not None:
-			if self.service.get_item("/SwitchableOutput/{}/Voltage".format(channel)) is None:
-				self.service.add_item(DoubleItem('/SwitchableOutput/%d/Voltage' % channel, value=0))
-			with self.service as s:
-				s["/SwitchableOutput/{}/Voltage".format(channel)] = status_json["voltage"]
-
-		if status_json["current"] is not None:
-			if self.service.get_item("/SwitchableOutput/{}/Current".format(channel)) is None:
-				self.service.add_item(DoubleItem('/SwitchableOutput/%d/Current' % channel, value=0))
-			with self.service as s:
-				s["/SwitchableOutput/{}/Current".format(channel)] = status_json["current"]
+		if self._values_changed_callback:
+			self._values_changed_callback(values)
 
 	def set_state_cb(self, channel, value):
 		if self._state_change_pending:
@@ -237,14 +434,20 @@ class ShellyDiscovery:
 		self.settings = await asyncio.wait_for(
 			settingsmonitor.wait_for_service(SETTINGS_SERVICE), 5)
 
+	async def add_shelly_with_rm(self, mac, server):
+		if mac not in self.shelly_switches:
+			await self.add_shelly(mac, server)
+
+		# Todo: Add channel selection method for S2
+		rm = SwitchResourceManager(self.shelly_switches[mac], channel=0)
+
 	async def add_shelly(self, mac, server):
 		s = await ShellySwitch.create(
 			self.bus_type,
 			mac,
 			server,
 		)
-		loop = asyncio.get_event_loop()
-		loop.create_task(s.start())
+		await s.start()
 		self.shelly_switches[mac] = s
 
 	async def remove_shelly(self, mac):
@@ -287,7 +490,7 @@ class ShellyDiscovery:
 				self.service.add_item(TextItem('/Devices/{}/Mac'.format(mac), mac))
 				self.service.add_item(IntegerItem('/Devices/{}/Enabled'.format(mac), value=enabled, writeable=True, onchange=partial(self.on_enabled_changed, mac)))
 				if enabled:
-					self.on_enabled_changed(mac, 1)
+					self.on_enabled_changed(mac, enabled)
 		elif state_change == ServiceStateChange.Removed:
 			if mac in self.shellies:
 				logger.info("Shelly device: %s disappeared", mac)
@@ -297,14 +500,15 @@ class ShellyDiscovery:
 				self.service.remove_item('/Devices/{}/Enabled'.format(mac))
 
 	def on_enabled_changed(self, mac, value):
-		if value not in (0, 1):
+		if value not in (0, 1, 2):
 			return False
 		server = self.service['/Devices/{}/Server'.format(mac)]
+		loop = asyncio.get_event_loop()
 		if value == 1:
-			loop = asyncio.get_event_loop()
 			loop.create_task(self.add_shelly(mac, server))
-		else:
-			loop = asyncio.get_event_loop()
+		elif value == 0:
 			loop.create_task(self.remove_shelly(mac))
+		elif value == 2:
+			loop.create_task(self.add_shelly_with_rm(mac, server))
 		self.settings.set_value_async(self.settings.alias('enabled_%s' % mac), value)
 		return True
