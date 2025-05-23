@@ -99,6 +99,8 @@ def main():
 	shellyDiscovery = ShellyDiscovery(bus_type)
 
 	mainloop = asyncio.get_event_loop()
+
+	# This loop should be removed one day.
 	mainloop.run_until_complete(
 		websockets.serve(Server(lambda: Meter(bus_type)), '', 8000))
 
