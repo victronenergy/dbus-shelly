@@ -55,6 +55,8 @@ class SettingsMonitor(Monitor):
 class SwitchDevice(object):
 	service = None
 	settings = None
+	_runningloop = None
+	CHANNEL_VALID_FUNCTIONS = (1 << OutputFunction.MANUAL)
 
 	@classmethod
 	async def create(cls, bus_type, product_id, tty="", serial="", version="", connection="", productName="Switching device", processName=""):
@@ -64,6 +66,7 @@ class SwitchDevice(object):
 		return self
 
 	def __init__(self, bus, product_id, tty, serial, version, connection, productName, processName):
+		self._runningloop = asyncio.get_event_loop()
 		self._productId = product_id
 		self._serial = serial
 		self._tty = tty
@@ -204,6 +207,7 @@ class SwitchDevice(object):
 			)
 
 		self.restore_settings(channel)
+		self.initialize_channel(channel)
 
 	def restore_settings(self, channel):
 		try:
@@ -215,6 +219,16 @@ class SwitchDevice(object):
 				s['/SwitchableOutput/%s/Settings/Type' % channel] = self.settings.get_value(self.settings.alias('Type_%s' % channel))
 		except :
 			pass
+
+	def set_channel_values(self, channel, values):
+		with self.service as s:
+			for key, value in values.items():
+				if value is not None:
+					if self.service.get_item("/SwitchableOutput/{}/{}".format(channel, key)) is None:
+						self.service.add_item(DoubleItem('/SwitchableOutput/{}/{}'.format(channel, key), value=value))
+					s["/SwitchableOutput/{}/{}".format(channel, key)] = value
+
+		self.on_channel_values_changed(channel, values)
 
 	def _module_state_text_callback(self, value):
 		if value == MODULE_STATE_CONNECTED:
@@ -319,6 +333,12 @@ class SwitchDevice(object):
 				str += ", "
 			str += "S2 resource manager"
 		return str
+
+	def on_channel_values_changed(self, channel, values):
+		pass
+
+	def initialize_channel(self, channel):
+		pass
 
 	def on_channel_type_changed(self, channel, value):
 		pass
