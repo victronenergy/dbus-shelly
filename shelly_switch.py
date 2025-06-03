@@ -145,9 +145,41 @@ class SwitchDeviceControlType(OMBCControlType):
 			]
 		)
 
+	def values_changed(self, values):
+		if 'Status' in values and self._status != values['Status']:
+			self._status = values['Status']
+			self.send_status()
+
 	def handle_instruction(self, conn, msg, send_okay):
 		logger.info("Handle instruction: %s", msg)
-		pass
+		if not isinstance(msg, OMBCInstruction):
+			logger.error("Received message is not an OMBCInstruction: %s", msg)
+			return
+
+		if not self._active:
+			logger.warning("OMBCControlTypeSwitch is not active, ignoring instruction")
+			return
+
+		op_id = msg.operation_mode_id
+		if op_id not in (self._id_off, self._id_on):
+			logger.error("Received unknown operation mode ID: %s", op_id)
+			return
+
+		exec_time = msg.execution_time
+		seconds = (datetime.datetime.now(tz=pytz.UTC) - datetime.datetime.strptime(exec_time, "%Y-%m-%d %H:%M:%S.%f%z")).total_seconds()
+		task = asyncio.create_task(
+			self._set_operation_mode(op_id, 0 if seconds <= 0 else seconds)
+		)
+		background_tasks.add(task)
+		task.add_done_callback(background_tasks.discard)
+
+	async def _set_operation_mode(self, op_id, wait):
+		if (wait):
+			logger.info("Waiting for %d seconds before setting operation mode to %s", wait, "on" if op_id == self._id_on else "off")
+			await asyncio.sleep(wait)
+		self._rm_item.set_switch_state(1 if op_id == self._id_on else 0)
+		self._status = STATUS_ON if op_id == self._id_on else STATUS_OFF
+		logger.info("Set operation mode to %s", "on" if op_id == self._id_on else "off")
 
 	def activate(self, conn):
 		logger.info("Activate OMBCControlTypeSwitch")
@@ -228,6 +260,8 @@ class SwitchResourceManager(S2ResourceManagerItem):
 				task = loop.create_task(self.send_power_measurement())
 				background_tasks.add(task)
 				task.add_done_callback(background_tasks.discard)
+
+		self._control_type.values_changed(values)
 
 	async def send_power_measurement(self):
 		if not self._control_type.active:
