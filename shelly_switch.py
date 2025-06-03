@@ -15,6 +15,7 @@ import pytz
 sys.path.insert(1, os.path.join(os.path.dirname(__file__), 'ext', 'aiovelib'))
 from aiovelib.service import Service, IntegerItem, DoubleItem, TextItem
 from aiovelib.service import TextArrayItem
+from aiovelib.client import Service as Client
 from aiovelib.client import Monitor, ServiceHandler
 from aiovelib.localsettings import SettingsService as SettingsClient, Setting, SETTINGS_SERVICE
 
@@ -69,44 +70,26 @@ try:
 except ImportError:
 	from dbus_next.constants import BusType
 
-from switch_device import SwitchDevice, STATUS_ON, STATUS_OFF
+from switch_device import SwitchDevice, OutputType, OutputFunction, STATUS_ON, STATUS_OFF
 
 VERSION = "0.1"
 logger = logging.getLogger('dbus-shelly')
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
+background_tasks = set()
 
-class SwitchResourceManager(OMBCControlType):
-	MINIMUM_POWER_CHANGE = 0.05 # change in percentage before a power measurement is sent
-	_switch = None
-	_rm_item = None
-	_channel = None
-	_previous_power = 0
-	_status = None
+class SwitchDeviceControlType(OMBCControlType):
 	_id_off = uuid.uuid4()
 	_id_on = uuid.uuid4()
+	_previous_operation_mode = None
+	_active = False
+	_status = None
 
-	def __init__(self, switch, channel):
-		super().__init__()
-		self._switch = switch
+	@property
+	def active(self):
+		return self._active
 
-		if channel >= switch.num_channels:
-			logger.error("Channel %d does not exist on switch %s", channel, switch.serial)
-			return
-		self._channel = channel
-		self._rm_details = ResourceManagerDetails(
-			message_id=uuid.uuid4(),
-			resource_id=uuid.uuid4(),
-			provides_forecast=False,
-			provides_power_measurement_types=[CommodityQuantity.ELECTRIC_POWER_L1],
-			instruction_processing_delay=Duration(0),
-			available_control_types=['OPERATION_MODE_BASED_CONTROL'],
-			roles=[Role(role=RoleType.ENERGY_CONSUMER, commodity='ELECTRICITY')],
-			name="Victron Shelly Switch",
-			manufacturer="Shelly",
-			firmware_version=VERSION,
-			serial_number=switch.serial
-		)
-
+	def __init__(self, rm_item: S2ResourceManagerItem):
+		self._rm_item = rm_item
 		self._ombc_system_description = OMBCSystemDescription(
 			message_id=uuid.uuid4(),
 			valid_from=datetime.datetime.now(tz=pytz.UTC),
@@ -162,16 +145,12 @@ class SwitchResourceManager(OMBCControlType):
 			]
 		)
 
-		self._switch.service.add_item(S2ResourceManagerItem("/SwitchableOutput/%d/S2" % channel, control_types=[OMBCControlType], asset_details=self._rm_details))
-		self._rm_item = self._switch.service.get_item("/SwitchableOutput/%d/S2" % channel)
-		self._switch.set_values_changed_callback(self.on_values_changed)
-
 	def handle_instruction(self, conn, msg, send_okay):
-		logger.debug("Handle instruction: %s", msg)
+		logger.info("Handle instruction: %s", msg)
 		pass
 
 	def activate(self, conn):
-		logger.debug("Activate PEBCControlTypeSwitch")
+		logger.info("Activate OMBCControlTypeSwitch")
 
 		try:
 			self._rm_item.send_msg_and_await_reception_status_sync(self._ombc_system_description)
@@ -179,39 +158,82 @@ class SwitchResourceManager(OMBCControlType):
 			logger.error("Failed to send OMBCSystemDescription: %s", e)
 			return
 
+		# Set initial state
+		self._rm_item.set_switch_state(0)
+		logger.info("Initial switch state set to off")
+		self.send_status()
+		logger.info("Initial status sent")
+		self._active = True
+		logger.info("OMBCControlTypeSwitch activated")
+
+	def send_status(self):
+		operation_mode = self._id_on if self._status == STATUS_ON else self._id_off
+		try:
+			self._rm_item.send_msg_and_await_reception_status_sync(
+				OMBCStatus(
+					message_id=uuid.uuid4(),
+					active_operation_mode_id=str(self._id_on if self._status == STATUS_ON else self._id_off),
+					operation_mode_factor=1,
+					previous_operation_mode_id=self._previous_operation_mode,
+					transition_timestamp=datetime.datetime.now(tz=pytz.UTC) if self._previous_operation_mode is not None else None
+				)
+			)
+		except Exception as e:
+			logger.error("Failed to send status: %s", e)
+		finally:
+			self._previous_operation_mode = operation_mode
+
 	def deactivate(self, conn):
-		logger.debug("Deactivate PEBCControlTypeSwitch")
+		logger.info("Deactivate OMBCControlTypeSwitch")
+		self._active = False
+
+class SwitchResourceManager(S2ResourceManagerItem):
+	MINIMUM_POWER_CHANGE = 0.05 # change in percentage before a power measurement is sent
+	_switch = None
+	_channel = None
+	_previous_power = 0
+	_control_type = None
+
+	def __init__(self, switch, channel):
+		#self._bus_type = bus_type
+		self._switch = switch
+		self._channel = channel
+
+		self._rm_details = AssetDetails(
+			resource_id=uuid.uuid4(),
+			provides_forecast=False,
+			provides_power_measurements=[CommodityQuantity.ELECTRIC_POWER_L1],
+			instruction_processing_delay=Duration(0),
+			roles=[Role(role=RoleType.ENERGY_CONSUMER, commodity='ELECTRICITY')],
+			name="Victron Shelly Switch",
+			manufacturer="Shelly",
+			firmware_version=VERSION,
+			serial_number=None
+		)
+
+		self._switch.set_values_changed_callback(self.on_values_changed)
+		self._control_type = SwitchDeviceControlType(self)
+		super().__init__("/Devices/{}/S2".format(self._channel), control_types=[self._control_type], asset_details=self._rm_details)
+
+	def set_switch_state(self, state):
+		self._switch.set_state_cb(self._channel, state)
 
 	def on_values_changed(self, values):
-		if 'Status' in values and values['Status'] != self._status:
-			self._status = values['Status']
-
 		if 'P' in values:
 			power = values['P']
 			if power > self._previous_power * 1 + self.MINIMUM_POWER_CHANGE or \
 					power < self._previous_power * 1 - self.MINIMUM_POWER_CHANGE:
 				self._previous_power = power
 				loop = asyncio.get_event_loop()
-				loop.create_task(self.send_power_measurement())
-
-	async def send_status(self):
-		try:
-			await self._rm_item.send_msg_and_await_reception_status(
-				OMBCStatus(
-					message_id=uuid.uuid4(),
-					active_operation_mode_id=self._id_on if self._status == STATUS_ON else self._id_off,
-					operation_mode_factor=1,
-					previous_operation_mode_id=self._id_off if self._status == STATUS_ON else self._id_on,
-					transition_timestamp=datetime.datetime.now(tz=pytz.UTC),
-				)
-			)
-		except Exception as e:
-			logger.error("Failed to send status: %s", e)
-
+				task = loop.create_task(self.send_power_measurement())
+				background_tasks.add(task)
+				task.add_done_callback(background_tasks.discard)
 
 	async def send_power_measurement(self):
+		if not self._control_type.active:
+			return
 		try:
-			await self._rm_item.send_msg_and_await_reception_status(
+			await self.send_msg_and_await_reception_status(
 				PowerMeasurement(
 					message_id=uuid.uuid4(),
 					measurement_timestamp=datetime.datetime.now(tz=pytz.UTC),
@@ -235,6 +257,7 @@ class ShellySwitch(SwitchDevice):
 	_num_channels = 0
 	_state_change_pending = False
 	_values_changed_callback = None
+	_loop = None
 
 	@property
 	def num_channels(self):
@@ -267,6 +290,7 @@ class ShellySwitch(SwitchDevice):
 		options = ConnectionOptions(self._server, "", "")
 		self.aiohttp_session = aiohttp.ClientSession()
 		self.ws_context = WsServer()
+		self._loop = asyncio.get_event_loop()
 
 		self.shelly_device = await RpcDevice.create(self.aiohttp_session, self.ws_context, options)
 		await self.shelly_device.initialize()
@@ -285,6 +309,9 @@ class ShellySwitch(SwitchDevice):
 			if status is not None:
 				self.parse_status(channel, status)
 
+			function = self.service.get_item("/SwitchableOutput/{}/Settings/Function".format(channel)).value
+			if function and function == OutputFunction.S2_RM:
+				await self.add_rm_to_service(channel)
 		await self.service.register()
 
 	async def get_number_of_channels(self):
@@ -333,9 +360,29 @@ class ShellySwitch(SwitchDevice):
 			channel=ch,
 			output_type=1,
 			set_state_cb=partial(self.set_state_cb, ch),
+			valid_functions=(1 << OutputFunction.S2_RM),
 			name="Switch",
 			customName="Shelly Switch",
 		)
+
+	def on_channel_function_changed(self, channel, function):
+		if function == OutputFunction.S2_RM:
+			task = self._loop.create_task(self.add_rm_to_service(channel))
+			background_tasks.add(task)
+			task.add_done_callback(background_tasks.discard)
+		elif self.has_rm(channel):
+			logger.info("Removing S2 Resource Manager for channel %s", channel)
+			self.service.remove_item("/SwitchableOutput/{}/S2".format(channel))
+
+	async def add_rm_to_service(self, channel):
+		if self.has_rm(channel):
+			logger.info("S2 Resource Manager already exists for channel %s", channel)
+			return
+		logger.info("Enabling S2 Resource Manager for channel %s", channel)
+		self.service.add_item(SwitchResourceManager(self, channel))
+
+	def has_rm(self, channel):
+		return self.service.get_item("/Devices/{}/S2".format(channel)) is not None
 
 	def device_updated(self, channel, cb_device, update_type):
 		switch="switch:{}".format(channel)
@@ -372,11 +419,14 @@ class ShellySwitch(SwitchDevice):
 		if self._state_change_pending:
 			return False
 
+		if self.service.get_item("/SwitchableOutput/{}/State".format(channel)) != value:
+			with self.service as s:
+				s["/SwitchableOutput/{}/State".format(channel)] = value
+
 		self._state_change_pending = True
 		self.state = value
 
-		loop = asyncio.get_event_loop()
-		task = loop.create_task(self.shelly_device.call_rpc(
+		task = self._loop.create_task(self.shelly_device.call_rpc(
 			"Switch.Set",
 			{
 				# id is the switch channel, starting from 0
@@ -384,11 +434,13 @@ class ShellySwitch(SwitchDevice):
 				"on":True if value == 1 else False,
 			}
 		))
+		background_tasks.add(task)
 
 		def on_switch_set_task_done(arg):
 			self._state_change_pending = False
 
 		task.add_done_callback(on_switch_set_task_done)
+		task.add_done_callback(background_tasks.discard)
 		return True
 
 class SettingsMonitor(Monitor):
@@ -434,13 +486,6 @@ class ShellyDiscovery:
 		self.settings = await asyncio.wait_for(
 			settingsmonitor.wait_for_service(SETTINGS_SERVICE), 5)
 
-	async def add_shelly_with_rm(self, mac, server):
-		if mac not in self.shelly_switches:
-			await self.add_shelly(mac, server)
-
-		# Todo: Add channel selection method for S2
-		rm = SwitchResourceManager(self.shelly_switches[mac], channel=0)
-
 	async def add_shelly(self, mac, server):
 		s = await ShellySwitch.create(
 			self.bus_type,
@@ -473,7 +518,9 @@ class ShellyDiscovery:
 		if not name.startswith("shelly"):
 			return
 
-		asyncio.get_event_loop().create_task(self.update_devices(zeroconf, service_type, name, state_change))
+		task = asyncio.get_event_loop().create_task(self.update_devices(zeroconf, service_type, name, state_change))
+		background_tasks.add(task)
+		task.add_done_callback(background_tasks.discard)
 
 	async def update_devices(self, zeroconf: Zeroconf, service_type: str, name: str, state_change: ServiceStateChange):
 		info = AsyncServiceInfo(service_type, name)
@@ -500,15 +547,19 @@ class ShellyDiscovery:
 				self.service.remove_item('/Devices/{}/Enabled'.format(mac))
 
 	def on_enabled_changed(self, mac, value):
-		if value not in (0, 1, 2):
+		if value not in (0, 1):
 			return False
 		server = self.service['/Devices/{}/Server'.format(mac)]
 		loop = asyncio.get_event_loop()
+		task = None
 		if value == 1:
-			loop.create_task(self.add_shelly(mac, server))
+			task = loop.create_task(self.add_shelly(mac, server))
 		elif value == 0:
-			loop.create_task(self.remove_shelly(mac))
-		elif value == 2:
-			loop.create_task(self.add_shelly_with_rm(mac, server))
+			task = loop.create_task(self.remove_shelly(mac))
+
+		if task:
+			background_tasks.add(task)
+			task.add_done_callback(background_tasks.discard)
+
 		self.settings.set_value_async(self.settings.alias('enabled_%s' % mac), value)
 		return True

@@ -6,6 +6,7 @@ from aiovelib.service import TextArrayItem
 from aiovelib.client import Monitor, ServiceHandler
 from aiovelib.localsettings import SettingsService as SettingsClient
 from aiovelib.localsettings import Setting, SETTINGS_SERVICE
+from enum import IntEnum
 
 try:
 	from dbus_fast.aio import MessageBus
@@ -17,16 +18,20 @@ try:
 except ImportError:
 	from dbus_next.constants import BusType
 
-OUTPUT_TYPE_MOMENTARY = 0
-OUTPUT_TYPE_LATCHING = 1
-OUTPUT_TYPE_DIMMABLE = 2
+class OutputType(IntEnum):
+	MOMENTARY = 0
+	LATCHING = 1
+	DIMMABLE = 2
 
-OUTPUT_FUNCTION_ALARM = 0
-OUTPUT_FUNCTION_GENSET_START_STOP = 1
-OUTPUT_FUNCTION_MANUAL = 2
-OUTPUT_FUNCTION_TANK_PUMP = 3
-OUTPUT_FUNCTION_TEMPERATURE = 4
-OUTPUT_FUNCTION_CONNECTED_GENSET_HELPER_RELAY = 5
+class OutputFunction(IntEnum):
+	ALARM = 0
+	GENSET_START_STOP = 1
+	MANUAL = 2
+	TANK_PUMP = 3
+	TEMPERATURE = 4
+	CONNECTED_GENSET_HELPER_RELAY = 5
+	S2_RM = 6
+
 
 MODULE_STATE_CONNECTED = 0x100
 MODULE_STATE_OVER_TEMPERATURE = 0x101
@@ -129,6 +134,9 @@ class SwitchDevice(object):
 			if split[-1] == 'Type':
 				if not self._set_channel_type(split[-3], value):
 					return False
+			elif split[-1] == 'Function':
+				if not self._set_channel_function(split[-3], value):
+					return False
 			setting = split[-1] + '_' + split[-3]
 			try:
 				self.settings.set_value_async(self.settings.alias(setting), value)
@@ -137,53 +145,60 @@ class SwitchDevice(object):
 			return True
 
 	def _set_channel_type(self, channel, value):
-		return (1 << value) & self.service.get_item("/SwitchableOutput/%s/Settings/ValidTypes" % channel).value
+		ret = (1 << value) & self.service.get_item("/SwitchableOutput/%s/Settings/ValidTypes" % channel).value
+		if ret:
+			self.on_channel_type_changed(channel, value)
+		return ret
 
 	def _set_channel_function(self, channel, value):
-		return (1 << value) & self.service.get_item("SwitchableOutput/%s/Settings/ValidFunctions" % channel).value
-		
+		ret = (1 << value) & self.service.get_item("/SwitchableOutput/%s/Settings/ValidFunctions" % channel).value
+		if ret:
+			self.on_channel_function_changed(channel, value)
+		return ret
+
 	def items_changed(self, service, values):
 		try:
 			self.customname = values[self.settings.alias('customname')]
 		except :
 			pass # Not a customname change
 
-	async def add_output(self, channel, output_type, set_state_cb, name="", customName="", set_dimming_cb=None):
+	async def add_output(self, channel, output_type, set_state_cb, valid_functions=(1 << OutputFunction.MANUAL) | 0, name="", customName="", set_dimming_cb=None):
 		path_base  = '/SwitchableOutput/%s/' % channel
 		self.service.add_item(IntegerItem(path_base + 'State', 0, writeable=True, onchange=set_state_cb))
 		self.service.add_item(IntegerItem(path_base + 'Status', 0, writeable=False, text=self._status_text_callback))
 		self.service.add_item(TextItem(path_base + 'Name', name, writeable=False))
-
-		if output_type == OUTPUT_TYPE_DIMMABLE:
+		valid_functions |= (1 << OutputFunction.MANUAL) # Always allow manual function
+		if output_type == OutputType.DIMMABLE:
 			self.service.add_item(IntegerItem(path_base + 'Dimming', 0, writeable=True, onchange=set_dimming_cb, text=lambda y: str(y) + '%'))
 
 		# Settings
-		validTypesDimmable = 1 << OUTPUT_TYPE_DIMMABLE
-		validTypesLatching = 1 << OUTPUT_TYPE_LATCHING
-		validTypesMomentary = 1 << OUTPUT_TYPE_MOMENTARY
+		validTypesDimmable = 1 << OutputType.DIMMABLE.value
+		validTypesLatching = 1 << OutputType.LATCHING.value
+		validTypesMomentary = 1 << OutputType.MOMENTARY.value
 
 		self.service.add_item(TextItem(path_base + 'Settings/Group', "", writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/Group')))
 		self.service.add_item(TextItem(path_base + 'Settings/CustomName', customName, writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/CustomName')))
 		self.service.add_item(IntegerItem(path_base + 'Settings/ShowUIControl', 1, writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/ShowUIControl')))
 		self.service.add_item(IntegerItem(path_base + 'Settings/Type', output_type, writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/Type'),
 							text=self._type_text_callback))
+		self.service.add_item(IntegerItem(path_base + 'Settings/Function', OutputFunction.MANUAL, writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/Function'),
+							text=self._function_text_callback))
 
 		self.service.add_item(IntegerItem(path_base + 'Settings/ValidTypes', validTypesDimmable if
-							output_type == OUTPUT_TYPE_DIMMABLE else validTypesLatching | validTypesMomentary, 
+							output_type == OutputType.DIMMABLE else validTypesLatching | validTypesMomentary, 
 							writeable=False, text=self._valid_types_text_callback))
-		self.service.add_item(IntegerItem(path_base + 'Settings/Function', OUTPUT_FUNCTION_MANUAL, writeable=True,
-							onchange=partial(self._set_channel_function, channel), text=self._function_text_callback))
-		self.service.add_item(IntegerItem(path_base + 'Settings/ValidFunctions', (1 << OUTPUT_FUNCTION_MANUAL), writeable=False,
+		self.service.add_item(IntegerItem(path_base + 'Settings/ValidFunctions', valid_functions, writeable=False,
 							text=self._valid_functions_text_callback))
 
 		await self.settings.add_settings(
 			Setting('/Settings/Devices/shelly_%s/%s/Group' % (self._serial, channel), "", alias='Group_%s' % channel),
 			Setting('/Settings/Devices/shelly_%s/%s/CustomName' % (self._serial, channel), "", alias='CustomName_%s' % channel),
 			Setting('/Settings/Devices/shelly_%s/%s/ShowUIControl' % (self._serial, channel), 1, _min=0, _max=1, alias='ShowUIControl_%s' % channel),
+			Setting('/Settings/Devices/shelly_%s/%s/Function' % (self._serial, channel), OutputFunction.MANUAL, _min=0, _max=6, alias='Function_%s' % channel),
 			Setting('/Settings/Devices/shelly_%s/%s/Type' % (self._serial, channel), output_type, _min=0, _max=2, alias='Type_%s' % channel)
 		)
 
-		if output_type == OUTPUT_TYPE_DIMMABLE:
+		if output_type == OutputType.DIMMABLE:
 			await self.settings.add_settings(
 				Setting('/Settings/%s/%s/Dimming' % (self._serial, channel), 0, _min=0, _max=100, alias='dimming_%s' % channel)
 			)
@@ -196,6 +211,7 @@ class SwitchDevice(object):
 				s['/SwitchableOutput/%s/Settings/Group' % channel] = self.settings.get_value(self.settings.alias('Group_%s' % channel))
 				s['/SwitchableOutput/%s/Settings/CustomName' % channel] = self.settings.get_value(self.settings.alias('CustomName_%s' % channel))
 				s['/SwitchableOutput/%s/Settings/ShowUIControl' % channel] = self.settings.get_value(self.settings.alias('ShowUIControl_%s' % channel))
+				s['/SwitchableOutput/%s/Settings/Function' % channel] = self.settings.get_value(self.settings.alias('Function_%s' % channel))
 				s['/SwitchableOutput/%s/Settings/Type' % channel] = self.settings.get_value(self.settings.alias('Type_%s' % channel))
 		except :
 			pass
@@ -235,38 +251,40 @@ class SwitchDevice(object):
 		return "Unknown"
 
 	def _type_text_callback(self, value):
-		if value == OUTPUT_TYPE_MOMENTARY:
+		if value == OutputType.MOMENTARY:
 			return "Momentary"
-		if value == OUTPUT_TYPE_LATCHING:
+		if value == OutputType.LATCHING:
 			return "Latching"
-		if value == OUTPUT_TYPE_DIMMABLE:
+		if value == OutputType.DIMMABLE:
 			return "Dimmable"
 		return "Unknown"
 
 	def _function_text_callback(self, value):
-		if value == OUTPUT_FUNCTION_ALARM:
+		if value == OutputFunction.ALARM:
 			return "Alarm"
-		if value == OUTPUT_FUNCTION_GENSET_START_STOP:
+		if value == OutputFunction.GENSET_START_STOP:
 			return "Genset start stop"
-		if value == OUTPUT_FUNCTION_MANUAL:
+		if value == OutputFunction.MANUAL:
 			return "Manual"
-		if value == OUTPUT_FUNCTION_TANK_PUMP:
+		if value == OutputFunction.TANK_PUMP:
 			return "Tank pump"
-		if value == OUTPUT_FUNCTION_TEMPERATURE:
+		if value == OutputFunction.TEMPERATURE:
 			return "Temperature"
-		if value == OUTPUT_FUNCTION_CONNECTED_GENSET_HELPER_RELAY:
+		if value == OutputFunction.CONNECTED_GENSET_HELPER_RELAY:
 			return "Connected genset helper relay"
+		if value == OutputFunction.S2_RM:
+			return "S2 resource manager"
 		return "Unknown"
 
 	def _valid_types_text_callback(self, value):
 		str = ""
-		if value & (1 << OUTPUT_TYPE_DIMMABLE):
+		if value & (1 << OutputType.DIMMABLE):
 			str += "Dimmable"
-		if value & (1 << OUTPUT_TYPE_LATCHING):
+		if value & (1 << OutputType.LATCHING):
 			if str:
 				str += ", "
 			str += "Latching"
-		if value & (1 << OUTPUT_TYPE_MOMENTARY):
+		if value & (1 << OutputType.MOMENTARY):
 			if str:
 				str += ", "
 			str += "Momentary"
@@ -274,33 +292,36 @@ class SwitchDevice(object):
 
 	def _valid_functions_text_callback(self, value):
 		str = ""
-		if value & (1 << OUTPUT_FUNCTION_ALARM):
+		if value & (1 << OutputFunction.ALARM):
 			str += "Alarm"
-		if value & (1 << OUTPUT_FUNCTION_GENSET_START_STOP):
+		if value & (1 << OutputFunction.GENSET_START_STOP):
 			if str:
 				str += ", "
 			str += "Genset start stop"
-		if value & (1 << OUTPUT_FUNCTION_MANUAL):
+		if value & (1 << OutputFunction.MANUAL):
 			if str:
 				str += ", "
 			str += "Manual"
-		if value & (1 << OUTPUT_FUNCTION_TANK_PUMP):
+		if value & (1 << OutputFunction.TANK_PUMP):
 			if str:
 				str += ", "
 			str += "Tank pump"
-		if value & (1 << OUTPUT_FUNCTION_TEMPERATURE):
+		if value & (1 << OutputFunction.TEMPERATURE):
 			if str:
 				str += ", "
 			str += "Temperature"
-		if value & (1 << OUTPUT_FUNCTION_CONNECTED_GENSET_HELPER_RELAY):
+		if value & (1 << OutputFunction.CONNECTED_GENSET_HELPER_RELAY):
 			if str:
 				str += ", "
 			str += "Connected genset helper relay"
+		if value & (1 << OutputFunction.S2_RM):
+			if str:
+				str += ", "
+			str += "S2 resource manager"
 		return str
 
-	def _handle_changed_value(self, path, oldvalue, newvalue):
-		raise NotImplementedError("This method should be overridden in a subclass")
-		return True
+	def on_channel_type_changed(self, channel, value):
+		pass
 
-	def _handle_changed_setting(self, path, oldvalue, newvalue):
-		return True
+	def on_channel_function_changed(self, channel, value):
+		pass
