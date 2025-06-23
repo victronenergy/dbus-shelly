@@ -27,7 +27,7 @@ try:
 except ImportError:
 	from dbus_next.constants import BusType
 
-from zeroconf import ServiceStateChange, Zeroconf
+from zeroconf import ServiceStateChange, Zeroconf, ServiceListener
 from zeroconf.asyncio import (
 	AsyncServiceBrowser,
 	AsyncServiceInfo,
@@ -44,8 +44,6 @@ VERSION = "0.1"
 logger = logging.getLogger('dbus-shelly')
 logger.setLevel(logging.DEBUG)
 background_tasks = set()
-
-Shelly_Event = asyncio.Event()
 
 # Text formatters
 unit_watt = lambda v: "{:.0f}W".format(v)
@@ -67,11 +65,12 @@ class EnergyMeter:
 	async def setup_em(self):
 		# Determine role and instance
 		self.em_role, instance = self.role_instance(
-			self.settings.get_value(self.settings.alias("instance")))
+			self.settings.get_value(self.settings.alias('instance_{}'.format(self._serial))))
 
 		if self.em_role not in self.allowed_em_roles:
 			logger.warning("Role {} not allowed for shelly energy meter, resetting to {}".format(self.em_role, self.allowed_em_roles[0]))
-			self.role_changed(self.allowed_em_roles[0])
+			self.em_role = self.allowed_em_roles[0]
+			self.settings.set_value_async(self.settings.alias('instance_{}'.format(self._serial)), "{}:{}".format(self.em_role, instance))
 
 		self.service.add_item(TextItem('/Role', self.em_role, writeable=True,
 			onchange=self.role_changed))
@@ -83,14 +82,14 @@ class EnergyMeter:
 		self.service.add_item(DoubleItem('/Ac/Power', None, text=unit_watt))
 
 	def add_em_channel(self, channel):
-		logger.info("Adding energy meter channel {} for shelly device {}".format(channel, self._mac))
+		logger.info("Adding energy meter channel {} for shelly device {}".format(channel, self._serial))
 		prefix = '/Ac/L{}/'.format(channel + 1)
 		self.service.add_item(DoubleItem(prefix + 'Voltage', None, text=unit_volt))
 		self.service.add_item(DoubleItem(prefix + 'Current', None, text=unit_amp))
 		self.service.add_item(DoubleItem(prefix + 'Power', None, text=unit_watt))
 		self.service.add_item(DoubleItem(prefix + 'Energy/Forward', None, text=unit_kwh))
 		self.service.add_item(DoubleItem(prefix + 'Energy/Reverse', None, text=unit_kwh))
-		self.service.add_item(DoubleItem(prefix + 'PowerFactor', None, text='°C'))
+		self.service.add_item(DoubleItem(prefix + 'PowerFactor', None))
 
 	def update(self, values):
 		eforward = 0
@@ -115,7 +114,7 @@ class EnergyMeter:
 		if val not in self.allowed_em_roles:
 			return False
 
-		p = self.settings.alias("instance")
+		p = self.settings.alias('instance_{}'.format(self._serial))
 		role, instance = self.role_instance(val)
 		self.settings.set_value(p, "{}:{}".format(val, instance))
 
@@ -129,7 +128,7 @@ class ShellyService(object):
 	settings = None
 	_event_obj = None
 	_event = ""
-	_mac = None
+	_serial = None
 	_num_channels = 0
 
 	@classmethod
@@ -148,10 +147,10 @@ class ShellyService(object):
 			self._event = event_str
 			self._event_obj.set()
 
-	def __init__(self, bus, product_id, tty, mac, version, connection, productName, processName):
+	def __init__(self, bus, product_id, tty, serial, version, connection, productName, processName):
 		self._runningloop = asyncio.get_event_loop()
 		self._productId = product_id
-		self._mac = mac
+		self._serial = serial
 		self._tty = tty
 		self.bus = bus
 		self.version = version
@@ -165,16 +164,18 @@ class ShellyService(object):
 	async def init(self):
 		await self.wait_for_settings()
 
+		val = self.settings.get_value(self.settings.alias('instance_{}'.format(self._serial)))
+
 		self.service.add_item(TextItem('/Mgmt/ProcessName', self.processName))
 		self.service.add_item(TextItem('/Mgmt/ProcessVersion', self.version))
 		self.service.add_item(TextItem('/Mgmt/Connection', self.connection))
 		self.service.add_item(IntegerItem('/ProductId', self._productId))
 		self.service.add_item(TextItem('/ProductName', self.productName))
 		self.service.add_item(IntegerItem('/Connected', 1))
-		self.service.add_item(TextItem('/Serial', self._mac))
+		self.service.add_item(TextItem('/Serial', self._serial))
 		self.service.add_item(TextItem('/CustomName', "", writeable=True, onchange=self._set_customname))
 		self.service.add_item(IntegerItem('/State', MODULE_STATE_CONNECTED))
-		self.service.add_item(IntegerItem('/DeviceInstance', int(self.settings.get_value(self.settings.alias('instance')).split(':')[-1])))
+		self.service.add_item(IntegerItem('/DeviceInstance', int(self.settings.get_value(self.settings.alias('instance_{}'.format(self._serial))).split(':')[-1])))
 
 	@property
 	def customname(self):
@@ -193,19 +194,19 @@ class ShellyService(object):
 			settingsmonitor.wait_for_service(SETTINGS_SERVICE), 5)
 
 		await self.settings.add_settings(
-			Setting('/Settings/Devices/shelly_%s/ClassAndVrmInstance' % self._mac, "switch:50", alias="instance"),
-			Setting('/Settings/Devices/shelly_%s/CustomName' % self._mac, "", alias="customname"),
+			Setting('/Settings/Devices/shelly_%s/ClassAndVrmInstance' % self._serial, 'switch:50', alias='instance_{}'.format(self._serial)),
+			Setting('/Settings/Devices/shelly_%s/CustomName' % self._serial, "", alias="customname"),
 		)
 
 	def set_service_type(self, _stype):
-		setting = self.settings.get_value(self.settings.alias("instance"))
+		setting = self.settings.get_value(self.settings.alias('instance_{}'.format(self._serial)))
 		if setting is None:
-			logger.warning("No instance setting found for {}, setting default to switch:50".format(self._mac))
+			logger.warning("No instance setting found for {}, setting default to switch:50".format(self._serial))
 			return
 		stype, instance = self.role_instance(setting)
 
 		if stype != _stype:
-			p = self.settings.alias("instance")
+			p = self.settings.alias('instance_{}'.format(self._serial))
 			role, instance = self.role_instance(self.settings.get_value(p))
 			self.settings.set_value_async(p, "{}:{}".format(_stype, instance))
 
@@ -243,12 +244,12 @@ class ShellyDevice(ShellyService, SwitchDevice, EnergyMeter):
 	_has_em = False
 
 	@classmethod
-	async def create(cls, bus_type, event, mac, server, version=VERSION, productName="Shelly switch", processName=__file__):
+	async def create(cls, bus_type, event, serial, server, version=VERSION, productName="Shelly switch", processName=__file__):
 		shelly = await super().create(
 			bus_type=bus_type,
 			product_id=0,
 			tty="shelly",
-			mac=mac,
+			serial=serial,
 			version=version,
 			connection=server,
 			productName=productName,
@@ -259,11 +260,11 @@ class ShellyDevice(ShellyService, SwitchDevice, EnergyMeter):
 		return shelly
 
 	@property
-	def mac(self):
-		return self._mac
+	def serial(self):
+		return self._serial
 
 	async def start(self):
-		logger.info("Starting shelly device %s", self._mac)
+		logger.info("Starting shelly device %s", self._serial)
 		options = ConnectionOptions(self._server, "", "")
 		self._aiohttp_session = aiohttp.ClientSession()
 		self._ws_context = WsServer()
@@ -306,7 +307,7 @@ class ShellyDevice(ShellyService, SwitchDevice, EnergyMeter):
 			self.allowed_em_roles = ['acload', 'pvinverter', 'genset']
 
 		if not self._has_em and not self._has_switch:
-			logger.error("Shelly device %s does not support switching or energy metering", self._mac)
+			logger.error("Shelly device %s does not support switching or energy metering", self._serial)
 			return
 
 		if self._has_em:
@@ -335,7 +336,7 @@ class ShellyDevice(ShellyService, SwitchDevice, EnergyMeter):
 		# Set up the service name
 		stype = self.em_role if self._has_em else 'switch'
 		self.set_service_type(stype)
-		self.serviceName = "com.victronenergy.{}.shelly_{}".format(stype, self._mac)
+		self.serviceName = "com.victronenergy.{}.shelly_{}".format(stype, self._serial)
 		self.service.name = self.serviceName
 
 		await self.service.register()
@@ -361,7 +362,7 @@ class ShellyDevice(ShellyService, SwitchDevice, EnergyMeter):
 		try:
 			resp = await self._shelly_device.call_rpc(method, params)
 		except DeviceConnectionError:
-			logger.error("Failed to call RPC method on shelly device %s", self._mac)
+			logger.error("Failed to call RPC method on shelly device %s", self._serial)
 			self.set_event("disconnected")
 		except:
 			pass
@@ -394,13 +395,13 @@ class ShellyDevice(ShellyService, SwitchDevice, EnergyMeter):
 				if switch in cb_device.status:
 					self.parse_status(channel, cb_device.status[switch])
 		elif update_type == RpcUpdateType.DISCONNECTED:
-			logger.warning("Shelly device %s disconnected, closing service", self._mac)
+			logger.warning("Shelly device %s disconnected, closing service", self._serial)
 			self.shelly_device = None
 			self.set_event("disconnected")
 
 		elif update_type == RpcUpdateType.EVENT:
 			# TODO: Anything that needs to be handled?
-			logger.debug("Shelly device event: {}".format(cb_device.event))
+			pass
 
 	def parse_status(self, channel, status_json):
 		values = {}
@@ -458,6 +459,7 @@ class ShellyDevice(ShellyService, SwitchDevice, EnergyMeter):
 		task.add_done_callback(background_tasks.discard)
 		return True
 
+
 class ShellyDiscovery:
 	shellies = []
 	shelly_switches = {}
@@ -477,18 +479,30 @@ class ShellyDiscovery:
 
 		# Set up the service
 		self.service = Service(self.bus, "com.victronenergy.shelly")
+		self.service.add_item(IntegerItem('/Scan', 0, writeable=True,
+			onchange=self.scan))
 		await self.service.register()
 
 		self.aiozc = AsyncZeroconf()
-		services = list(
-			await AsyncZeroconfServiceTypes.async_find(aiozc=self.aiozc)
-		)
-
 		self.aiobrowser = AsyncServiceBrowser(
-			self.aiozc.zeroconf, services, handlers=[self.on_service_state_change]
+			self.aiozc.zeroconf, ["_shelly._tcp.local."], handlers=[self.on_service_state_change]
 		)
 
 		await self.bus.wait_for_disconnect()
+
+	async def scan(self, old_value, new_value):
+		if new_value == 1:
+			""" Start a scan for shelly devices. """
+			if self.aiobrowser is not None:
+				logger.info("Stopping shelly device scan")
+				await self.aiobrowser.async_cancel()
+				logger.info("Starting shelly device scan")
+				self.aiobrowser = AsyncServiceBrowser(
+					self.aiozc.zeroconf, ["_shelly._tcp.local."], handlers=[self.on_service_state_change]
+				)
+			else:
+				logger.warning("Shelly discovery not started, cannot scan for devices")
+		return False # Reset the scan value to 0 after scanning
 
 	async def wait_for_settings(self):
 		""" Attempt a connection to localsettings. """
@@ -497,7 +511,7 @@ class ShellyDiscovery:
 			settingsmonitor.wait_for_service(SETTINGS_SERVICE), 5)
 
 	async def shelly_event_monitor(self, event, shelly):
-		mac = shelly.mac
+		serial = shelly.serial
 		try:
 			while True:
 				await event.wait()
@@ -507,41 +521,41 @@ class ShellyDiscovery:
 				# Handle event
 				if e == "role_changed":
 					# Role changed, restart service
-					if mac in self.shellies:
-						logger.info("Role changed for device %s, restarting service", mac)
-						await self.restart_shelly_device(mac)
+					if serial in self.shellies:
+						logger.info("Role changed for device %s, restarting service", serial)
+						await self.restart_shelly_device(serial)
 					else:
-						logger.warning("Device not found: %s", mac)
+						logger.warning("Device not found: %s", serial)
 
 				elif e == "disconnected":
-					logger.warning("Shelly device %s disconnected, removing from service", mac)
-					await self.stop_shelly_device(mac)
-					self.remove_shelly(mac)
+					logger.warning("Shelly device %s disconnected, removing from service", serial)
+					await self.stop_shelly_device(serial)
+					self.remove_shelly(serial)
 					return
 
 				elif e == "stopped":
-					logger.info("Shelly device %s stopped, removing from service", mac)
+					logger.info("Shelly device %s stopped, removing from service", serial)
 					return
 
 				event.clear()
 		except asyncio.CancelledError:
-			logger.info("Shelly event monitor for %s cancelled", mac)
+			logger.info("Shelly event monitor for %s cancelled", serial)
 		return
 
-	def remove_shelly(self, mac):
-		if mac in self.shellies:
-			self.shellies.remove(mac)
+	def remove_shelly(self, serial):
+		if serial in self.shellies:
+			self.shellies.remove(serial)
 			with self.service as s:
-				s['/Devices/{}/Server'.format(mac)] = None
-				s['/Devices/{}/Mac'.format(mac)] = None
-				s['/Devices/{}/Enabled'.format(mac)] = None
+				s['/Devices/{}/Server'.format(serial)] = None
+				s['/Devices/{}/Mac'.format(serial)] = None
+				s['/Devices/{}/Enabled'.format(serial)] = None
 
-	async def add_shelly_device(self, mac, server):
+	async def add_shelly_device(self, serial, server):
 		event = asyncio.Event()
 		s = await ShellyDevice.create(
 			self.bus_type,
 			event,
-			mac,
+			serial,
 			server
 		)
 
@@ -550,26 +564,26 @@ class ShellyDiscovery:
 		)
 		await s.start()
 		background_tasks.add(e)
-		e.add_done_callback(partial(self.delete_shelly_device, mac))
-		self.shelly_switches[mac] = {'device': s, 'event_mon': e}
+		e.add_done_callback(partial(self.delete_shelly_device, serial))
+		self.shelly_switches[serial] = {'device': s, 'event_mon': e}
 
-	def delete_shelly_device(self, mac, fut):
-		if mac in self.shelly_switches:
-			del self.shelly_switches[mac]
+	def delete_shelly_device(self, serial, fut):
+		if serial in self.shelly_switches:
+			del self.shelly_switches[serial]
 
-	async def stop_shelly_device(self, mac):
-		if mac in self.shelly_switches:
-			await self.shelly_switches[mac]['device'].stop()
+	async def stop_shelly_device(self, serial):
+		if serial in self.shelly_switches:
+			await self.shelly_switches[serial]['device'].stop()
 		else:
-			logger.warning("Device not found: %s", mac)
+			logger.warning("Device not found: %s", serial)
 
-	async def restart_shelly_device(self, mac):
-		if mac in self.shelly_switches:
-			logger.info("Restarting shelly device %s", mac)
-			await self.shelly_switches[mac]['device'].stop()
-			await self.shelly_switches[mac]['device'].start()
+	async def restart_shelly_device(self, serial):
+		if serial in self.shelly_switches:
+			logger.info("Restarting shelly device %s", serial)
+			await self.shelly_switches[serial]['device'].stop()
+			await self.shelly_switches[serial]['device'].start()
 		else:
-			logger.warning("Device not found: %s", mac)
+			logger.warning("Device not found: %s", serial)
 
 	def items_changed(self, service, values):
 		pass
@@ -593,31 +607,40 @@ class ShellyDiscovery:
 	async def update_devices(self, zeroconf: Zeroconf, service_type: str, name: str, state_change: ServiceStateChange):
 		info = AsyncServiceInfo(service_type, name)
 		await info.async_request(zeroconf, 3000)
-		mac = info.server.split(".")[0].split("-")[-1]
+		serial = info.server.split(".")[0].split("-")[-1]
 
-		if state_change == ServiceStateChange.Added:
-			if mac not in self.shellies:
-				logger.info("Found shelly device: %s", mac)
-				self.shellies.append(mac)
-				await self.settings.add_settings(Setting('/Settings/Devices/shelly_%s/Enabled' % mac, 0, alias="enabled_%s" % mac))
-				enabled = self.settings.get_value(self.settings.alias('enabled_%s' % mac))
-				self.service.add_item(TextItem('/Devices/{}/Server'.format(mac), info.server[:-1]))
-				self.service.add_item(TextItem('/Devices/{}/Mac'.format(mac), mac))
-				self.service.add_item(IntegerItem('/Devices/{}/Enabled'.format(mac), value=enabled, writeable=True, onchange=partial(self.on_enabled_changed, mac)))
+		if state_change == ServiceStateChange.Added or state_change == ServiceStateChange.Updated:
+			if serial not in self.shellies:
+				logger.info("Found shelly device: %s", serial)
+				self.shellies.append(serial)
+				await self.settings.add_settings(Setting('/Settings/Devices/shelly_%s/Enabled' % serial, 0, alias="enabled_%s" % serial))
+				enabled = self.settings.get_value(self.settings.alias('enabled_%s' % serial))
+				try:
+					self.service.add_item(TextItem('/Devices/{}/Server'.format(serial)))
+					self.service.add_item(TextItem('/Devices/{}/Mac'.format(serial)))
+					self.service.add_item(IntegerItem('/Devices/{}/Enabled'.format(serial), writeable=True, onchange=partial(self.on_enabled_changed, serial)))
+				except:
+					pass
+
+				with self.service as s:
+					s['/Devices/{}/Server'.format(serial)] = info.server[:-1]
+					s['/Devices/{}/Mac'.format(serial)] = serial
+					s['/Devices/{}/Enabled'.format(serial)] = enabled
+
 				if enabled:
-					self.on_enabled_changed(mac, enabled)
+					self.on_enabled_changed(serial, enabled)
 		elif state_change == ServiceStateChange.Removed:
-			logger.info("Shelly device: %s disappeared", mac)
-			self.remove_shelly(mac)
+			logger.info("Shelly device: %s disappeared", serial)
+			self.remove_shelly(serial)
 
-	def on_enabled_changed(self, mac, value):
+	def on_enabled_changed(self, serial, value):
 		if value not in (0, 1):
 			return False
-		server = self.service['/Devices/{}/Server'.format(mac)]
+		server = self.service['/Devices/{}/Server'.format(serial)]
 		loop = asyncio.get_event_loop()
-		task = loop.create_task(self.add_shelly_device(mac, server) if value == 1 else self.stop_shelly_device(mac))
+		task = loop.create_task(self.add_shelly_device(serial, server) if value == 1 else self.stop_shelly_device(serial))
 		background_tasks.add(task)
 		task.add_done_callback(background_tasks.discard)
 
-		self.settings.set_value_async(self.settings.alias('enabled_%s' % mac), value)
+		self.settings.set_value_async(self.settings.alias('enabled_%s' % serial), value)
 		return True
