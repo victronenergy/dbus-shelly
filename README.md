@@ -20,3 +20,4 @@ The following shelly devices have been verified to work correctly:
 
 - Shelly plus plug S
 - Shelly Pro 4PM
+- Shelly Pro 1PM

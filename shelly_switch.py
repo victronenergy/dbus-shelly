@@ -263,6 +263,26 @@ class ShellyDevice(ShellyService, SwitchDevice, EnergyMeter):
 	def serial(self):
 		return self._serial
 
+	@staticmethod
+	async def get_device_info(server):
+		options = ConnectionOptions(server, "", "")
+		aiohttp_session = aiohttp.ClientSession()
+		ws_context = WsServer()
+
+		shelly_device = await RpcDevice.create(aiohttp_session, ws_context, options)
+		await shelly_device.initialize()
+
+		if not shelly_device.connected:
+			logger.warning("Failed to connect to shelly device")
+			return
+
+		resp = await shelly_device.call_rpc("Shelly.GetDeviceInfo")
+
+		await shelly_device.shutdown()
+		await aiohttp_session.close()
+
+		return resp
+
 	async def start(self):
 		logger.info("Starting shelly device %s", self._serial)
 		options = ConnectionOptions(self._server, "", "")
@@ -494,7 +514,6 @@ class ShellyDiscovery:
 		if new_value == 1:
 			""" Start a scan for shelly devices. """
 			if self.aiobrowser is not None:
-				logger.info("Stopping shelly device scan")
 				await self.aiobrowser.async_cancel()
 				logger.info("Starting shelly device scan")
 				self.aiobrowser = AsyncServiceBrowser(
@@ -549,6 +568,8 @@ class ShellyDiscovery:
 				s['/Devices/{}/Server'.format(serial)] = None
 				s['/Devices/{}/Mac'.format(serial)] = None
 				s['/Devices/{}/Enabled'.format(serial)] = None
+				s['/Devices/{}/Model'.format(serial)] = None
+				s['/Devices/{}/Name'.format(serial)] = None
 
 	async def add_shelly_device(self, serial, server):
 		event = asyncio.Event()
@@ -610,31 +631,44 @@ class ShellyDiscovery:
 		serial = info.server.split(".")[0].split("-")[-1]
 
 		if state_change == ServiceStateChange.Added or state_change == ServiceStateChange.Updated:
-			if serial not in self.shellies:
-				logger.info("Found shelly device: %s", serial)
-				self.shellies.append(serial)
-				await self.settings.add_settings(Setting('/Settings/Devices/shelly_%s/Enabled' % serial, 0, alias="enabled_%s" % serial))
-				enabled = self.settings.get_value(self.settings.alias('enabled_%s' % serial))
-				try:
-					self.service.add_item(TextItem('/Devices/{}/Server'.format(serial)))
-					self.service.add_item(TextItem('/Devices/{}/Mac'.format(serial)))
-					self.service.add_item(IntegerItem('/Devices/{}/Enabled'.format(serial), writeable=True, onchange=partial(self.on_enabled_changed, serial)))
-				except:
-					pass
+			logger.info("Found shelly device: %s", serial)
+			resp = await ShellyDevice.get_device_info(info.server)
+			if resp is None:
+				logger.error("Failed to get device info for %s", serial)
+				return
+			# Shelly plus plug S example: 'app': 'PlusPlugS', 'model': 'SNPL-00112EU'
+			model_name = resp.get('app', resp.get('model', 'Unknown'))
+			# Custom name of the shelly device, if available
+			name = resp.get('name', None)
+			self.shellies.append(serial)
+			await self.settings.add_settings(Setting('/Settings/Devices/shelly_%s/Enabled' % serial, 0, alias="enabled_%s" % serial))
+			enabled = self.settings.get_value(self.settings.alias('enabled_%s' % serial))
+			try:
+				self.service.add_item(TextItem('/Devices/{}/Server'.format(serial)))
+				self.service.add_item(TextItem('/Devices/{}/Mac'.format(serial)))
+				self.service.add_item(TextItem('/Devices/{}/Model'.format(serial), model_name))
+				self.service.add_item(TextItem('/Devices/{}/Name'.format(serial), name))
+				self.service.add_item(IntegerItem('/Devices/{}/Enabled'.format(serial), writeable=True, onchange=partial(self.on_enabled_changed, serial)))
+			except:
+				pass
 
-				with self.service as s:
-					s['/Devices/{}/Server'.format(serial)] = info.server[:-1]
-					s['/Devices/{}/Mac'.format(serial)] = serial
-					s['/Devices/{}/Enabled'.format(serial)] = enabled
+			with self.service as s:
+				s['/Devices/{}/Server'.format(serial)] = info.server[:-1]
+				s['/Devices/{}/Mac'.format(serial)] = serial
+				s['/Devices/{}/Model'.format(serial)] = model_name
+				s['/Devices/{}/Name'.format(serial)] = name
+				s['/Devices/{}/Enabled'.format(serial)] = enabled
 
-				if enabled:
-					self.on_enabled_changed(serial, enabled)
+			if enabled:
+				self.on_enabled_changed(serial, enabled)
 		elif state_change == ServiceStateChange.Removed:
 			logger.info("Shelly device: %s disappeared", serial)
 			self.remove_shelly(serial)
 
 	def on_enabled_changed(self, serial, value):
 		if value not in (0, 1):
+			return False
+		if (value == 1 and serial in self.shelly_switches) or (value == 0 and serial not in self.shelly_switches):
 			return False
 		server = self.service['/Devices/{}/Server'.format(serial)]
 		loop = asyncio.get_event_loop()
