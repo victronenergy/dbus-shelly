@@ -233,6 +233,3 @@ class SwitchDevice(object):
 
 	def on_channel_function_changed(self, channel, value):
 		pass
-
-	def update(self, values):
-		pass

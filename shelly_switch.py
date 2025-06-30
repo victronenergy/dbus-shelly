@@ -41,6 +41,8 @@ from aioshelly.exceptions import DeviceConnectionError
 from switch_device import SwitchDevice, OutputFunction, STATUS_ON, STATUS_OFF, MODULE_STATE_CONNECTED
 
 VERSION = "0.1"
+PRODUCT_ID_SHELLY_EM = 0xB034
+PRODUCT_ID_SHELLY_SWITCH = 0xB074
 logger = logging.getLogger('dbus-shelly')
 logger.setLevel(logging.DEBUG)
 background_tasks = set()
@@ -61,18 +63,21 @@ class SettingsMonitor(Monitor):
 
 class EnergyMeter:
 	allowed_em_roles = None
+	_em_role = None
+
+	async def init_em(self, allowed_roles):
+		self.allowed_em_roles = allowed_roles
+		# Determine role and instance
+		self._em_role, instance = self.role_instance(
+			self.settings.get_value(self.settings.alias('instance_{}_{}'.format(self._serial, self._channel_id))))
+
+		if self._em_role not in self.allowed_em_roles:
+			logger.warning("Role {} not allowed for shelly energy meter, resetting to {}".format(self._em_role, self.allowed_em_roles[0]))
+			self._em_role = self.allowed_em_roles[0]
+			await self.settings.set_value(self.settings.alias('instance_{}_{}'.format(self._serial, self._channel_id)), "{}:{}".format(self._em_role, instance))
 
 	async def setup_em(self):
-		# Determine role and instance
-		self.em_role, instance = self.role_instance(
-			self.settings.get_value(self.settings.alias('instance_{}'.format(self._serial))))
-
-		if self.em_role not in self.allowed_em_roles:
-			logger.warning("Role {} not allowed for shelly energy meter, resetting to {}".format(self.em_role, self.allowed_em_roles[0]))
-			self.em_role = self.allowed_em_roles[0]
-			self.settings.set_value_async(self.settings.alias('instance_{}'.format(self._serial)), "{}:{}".format(self.em_role, instance))
-
-		self.service.add_item(TextItem('/Role', self.em_role, writeable=True,
+		self.service.add_item(TextItem('/Role', self._em_role, writeable=True,
 			onchange=self.role_changed))
 		self.service.add_item(TextArrayItem('/AllowedRoles', self.allowed_em_roles, writeable=False))
 
@@ -82,7 +87,7 @@ class EnergyMeter:
 		self.service.add_item(DoubleItem('/Ac/Power', None, text=unit_watt))
 
 	def add_em_channel(self, channel):
-		logger.info("Adding energy meter channel {} for shelly device {}".format(channel, self._serial))
+		logger.info("Adding energy meter for shelly device {}".format(channel, self._serial))
 		prefix = '/Ac/L{}/'.format(channel + 1)
 		self.service.add_item(DoubleItem(prefix + 'Voltage', None, text=unit_volt))
 		self.service.add_item(DoubleItem(prefix + 'Current', None, text=unit_amp))
@@ -114,42 +119,40 @@ class EnergyMeter:
 		if val not in self.allowed_em_roles:
 			return False
 
-		p = self.settings.alias('instance_{}'.format(self._serial))
-		role, instance = self.role_instance(val)
-		self.settings.set_value(p, "{}:{}".format(val, instance))
+		p = self.settings.alias('instance_{}_{}'.format(self._serial, self._channel_id))
+		role, instance = self.role_instance(self.settings.get_value(p))
+		self.settings.set_value_async(p, "{}:{}".format(val, instance))
+		self._em_role = val
 
-		self.set_event("role_changed")
+		task = asyncio.get_event_loop().create_task(self._restart())
+		background_tasks.add(task)
+		task.add_done_callback(background_tasks.discard)
 		return True
 
+	async def restart(self):
+		raise NotImplementedError("Restart method not implemented for EnergyMeter")
 
-# Basic shelly service.
-class ShellyService(object):
+
+class ShellyChannel(SwitchDevice, EnergyMeter):
 	service = None
 	settings = None
-	_event_obj = None
-	_event = ""
+	_restart = None
+	_channel_id = 0
 	_serial = None
-	_num_channels = 0
+	_has_em = False
 
 	@classmethod
-	async def create(cls, bus_type, product_id, tty="", serial="", version="", connection="", productName="Switching device", processName=""):
-		""" Create a new instance of the SwitchDevice class. """
+	async def create(cls, bus_type=None, serial=None, channel_nr=0, has_em=False, server=None, restart=None, version=VERSION, productid=0x0000, productName="Shelly switch", processName=__file__):
 		bus = await MessageBus(bus_type=bus_type).connect()
-		self = cls(bus, product_id, tty, serial, version, connection, productName, processName)
+		self = cls(bus, productid, "shelly", serial, version, server, productName, processName)
+		self._channel_id = channel_nr
+		self._restart = restart
+		self._has_em = has_em
+		await self.wait_for_settings()
 		return self
 
-	@property
-	def event(self):
-		return self._event
-
-	def set_event(self, event_str):
-		if self._event_obj:
-			self._event = event_str
-			self._event_obj.set()
-
-	def __init__(self, bus, product_id, tty, serial, version, connection, productName, processName):
-		self._runningloop = asyncio.get_event_loop()
-		self._productId = product_id
+	def __init__(self, bus, productid, tty, serial, version, connection, productName, processName):
+		self._productId = productid
 		self._serial = serial
 		self._tty = tty
 		self.bus = bus
@@ -159,12 +162,13 @@ class ShellyService(object):
 		self.processName = processName
 		self.serviceName = '' # We don't know the service type yet. Will be .acload if shelly supports energy metering, otherwise .switch.
 
-		self.service = Service(bus, self.serviceName)
-
 	async def init(self):
-		await self.wait_for_settings()
+		# Set up the service name
+		stype = self._em_role if self._has_em else 'switch'
+		self.set_service_type(stype)
+		self.serviceName = "com.victronenergy.{}.shelly_{}_{}".format(stype, self._serial, self._channel_id)
 
-		val = self.settings.get_value(self.settings.alias('instance_{}'.format(self._serial)))
+		self.service = Service(self.bus, self.serviceName)
 
 		self.service.add_item(TextItem('/Mgmt/ProcessName', self.processName))
 		self.service.add_item(TextItem('/Mgmt/ProcessVersion', self.version))
@@ -175,7 +179,19 @@ class ShellyService(object):
 		self.service.add_item(TextItem('/Serial', self._serial))
 		self.service.add_item(TextItem('/CustomName', "", writeable=True, onchange=self._set_customname))
 		self.service.add_item(IntegerItem('/State', MODULE_STATE_CONNECTED))
-		self.service.add_item(IntegerItem('/DeviceInstance', int(self.settings.get_value(self.settings.alias('instance_{}'.format(self._serial))).split(':')[-1])))
+		self.service.add_item(IntegerItem('/DeviceInstance', int(self.settings.get_value(self.settings.alias('instance_{}_{}'.format(self._serial, self._channel_id))).split(':')[-1])))
+
+	def stop(self):
+		if self.service is not None:
+			self.service.__del__()
+		self.service = None
+		self.settings = None
+
+	async def start(self):
+		await self.service.register()
+
+	async def restart(self):
+		await self._restart()
 
 	@property
 	def customname(self):
@@ -194,19 +210,19 @@ class ShellyService(object):
 			settingsmonitor.wait_for_service(SETTINGS_SERVICE), 5)
 
 		await self.settings.add_settings(
-			Setting('/Settings/Devices/shelly_%s/ClassAndVrmInstance' % self._serial, 'switch:50', alias='instance_{}'.format(self._serial)),
-			Setting('/Settings/Devices/shelly_%s/CustomName' % self._serial, "", alias="customname"),
+			Setting('/Settings/Devices/shelly_{}/{}/ClassAndVrmInstance'.format(self._serial, self._channel_id), 'switch:50', alias='instance_{}_{}'.format(self._serial, self._channel_id)),
+			Setting('/Settings/Devices/shelly_{}/{}/CustomName'.format(self._serial, self._channel_id), "", alias="customname"),
 		)
 
 	def set_service_type(self, _stype):
-		setting = self.settings.get_value(self.settings.alias('instance_{}'.format(self._serial)))
+		setting = self.settings.get_value(self.settings.alias('instance_{}_{}'.format(self._serial, self._channel_id)))
 		if setting is None:
 			logger.warning("No instance setting found for {}, setting default to switch:50".format(self._serial))
 			return
 		stype, instance = self.role_instance(setting)
 
 		if stype != _stype:
-			p = self.settings.alias('instance_{}'.format(self._serial))
+			p = self.settings.alias('instance_{}_{}'.format(self._serial, self._channel_id))
 			role, instance = self.role_instance(self.settings.get_value(p))
 			self.settings.set_value_async(p, "{}:{}".format(_stype, instance))
 
@@ -233,8 +249,27 @@ class ShellyService(object):
 		""" Handle a value change from the settings service. """
 		super().value_changed(path, value)
 
+	def __del__(self):
+		self.stop()
 
-class ShellyDevice(ShellyService, SwitchDevice, EnergyMeter):
+	def update(self, values):
+		""" Update the service with new values. """
+		if not self.service:
+			return
+
+		with self.service as s:
+			for path, value in values.items():
+				if self.service.get_item(path) is not None:
+					s[path] = value
+				else:
+					logger.warning("Item %s not found in service %s", path, self.service.name)
+
+		super().update(values)
+
+# Represents a Shelly device, which can be a switch or an energy meter.
+# Handles the websocket connection to the Shelly device and provides methods to control it.
+# Creates an instance of ShellyChannel for each enabled channel.
+class ShellyDevice():
 	_shelly_device = None
 	_ws_context = None
 	_aiohttp_session = None
@@ -242,49 +277,47 @@ class ShellyDevice(ShellyService, SwitchDevice, EnergyMeter):
 	_state_change_pending = False
 	_has_switch = False
 	_has_em = False
+	_channels = {}
 
-	@classmethod
-	async def create(cls, bus_type, event, serial, server, version=VERSION, productName="Shelly switch", processName=__file__):
-		shelly = await super().create(
-			bus_type=bus_type,
-			product_id=0,
-			tty="shelly",
-			serial=serial,
-			version=version,
-			connection=server,
-			productName=productName,
-			processName=processName
-		)
-		shelly._server = server
-		shelly._event_obj = event
-		return shelly
+	def __init__(self, bus_type=None, productid=None, tty=None, serial=None, server=None, event=None, productName=None, processName=None):
+		self._runningloop = asyncio.get_event_loop()
+		self._productId = productid
+		self._bus_type= bus_type
+		self._tty = tty
+		self._serial = serial
+		self._server = server
+		self._event_obj = event
+		self._num_channels = 0
+		self._shelly_device = None
+		self._ws_context = None
+		self._aiohttp_session = None
+
+	@property
+	def event(self):
+		return self._event
+
+	def set_event(self, event_str):
+		if self._event_obj:
+			self._event = event_str
+			self._event_obj.set()
 
 	@property
 	def serial(self):
 		return self._serial
 
-	@staticmethod
-	async def get_device_info(server):
-		options = ConnectionOptions(server, "", "")
-		aiohttp_session = aiohttp.ClientSession()
-		ws_context = WsServer()
+	@property
+	def active_channels(self):
+		return list(self._channels.keys())
 
-		shelly_device = await RpcDevice.create(aiohttp_session, ws_context, options)
-		await shelly_device.initialize()
+	def stop_channel(self, ch):
+		if ch in self._channels.keys():
+			self._channels[ch].stop()
+			del self._channels[ch]
 
-		if not shelly_device.connected:
-			logger.warning("Failed to connect to shelly device")
-			return
+	def channel_enabled(self, ch):
+		return ch in self._channels.keys()
 
-		resp = await shelly_device.call_rpc("Shelly.GetDeviceInfo")
-
-		await shelly_device.shutdown()
-		await aiohttp_session.close()
-
-		return resp
-
-	async def start(self):
-		logger.info("Starting shelly device %s", self._serial)
+	async def connect(self):
 		options = ConnectionOptions(self._server, "", "")
 		self._aiohttp_session = aiohttp.ClientSession()
 		self._ws_context = WsServer()
@@ -294,9 +327,16 @@ class ShellyDevice(ShellyService, SwitchDevice, EnergyMeter):
 
 		if not self._shelly_device.connected:
 			logger.warning("Failed to connect to shelly device")
-			return
+			return False
+		return True
 
-		await self.init()
+	async def start(self):
+		if not self._shelly_device or not self._shelly_device.connected:
+			if not await self.connect():
+				logger.error("Failed to connect to shelly device %s", self._serial)
+				return
+
+		logger.info("Starting shelly device %s", self._serial)
 
 		# List shelly methods
 		methods = await self.list_methods()
@@ -309,11 +349,7 @@ class ShellyDevice(ShellyService, SwitchDevice, EnergyMeter):
 			self._num_channels = len(channels)
 			self._has_switch = True
 
-			# If switch channels are present, energy metering capabilities are reported in the switch status, if present.
-			# There are 3 channel shelly devices, but they cannot be used as a 3 phase switch, only as 3 separate single phase switches. 
-			# Reason is that it cannot be guaranteed that all relays switch at the same time, which possibly overloads a single relay.
-			# And since the API currently does not support multiple AC load devices in a single service, energy metering capabilities are disabled for multi-channel switches for now.
-			if self._num_channels <= 1 and all(x in channels[0] for x in ['apower', 'voltage', 'current', 'aenergy']):
+			if all(x in channels[0] for x in ['apower', 'voltage', 'current', 'aenergy']):
 				# Energy metering capabilities -> acload service
 				self._has_em = True
 				# Switchable AC load with EM capability can only have the acload role.
@@ -330,36 +366,53 @@ class ShellyDevice(ShellyService, SwitchDevice, EnergyMeter):
 			logger.error("Shelly device %s does not support switching or energy metering", self._serial)
 			return
 
-		if self._has_em:
-			await self.setup_em()
-
-		for channel in range(self._num_channels):
-			if self._has_switch:
-				await self.add_output(
-					channel=channel,
-					output_type=1,
-					set_state_cb=partial(self.set_state_cb, channel),
-					valid_functions=(1 << OutputFunction.MANUAL),
-					name="Channel {}".format(channel + 1),
-					customName="Shelly Switch",
-				)
-
-			if self._has_em:
-				self.add_em_channel(channel)
-
-			status = await self.request_channel_status(channel)
-			if status is not None:
-				self.parse_status(channel, status)
-
 		self._shelly_device.subscribe_updates(self.device_updated)
 
-		# Set up the service name
-		stype = self.em_role if self._has_em else 'switch'
-		self.set_service_type(stype)
-		self.serviceName = "com.victronenergy.{}.shelly_{}".format(stype, self._serial)
-		self.service.name = self.serviceName
+	async def start_channel(self, channel):
+		if channel < 0 or channel >= self._num_channels:
+			logger.error("Invalid channel number %d for shelly device %s", channel, self._serial)
+			return
 
-		await self.service.register()
+		ch = await ShellyChannel.create(
+			bus_type=self._bus_type,
+			serial=self._serial,
+			channel_nr=channel,
+			has_em=self._has_em,
+			server=self._server,
+			restart=partial(self.restart_channel, channel),
+			productid=PRODUCT_ID_SHELLY_SWITCH if self._has_switch else PRODUCT_ID_SHELLY_EM,
+			productName="Shelly switch" if self._has_switch else "Shelly energy meter",
+			processName="dbus-shelly"
+		)
+
+		# Determine service name.
+		if self._has_em:
+			await ch.init_em(self.allowed_em_roles)
+
+		await ch.init()
+
+		if self._has_switch:
+			await ch.add_output(
+				channel=0,
+				output_type=0,
+				set_state_cb=partial(self.set_state_cb, channel),
+				valid_functions=(1 << OutputFunction.MANUAL),
+				name="Channel {}".format(channel + 1),
+				customName="Shelly Switch",
+			)
+		if self._has_em:
+			await ch.setup_em()
+			ch.add_em_channel(0) # L1
+
+		self._channels[channel] = ch
+		status = await self.request_channel_status(channel)
+		if status is not None:
+			self.parse_status(channel, status)
+			await ch.start()
+
+	async def restart_channel(self, channel):
+		self.stop_channel(channel)
+		await self.start_channel(channel)
 
 	async def stop(self):
 		if self._shelly_device is None and self._aiohttp_session is None:
@@ -368,10 +421,8 @@ class ShellyDevice(ShellyService, SwitchDevice, EnergyMeter):
 		if self._shelly_device:
 			await self._shelly_device.shutdown()
 		await self._aiohttp_session.close()
-		if self.service is not None:
-			self.service.__del__()
-		self.service = None
-		self.settings = None
+
+		self._channels.clear()
 		self._ws_context = None
 		self._shelly_device = None
 		self._aiohttp_session = None
@@ -387,6 +438,9 @@ class ShellyDevice(ShellyService, SwitchDevice, EnergyMeter):
 		except:
 			pass
 		return resp
+
+	async def get_device_info(self):
+		return await self._rpc_call("Shelly.GetDeviceInfo")
 
 	async def get_channels(self):
 		channels = []
@@ -408,7 +462,7 @@ class ShellyDevice(ShellyService, SwitchDevice, EnergyMeter):
 
 	def device_updated(self, cb_device, update_type):
 		if update_type == RpcUpdateType.STATUS:
-			for channel in range(self._num_channels):
+			for channel in self._channels.keys():
 				# Get the switch status for this channel
 				switch="switch:{}".format(channel)
 				# Check if the channel is present in the status
@@ -427,13 +481,13 @@ class ShellyDevice(ShellyService, SwitchDevice, EnergyMeter):
 		values = {}
 		try:
 			if self._has_switch:
-				switch_prefix = "/SwitchableOutput/{}/".format(channel)
+				switch_prefix = "/SwitchableOutput/0/"
 				status = STATUS_ON if status_json["output"] else STATUS_OFF
 				values[switch_prefix + 'State'] = 1 if status == STATUS_ON else 0
 				values[switch_prefix + 'Status'] = status
 
 			if self._has_em:
-				em_prefix = "/Ac/L{}/".format(channel + 1)
+				em_prefix = "/Ac/L1/"
 				values[em_prefix + 'Voltage'] = status_json["voltage"]
 				values[em_prefix + 'Current'] = status_json["current"]
 				values[em_prefix + 'Power'] = status_json["apower"]
@@ -444,20 +498,11 @@ class ShellyDevice(ShellyService, SwitchDevice, EnergyMeter):
 		except:
 			pass
 
-		with self.service as s:
-			for key, value in values.items():
-				if value is not None and self.service.get_item(key) is not None:
-					s[key] = value
-
-			self.update(values)
+		self._channels[channel].update(values)
 
 	def set_state_cb(self, channel, value):
 		if self._state_change_pending:
 			return False
-
-		if self.service.get_item("/SwitchableOutput/{}/State".format(channel)) != value:
-			with self.service as s:
-				s["/SwitchableOutput/{}/State".format(channel)] = value
 
 		self._state_change_pending = True
 		self.state = value
@@ -537,23 +582,13 @@ class ShellyDiscovery:
 				event.clear()
 				e = shelly.event
 
-				# Handle event
-				if e == "role_changed":
-					# Role changed, restart service
-					if serial in self.shellies:
-						logger.info("Role changed for device %s, restarting service", serial)
-						await self.restart_shelly_device(serial)
-					else:
-						logger.warning("Device not found: %s", serial)
-
-				elif e == "disconnected":
+				if e == "disconnected":
 					logger.warning("Shelly device %s disconnected, removing from service", serial)
 					await self.stop_shelly_device(serial)
 					self.remove_shelly(serial)
 					return
 
 				elif e == "stopped":
-					logger.info("Shelly device %s stopped, removing from service", serial)
 					return
 
 				event.clear()
@@ -567,30 +602,57 @@ class ShellyDiscovery:
 			with self.service as s:
 				s['/Devices/{}/Server'.format(serial)] = None
 				s['/Devices/{}/Mac'.format(serial)] = None
-				s['/Devices/{}/Enabled'.format(serial)] = None
 				s['/Devices/{}/Model'.format(serial)] = None
 				s['/Devices/{}/Name'.format(serial)] = None
+				try:
+					i = 0
+					while True:
+						s.remove_item('/Devices/{}/{}/Enabled'.format(serial, i))
+						i += 1
+				except KeyError:
+					pass
 
 	async def add_shelly_device(self, serial, server):
 		event = asyncio.Event()
-		s = await ShellyDevice.create(
-			self.bus_type,
-			event,
-			serial,
-			server
+		s = ShellyDevice(
+			bus_type=self.bus_type,
+			serial=serial,
+			server=server,
+			event=event
 		)
 
 		e = asyncio.create_task(
 			self.shelly_event_monitor(event, s)
 		)
 		await s.start()
-		background_tasks.add(e)
 		e.add_done_callback(partial(self.delete_shelly_device, serial))
 		self.shelly_switches[serial] = {'device': s, 'event_mon': e}
 
-	def delete_shelly_device(self, serial, fut):
+	async def enable_shelly_channel(self, serial, channel, server):
+		""" Enable a shelly channel. """
+		if serial not in self.shelly_switches:
+			await self.add_shelly_device(serial, server)
+
+		await self.shelly_switches[serial]['device'].start_channel(channel)
+
+		return True
+
+	def delete_shelly_device(self, serial, fut=None):
 		if serial in self.shelly_switches:
 			del self.shelly_switches[serial]
+
+	async def disable_shelly_channel(self, serial, channel):
+		""" Disable a shelly channel. """
+		if serial not in self.shelly_switches:
+			logger.error("Shelly device %s not found", serial)
+			return False
+
+		self.shelly_switches[serial]['device'].stop_channel(channel)
+
+		if len(self.shelly_switches[serial]['device'].active_channels) == 0:
+			logger.info("No active channels left for device %s, stopping device", serial)
+			await self.shelly_switches[serial]['device'].stop()
+		return True
 
 	async def stop_shelly_device(self, serial):
 		if serial in self.shelly_switches:
@@ -615,6 +677,23 @@ class ShellyDiscovery:
 		await self.aiobrowser.async_cancel()
 		await self.aiozc.async_close()
 
+	async def get_device_info(self, server):
+		# Only server info is needed for obtaining device info
+		shelly = ShellyDevice(
+			server=server
+		)
+		await shelly.connect()
+		if not shelly._shelly_device or not shelly._shelly_device.connected:
+			logger.error("Failed to connect to shelly device %s", server)
+			return None, 0
+
+		info = await shelly.get_device_info()
+		num_channels = len(await shelly.get_channels())
+
+		await shelly.stop()
+		del shelly
+		return info, num_channels
+
 	def on_service_state_change(self, zeroconf: Zeroconf, 
 		service_type: str, name: str, state_change: ServiceStateChange):
 
@@ -630,25 +709,22 @@ class ShellyDiscovery:
 		await info.async_request(zeroconf, 3000)
 		serial = info.server.split(".")[0].split("-")[-1]
 
-		if state_change == ServiceStateChange.Added or state_change == ServiceStateChange.Updated:
+		if state_change == ServiceStateChange.Added or state_change == ServiceStateChange.Updated and serial not in self.shellies:
 			logger.info("Found shelly device: %s", serial)
-			resp = await ShellyDevice.get_device_info(info.server)
-			if resp is None:
+			device_info, num_channels = await self.get_device_info(info.server)
+			if device_info is None:
 				logger.error("Failed to get device info for %s", serial)
 				return
 			# Shelly plus plug S example: 'app': 'PlusPlugS', 'model': 'SNPL-00112EU'
-			model_name = resp.get('app', resp.get('model', 'Unknown'))
+			model_name = device_info.get('app', device_info.get('model', 'Unknown'))
 			# Custom name of the shelly device, if available
-			name = resp.get('name', None)
-			self.shellies.append(serial)
-			await self.settings.add_settings(Setting('/Settings/Devices/shelly_%s/Enabled' % serial, 0, alias="enabled_%s" % serial))
-			enabled = self.settings.get_value(self.settings.alias('enabled_%s' % serial))
+			name = device_info.get('name', None)
+
 			try:
 				self.service.add_item(TextItem('/Devices/{}/Server'.format(serial)))
 				self.service.add_item(TextItem('/Devices/{}/Mac'.format(serial)))
 				self.service.add_item(TextItem('/Devices/{}/Model'.format(serial), model_name))
 				self.service.add_item(TextItem('/Devices/{}/Name'.format(serial), name))
-				self.service.add_item(IntegerItem('/Devices/{}/Enabled'.format(serial), writeable=True, onchange=partial(self.on_enabled_changed, serial)))
 			except:
 				pass
 
@@ -657,24 +733,37 @@ class ShellyDiscovery:
 				s['/Devices/{}/Mac'.format(serial)] = serial
 				s['/Devices/{}/Model'.format(serial)] = model_name
 				s['/Devices/{}/Name'.format(serial)] = name
-				s['/Devices/{}/Enabled'.format(serial)] = enabled
 
-			if enabled:
-				self.on_enabled_changed(serial, enabled)
+			for i in range(num_channels):
+				await self.settings.add_settings(Setting('/Settings/Devices/shelly_{}/{}/Enabled'.format(serial, i), 0, alias="enabled_{}_{}".format(serial, i)))
+				enabled = self.settings.get_value(self.settings.alias('enabled_{}_{}'.format(serial, i)))
+
+				try:
+					self.service.add_item(IntegerItem('/Devices/{}/{}/Enabled'.format(serial, i), writeable=True, onchange=partial(self.on_enabled_changed, serial, i)))
+				except:
+					pass
+
+				with self.service as s:
+					s['/Devices/{}/{}/Enabled'.format(serial, i)] = enabled
+
+				if enabled:
+					self.on_enabled_changed(serial, i, enabled)
+
+				self.shellies.append(serial)
+
 		elif state_change == ServiceStateChange.Removed:
 			logger.info("Shelly device: %s disappeared", serial)
 			self.remove_shelly(serial)
 
-	def on_enabled_changed(self, serial, value):
+	def on_enabled_changed(self, serial, channel, value):
 		if value not in (0, 1):
 			return False
-		if (value == 1 and serial in self.shelly_switches) or (value == 0 and serial not in self.shelly_switches):
-			return False
+
 		server = self.service['/Devices/{}/Server'.format(serial)]
-		loop = asyncio.get_event_loop()
-		task = loop.create_task(self.add_shelly_device(serial, server) if value == 1 else self.stop_shelly_device(serial))
+		task = asyncio.get_event_loop().create_task(self.enable_shelly_channel(serial, channel, server) if value == 1 else
+			self.disable_shelly_channel(serial, channel))
 		background_tasks.add(task)
 		task.add_done_callback(background_tasks.discard)
 
-		self.settings.set_value_async(self.settings.alias('enabled_%s' % serial), value)
+		self.settings.set_value_async(self.settings.alias('enabled_{}_{}'.format(serial, channel)), value)
 		return True
