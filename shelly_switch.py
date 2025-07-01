@@ -27,7 +27,7 @@ try:
 except ImportError:
 	from dbus_next.constants import BusType
 
-from zeroconf import ServiceStateChange, Zeroconf, ServiceListener
+from zeroconf import ServiceStateChange
 from zeroconf.asyncio import (
 	AsyncServiceBrowser,
 	AsyncServiceInfo,
@@ -139,28 +139,31 @@ class ShellyChannel(SwitchDevice, EnergyMeter):
 	_restart = None
 	_channel_id = 0
 	_serial = None
+	_settings_base=None
 	_has_em = False
 
 	@classmethod
-	async def create(cls, bus_type=None, serial=None, channel_nr=0, has_em=False, server=None, restart=None, version=VERSION, productid=0x0000, productName="Shelly switch", processName=__file__):
+	async def create(cls, bus_type=None, serial=None, channel_id=0, has_em=False, server=None, restart=None, version=VERSION, productid=0x0000, productName="Shelly switch", processName=__file__):
 		bus = await MessageBus(bus_type=bus_type).connect()
-		self = cls(bus, productid, "shelly", serial, version, server, productName, processName)
-		self._channel_id = channel_nr
-		self._restart = restart
-		self._has_em = has_em
+		self = cls(bus, productid, serial, channel_id, version, server, restart, has_em, productName, processName)
 		await self.wait_for_settings()
 		return self
 
-	def __init__(self, bus, productid, tty, serial, version, connection, productName, processName):
+	def __init__(self, bus, productid, serial, channel_id, version, connection, restart, has_em, productName, processName):
 		self._productId = productid
 		self._serial = serial
-		self._tty = tty
+		self._channel_id = channel_id
 		self.bus = bus
 		self.version = version
 		self.connection = connection
+		self._restart = restart
+		self._has_em = has_em
 		self.productName = productName
 		self.processName = processName
-		self.serviceName = '' # We don't know the service type yet. Will be .acload if shelly supports energy metering, otherwise .switch.
+		# We don't know the service type yet. Will be .acload if shelly supports energy metering, otherwise .switch.
+		# If the shelly does not support switching, it may be acload, pvinverter or genset.
+		self.serviceName = ''
+		self._settings_base = '/Settings/Devices/shelly_{}_{}/'.format(self._serial, self._channel_id)
 
 	async def init(self):
 		# Set up the service name
@@ -173,11 +176,11 @@ class ShellyChannel(SwitchDevice, EnergyMeter):
 		self.service.add_item(TextItem('/Mgmt/ProcessName', self.processName))
 		self.service.add_item(TextItem('/Mgmt/ProcessVersion', self.version))
 		self.service.add_item(TextItem('/Mgmt/Connection', self.connection))
-		self.service.add_item(IntegerItem('/ProductId', self._productId))
+		self.service.add_item(IntegerItem('/ProductId', self._productId, text=unit_productid))
 		self.service.add_item(TextItem('/ProductName', self.productName))
 		self.service.add_item(IntegerItem('/Connected', 1))
 		self.service.add_item(TextItem('/Serial', self._serial))
-		self.service.add_item(TextItem('/CustomName', "", writeable=True, onchange=self._set_customname))
+		self.service.add_item(TextItem('/CustomName', self.settings.get_value(self.settings.alias("customname_{}_{}".format(self._serial, self._channel_id))), writeable=True, onchange=self._set_customname))
 		self.service.add_item(IntegerItem('/State', MODULE_STATE_CONNECTED))
 		self.service.add_item(IntegerItem('/DeviceInstance', int(self.settings.get_value(self.settings.alias('instance_{}_{}'.format(self._serial, self._channel_id))).split(':')[-1])))
 
@@ -210,8 +213,8 @@ class ShellyChannel(SwitchDevice, EnergyMeter):
 			settingsmonitor.wait_for_service(SETTINGS_SERVICE), 5)
 
 		await self.settings.add_settings(
-			Setting('/Settings/Devices/shelly_{}/{}/ClassAndVrmInstance'.format(self._serial, self._channel_id), 'switch:50', alias='instance_{}_{}'.format(self._serial, self._channel_id)),
-			Setting('/Settings/Devices/shelly_{}/{}/CustomName'.format(self._serial, self._channel_id), "", alias="customname"),
+			Setting(self._settings_base + 'ClassAndVrmInstance'.format(self._serial, self._channel_id), 'switch:50', alias='instance_{}_{}'.format(self._serial, self._channel_id)),
+			Setting(self._settings_base + 'CustomName'.format(self._serial, self._channel_id), "", alias="customname_{}_{}".format(self._serial, self._channel_id)),
 		)
 
 	def set_service_type(self, _stype):
@@ -232,15 +235,15 @@ class ShellyChannel(SwitchDevice, EnergyMeter):
 
 	def items_changed(self, service, values):
 		try:
-			self.customname = values[self.settings.alias('customname')]
+			self.customname = values[self.settings.alias("customname_{}_{}".format(self._serial, self._channel_id))]
 		except :
 			pass # Not a customname change
 
 	def _set_customname(self, value):
 		try:
-			cn = self.settings.get_value(self.settings.alias("customname"))
+			cn = self.settings.get_value(self.settings.alias("customname_{}_{}".format(self._serial, self._channel_id)))
 			if cn != value:
-				self.settings.set_value_async(self.settings.alias("customname"), value)
+				self.settings.set_value_async(self.settings.alias("customname_{}_{}".format(self._serial, self._channel_id)), value)
 			return True
 		except:
 			return False
@@ -278,19 +281,13 @@ class ShellyDevice():
 	_has_switch = False
 	_has_em = False
 	_channels = {}
+	_num_channels = 0
 
-	def __init__(self, bus_type=None, productid=None, tty=None, serial=None, server=None, event=None, productName=None, processName=None):
-		self._runningloop = asyncio.get_event_loop()
-		self._productId = productid
+	def __init__(self, bus_type=None, serial=None, server=None, event=None):
 		self._bus_type= bus_type
-		self._tty = tty
 		self._serial = serial
 		self._server = server
 		self._event_obj = event
-		self._num_channels = 0
-		self._shelly_device = None
-		self._ws_context = None
-		self._aiohttp_session = None
 
 	@property
 	def event(self):
@@ -376,7 +373,7 @@ class ShellyDevice():
 		ch = await ShellyChannel.create(
 			bus_type=self._bus_type,
 			serial=self._serial,
-			channel_nr=channel,
+			channel_id=channel,
 			has_em=self._has_em,
 			server=self._server,
 			restart=partial(self.restart_channel, channel),
@@ -507,7 +504,7 @@ class ShellyDevice():
 		self._state_change_pending = True
 		self.state = value
 
-		task = self._runningloop.create_task(self._rpc_call(
+		task = asyncio.get_event_loop().create_task(self._rpc_call(
 			"Switch.Set",
 			{
 				# id is the switch channel, starting from 0
@@ -529,7 +526,7 @@ class ShellyDiscovery:
 	shellies = []
 	shelly_switches = {}
 	service = None
-	listener = None
+
 	def __init__(self, bus_type):
 		self.bus_type = bus_type
 		self.aiobrowser = None
@@ -545,7 +542,7 @@ class ShellyDiscovery:
 		# Set up the service
 		self.service = Service(self.bus, "com.victronenergy.shelly")
 		self.service.add_item(IntegerItem('/Scan', 0, writeable=True,
-			onchange=self.scan))
+			onchange=self.start_scan))
 		await self.service.register()
 
 		self.aiozc = AsyncZeroconf()
@@ -555,18 +552,25 @@ class ShellyDiscovery:
 
 		await self.bus.wait_for_disconnect()
 
-	async def scan(self, old_value, new_value):
-		if new_value == 1:
-			""" Start a scan for shelly devices. """
-			if self.aiobrowser is not None:
-				await self.aiobrowser.async_cancel()
-				logger.info("Starting shelly device scan")
-				self.aiobrowser = AsyncServiceBrowser(
-					self.aiozc.zeroconf, ["_shelly._tcp.local."], handlers=[self.on_service_state_change]
-				)
-			else:
-				logger.warning("Shelly discovery not started, cannot scan for devices")
-		return False # Reset the scan value to 0 after scanning
+	def start_scan(self, value):
+		if value == 1:
+			task = asyncio.create_task(self.scan())
+			background_tasks.add(task)
+			task.add_done_callback(background_tasks.discard)
+			return True
+
+	async def scan(self):
+		""" Start a scan for shelly devices. """
+		if self.aiobrowser is not None:
+			await self.aiobrowser.async_cancel()
+			self.aiobrowser = AsyncServiceBrowser(
+				self.aiozc.zeroconf, ["_shelly._tcp.local."], handlers=[self.on_service_state_change]
+			)
+		else:
+			logger.warning("Shelly discovery not started, cannot scan for devices")
+
+		with self.service as s:
+			s['/Scan'] = 0
 
 	async def wait_for_settings(self):
 		""" Attempt a connection to localsettings. """
@@ -694,17 +698,12 @@ class ShellyDiscovery:
 		del shelly
 		return info, num_channels
 
-	def on_service_state_change(self, zeroconf: Zeroconf, 
-		service_type: str, name: str, state_change: ServiceStateChange):
-
-		if not name.startswith("shelly"):
-			return
-
-		task = asyncio.get_event_loop().create_task(self.update_devices(zeroconf, service_type, name, state_change))
+	def on_service_state_change(self, zeroconf, service_type, name, state_change):
+		task = asyncio.get_event_loop().create_task(self.on_service_state_change_async(zeroconf, service_type, name, state_change))
 		background_tasks.add(task)
 		task.add_done_callback(background_tasks.discard)
 
-	async def update_devices(self, zeroconf: Zeroconf, service_type: str, name: str, state_change: ServiceStateChange):
+	async def on_service_state_change_async(self, zeroconf, service_type, name, state_change):
 		info = AsyncServiceInfo(service_type, name)
 		await info.async_request(zeroconf, 3000)
 		serial = info.server.split(".")[0].split("-")[-1]

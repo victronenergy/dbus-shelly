@@ -33,7 +33,6 @@ MODULE_STATE_UNDER_VOLTAGE = 0x105
 
 # Base class for all switching devices.
 class SwitchDevice(object):
-	_runningloop = None
 
 	def _value_changed(self, path, value):
 		split = path.split('/')
@@ -91,12 +90,13 @@ class SwitchDevice(object):
 		self.service.add_item(IntegerItem(path_base + 'Settings/ValidFunctions', int(valid_functions), writeable=False,
 							text=self._valid_functions_text_callback))
 
+		base = self._settings_base + '%s/' % channel
 		await self.settings.add_settings(
-			Setting('/Settings/Devices/shelly_%s/%s/Group' % (self._serial, channel), "", alias='Group_%s' % channel),
-			Setting('/Settings/Devices/shelly_%s/%s/CustomName' % (self._serial, channel), "", alias='CustomName_%s' % channel),
-			Setting('/Settings/Devices/shelly_%s/%s/ShowUIControl' % (self._serial, channel), 1, _min=0, _max=1, alias='ShowUIControl_%s' % channel),
-			Setting('/Settings/Devices/shelly_%s/%s/Function' % (self._serial, channel), int(OutputFunction.MANUAL), _min=0, _max=6, alias='Function_%s' % channel),
-			Setting('/Settings/Devices/shelly_%s/%s/Type' % (self._serial, channel), output_type, _min=0, _max=2, alias='Type_%s' % channel)
+			Setting(base + 'Group', "", alias='Group_%s' % channel),
+			Setting(base + 'CustomName', "", alias='CustomName_%s' % channel),
+			Setting(base + 'ShowUIControl', 1, _min=0, _max=1, alias='ShowUIControl_%s' % channel),
+			Setting(base + 'Function', int(OutputFunction.MANUAL), _min=0, _max=6, alias='Function_%s' % channel),
+			Setting(base + 'Type', output_type, _min=0, _max=2, alias='Type_%s' % channel)
 		)
 
 		if output_type == OutputType.DIMMABLE:
