@@ -1,9 +1,19 @@
-import asyncio
-from functools import partial
+#!/usr/bin/python3
 
-from aiovelib.service import Service, IntegerItem, DoubleItem, TextItem
-from aiovelib.localsettings import Setting
+from __future__ import annotations
+import sys
+import os
+from functools import partial
+import logging
 from enum import IntEnum
+# aiovelib
+sys.path.insert(1, os.path.join(os.path.dirname(__file__), 'ext', 'aiovelib'))
+from aiovelib.service import IntegerItem, TextItem
+from aiovelib.localsettings import Setting
+
+logger = logging.getLogger('dbus-shelly')
+logger.setLevel(logging.DEBUG)
+background_tasks = set()
 
 class OutputType(IntEnum):
 	MOMENTARY = 0
@@ -18,11 +28,6 @@ class OutputFunction(IntEnum):
 	TEMPERATURE = 4
 	CONNECTED_GENSET_HELPER_RELAY = 5
 	S2_RM = 6
-
-STATUS_OFF = 0x00
-STATUS_ON = 0x09
-STATUS_OUTPUT_FAULT = 0x08
-STATUS_DISABLED = 0x20
 
 MODULE_STATE_CONNECTED = 0x100
 MODULE_STATE_OVER_TEMPERATURE = 0x101
@@ -105,7 +110,6 @@ class SwitchDevice(object):
 			)
 
 		self.restore_settings(channel)
-		self.initialize_channel(channel)
 
 	def restore_settings(self, channel):
 		try:
@@ -221,12 +225,6 @@ class SwitchDevice(object):
 				str += ", "
 			str += "S2 resource manager"
 		return str
-
-	def on_channel_values_changed(self, channel, values):
-		pass
-
-	def initialize_channel(self, channel):
-		pass
 
 	def on_channel_type_changed(self, channel, value):
 		pass
