@@ -1,9 +1,14 @@
-import asyncio
-from functools import partial
+#!/usr/bin/python3
 
-from aiovelib.service import Service, IntegerItem, DoubleItem, TextItem
-from aiovelib.localsettings import Setting
+from __future__ import annotations
+import sys
+import os
+from functools import partial
 from enum import IntEnum
+# aiovelib
+sys.path.insert(1, os.path.join(os.path.dirname(__file__), 'ext', 'aiovelib'))
+from aiovelib.service import IntegerItem, TextItem
+from aiovelib.localsettings import Setting
 
 class OutputType(IntEnum):
 	MOMENTARY = 0
@@ -19,11 +24,6 @@ class OutputFunction(IntEnum):
 	CONNECTED_GENSET_HELPER_RELAY = 5
 	S2_RM = 6
 
-STATUS_OFF = 0x00
-STATUS_ON = 0x09
-STATUS_OUTPUT_FAULT = 0x08
-STATUS_DISABLED = 0x20
-
 MODULE_STATE_CONNECTED = 0x100
 MODULE_STATE_OVER_TEMPERATURE = 0x101
 MODULE_STATE_TEMPERATURE_WARNING = 0x102
@@ -33,34 +33,6 @@ MODULE_STATE_UNDER_VOLTAGE = 0x105
 
 # Base class for all switching devices.
 class SwitchDevice(object):
-
-	def _value_changed(self, path, value):
-		split = path.split('/')
-		if len(split) > 3 and split[3] == 'Settings':
-			if split[-1] == 'Type':
-				if not self._set_channel_type(split[-3], value):
-					return False
-			elif split[-1] == 'Function':
-				if not self._set_channel_function(split[-3], value):
-					return False
-			setting = split[-1] + '_' + split[-3]
-			try:
-				self.settings.set_value_async(self.settings.alias(setting), value)
-			except :
-				return False
-			return True
-
-	def _set_channel_type(self, channel, value):
-		ret = (1 << value) & self.service.get_item("/SwitchableOutput/%s/Settings/ValidTypes" % channel).value
-		if ret:
-			self.on_channel_type_changed(channel, value)
-		return ret
-
-	def _set_channel_function(self, channel, value):
-		ret = (1 << value) & self.service.get_item("/SwitchableOutput/%s/Settings/ValidFunctions" % channel).value
-		if ret:
-			self.on_channel_function_changed(channel, value)
-		return ret
 
 	async def add_output(self, channel, output_type, set_state_cb, valid_functions=(1 << OutputFunction.MANUAL) | 0, name="", customName="", set_dimming_cb=None):
 		path_base  = '/SwitchableOutput/%s/' % channel
@@ -101,13 +73,12 @@ class SwitchDevice(object):
 
 		if output_type == OutputType.DIMMABLE:
 			await self.settings.add_settings(
-				Setting('/Settings/%s/%s/Dimming' % (self._serial, channel), 0, _min=0, _max=100, alias='dimming_%s' % channel)
+				Setting(base + 'Dimming', 0, _min=0, _max=100, alias='dimming_%s' % channel)
 			)
 
-		self.restore_settings(channel)
-		self.initialize_channel(channel)
+		self._restore_settings(channel)
 
-	def restore_settings(self, channel):
+	def _restore_settings(self, channel):
 		try:
 			with self.service as s:
 				s['/SwitchableOutput/%s/Settings/Group' % channel] = self.settings.get_value(self.settings.alias('Group_%s' % channel))
@@ -117,6 +88,34 @@ class SwitchDevice(object):
 				s['/SwitchableOutput/%s/Settings/Type' % channel] = self.settings.get_value(self.settings.alias('Type_%s' % channel))
 		except :
 			pass
+
+	async def _value_changed(self, path, item, value):
+		split = path.split('/')
+		if len(split) > 3 and split[3] == 'Settings':
+			if split[-1] == 'Type':
+				if not self._set_channel_type(split[-3], value):
+					return
+			elif split[-1] == 'Function':
+				if not self._set_channel_function(split[-3], value):
+					return
+			setting = split[-1] + '_' + split[-3]
+			try:
+				await self.settings.set_value(self.settings.alias(setting), value)
+			except :
+				return
+			item.set_local_value(value)
+
+	def _set_channel_type(self, channel, value):
+		ret = (1 << value) & self.service.get_item("/SwitchableOutput/%s/Settings/ValidTypes" % channel).value
+		if ret:
+			self.on_channel_type_changed(channel, value)
+		return ret
+
+	def _set_channel_function(self, channel, value):
+		ret = (1 << value) & self.service.get_item("/SwitchableOutput/%s/Settings/ValidFunctions" % channel).value
+		if ret:
+			self.on_channel_function_changed(channel, value)
+		return ret
 
 	def _module_state_text_callback(self, value):
 		if value == MODULE_STATE_CONNECTED:
@@ -221,12 +220,6 @@ class SwitchDevice(object):
 				str += ", "
 			str += "S2 resource manager"
 		return str
-
-	def on_channel_values_changed(self, channel, values):
-		pass
-
-	def initialize_channel(self, channel):
-		pass
 
 	def on_channel_type_changed(self, channel, value):
 		pass

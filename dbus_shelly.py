@@ -1,17 +1,16 @@
 #!/usr/bin/python3
 
-VERSION = "0.8"
+VERSION = '0.8'
 
 import sys
 import os
 import asyncio
 import websockets
 import logging
-import ssl
 import json
 import itertools
 from argparse import ArgumentParser
-from shelly_switch import ShellyDiscovery
+from discovery import ShellyDiscovery
 import asyncio
 
 # 3rd party
