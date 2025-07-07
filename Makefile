@@ -1,6 +1,11 @@
 FILES =					\
 	dbus_shelly.py		\
-	meter.py
+	meter.py			\
+	switch.py			\
+	energymeter.py		\
+	discovery.py		\
+	base.py				\
+	utils.py
 
 LIB =					\
 	__init__.py			\
