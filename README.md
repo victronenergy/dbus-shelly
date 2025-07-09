@@ -24,3 +24,6 @@ On the list for testing:
 - Shelly PM Mini Gen3 (EM only)
 - Shelly 1PM Mini Gen3 (SW + EM)
 - Shelly 1 Mini Gen3 (Sw only)
+
+# Legacy driver
+The legacy shelly driver in which the shelly connects to the GX is still supported. This will likely be removed in a future version.
