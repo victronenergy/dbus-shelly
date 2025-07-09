@@ -13,12 +13,12 @@ class EnergyMeter(object):
 		self.allowed_em_roles = allowed_roles
 		# Determine role and instance
 		self._em_role, instance = self.role_instance(
-			self.settings.get_value(self.settings.alias('instance_{}_{}'.format(self._serial, self._channel_id))))
+			self.settings.get_value(self.settings.alias('instance_{}_{}'.format(self._serial, self._channel))))
 
 		if self._em_role not in self.allowed_em_roles:
 			logger.warning("Role {} not allowed for shelly energy meter, resetting to {}".format(self._em_role, self.allowed_em_roles[0]))
 			self._em_role = self.allowed_em_roles[0]
-			await self.settings.set_value(self.settings.alias('instance_{}_{}'.format(self._serial, self._channel_id)), "{}:{}".format(self._em_role, instance))
+			await self.settings.set_value(self.settings.alias('instance_{}_{}'.format(self._serial, self._channel)), "{}:{}".format(self._em_role, instance))
 
 	async def setup_em(self):
 		self.service.add_item(TextItem('/Role', self._em_role, writeable=True,
@@ -113,7 +113,7 @@ class EnergyMeter(object):
 		if val not in self.allowed_em_roles:
 			return False
 
-		p = self.settings.alias('instance_{}_{}'.format(self._serial, self._channel_id))
+		p = self.settings.alias('instance_{}_{}'.format(self._serial, self._channel))
 		role, instance = self.role_instance(self.settings.get_value(p))
 		self.settings.set_value_async(p, "{}:{}".format(val, instance))
 		self._em_role = val

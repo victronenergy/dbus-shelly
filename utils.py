@@ -22,6 +22,7 @@ formatters = {
 	'volt': lambda v: "{:.1f}V".format(v),
 	'amp': lambda v: "{:.1f}A".format(v),
 	'kwh': lambda v: "{:.2f}kWh".format(v),
+	'ms': lambda v: "{:.0f}ms".format(v),
 	'productid': lambda v: "0x{:X}".format(v)
 }
 

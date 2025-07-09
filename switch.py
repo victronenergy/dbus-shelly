@@ -38,6 +38,7 @@ class SwitchDevice(object):
 
 	async def add_output(self, channel, output_type, set_state_cb, valid_functions=(1 << OutputFunction.MANUAL) | 0, name="", customName="", set_dimming_cb=None):
 		path_base  = '/SwitchableOutput/%s/' % channel
+		self._set_state_cb = set_state_cb
 		self.service.add_item(IntegerItem(path_base + 'State', 0, writeable=True, onchange=set_state_cb))
 		self.service.add_item(IntegerItem(path_base + 'Status', 0, writeable=False, text=self._status_text_callback))
 		self.service.add_item(TextItem(path_base + 'Name', name, writeable=False))
@@ -98,7 +99,7 @@ class SwitchDevice(object):
 				if not self._set_channel_type(split[-3], value):
 					return
 			elif split[-1] == 'Function':
-				if not self._set_channel_function(split[-3], value):
+				if not await self._set_channel_function(split[-3], value):
 					return
 			setting = split[-1] + '_' + self._serial + '_' + split[-3]
 			try:
@@ -113,10 +114,10 @@ class SwitchDevice(object):
 			self.on_channel_type_changed(channel, value)
 		return ret
 
-	def _set_channel_function(self, channel, value):
+	async def _set_channel_function(self, channel, value):
 		ret = (1 << value) & self.service.get_item("/SwitchableOutput/%s/Settings/ValidFunctions" % channel).value
 		if ret:
-			self.on_channel_function_changed(channel, value)
+			await self.on_channel_function_changed(channel, value)
 		return ret
 
 	def _module_state_text_callback(self, value):
@@ -226,13 +227,13 @@ class SwitchDevice(object):
 	def on_channel_type_changed(self, channel, value):
 		pass
 
-	def on_channel_function_changed(self, channel, value):
+	async def on_channel_function_changed(self, channel, value):
 		pass
 
 	def update(self, status_json):
 		if self._has_switch:
 			try:
-				switch_prefix = f"/SwitchableOutput/{self._channel_id}/"
+				switch_prefix = f"/SwitchableOutput/{self._channel}/"
 				status = STATUS_ON if status_json["output"] else STATUS_OFF
 				with self.service as s:
 					s[switch_prefix + 'State'] = 1 if status == STATUS_ON else 0
