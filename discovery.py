@@ -48,8 +48,8 @@ class ShellyDiscovery(object):
 
 		# Set up the service
 		self.service = Service(self.bus, "com.victronenergy.shelly")
-		self.service.add_item(IntegerItem('/Scan', 0, writeable=True,
-			onchange=self.start_scan))
+		self.service.add_item(IntegerItem('/Refresh', 0, writeable=True,
+			onchange=self.refresh))
 		await self.service.register()
 
 		self.aiozc = AsyncZeroconf()
@@ -59,7 +59,7 @@ class ShellyDiscovery(object):
 
 		await self.bus.wait_for_disconnect()
 
-	async def start_scan(self, item, value):
+	async def refresh(self, item, value):
 		if value == 1:
 			async with lock:
 				if self.aiobrowser is not None:
@@ -237,6 +237,8 @@ class ShellyDiscovery(object):
 		if value not in (0, 1) or item.service is None:
 			return
 
+		# Set the value before first so it feels responsive to the user
+		item.set_local_value(value)
 		server = self.service['/Devices/{}/Server'.format(serial)]
 		if value == 1:
 			await self.enable_shelly_channel(serial, channel, server)
@@ -244,4 +246,3 @@ class ShellyDiscovery(object):
 			await self.disable_shelly_channel(serial, channel)
 
 		await self.settings.set_value(self.settings.alias('enabled_{}_{}'.format(serial, channel)), value)
-		item.set_local_value(value)

@@ -293,14 +293,15 @@ class ShellyDevice(object):
 		await self.start_channel(channel)
 
 	async def stop(self):
+		for ch in self._channels.keys():
+			self._channels[ch].stop()
+		self._channels.clear()
+
 		if self._shelly_device:
 			await self._shelly_device.shutdown()
 		if self._aiohttp_session:
 			await self._aiohttp_session.close()
 
-		for ch in self._channels.keys():
-			self._channels[ch].stop()
-		self._channels.clear()
 		self._ws_context = None
 		self._shelly_device = None
 		self._aiohttp_session = None
