@@ -94,7 +94,12 @@ class ShellyDiscovery(object):
 		e = asyncio.create_task(
 			self._shelly_event_monitor(event, s)
 		)
-		await s.start()
+		try:
+			await s.start()
+		except Exception as e:
+			logger.error("Failed to start shelly device %s: %s", serial, e)
+			await s.stop()
+			return
 		e.add_done_callback(partial(self.delete_shelly_device, serial))
 		self.shellies[serial] = {'device': s, 'event_mon': e}
 
@@ -162,9 +167,8 @@ class ShellyDiscovery(object):
 		shelly = ShellyDevice(
 			server=server
 		)
-		try:
-			await shelly.connect()
-		except:
+
+		if not await shelly.connect():
 			return None, 0
 
 		if not shelly._shelly_device or not shelly._shelly_device.connected:
@@ -172,7 +176,9 @@ class ShellyDiscovery(object):
 			return None, 0
 
 		info = await shelly.get_device_info()
-		num_channels = len(await shelly.get_channels())
+
+		# Report shelly energy meter as device with one channel, so it shows up once in the UI
+		num_channels = len(await shelly.get_channels()) if shelly.has_switch else 1
 
 		await shelly.stop()
 		del shelly

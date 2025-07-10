@@ -23,15 +23,12 @@ from utils import logger, wait_for_settings, formatters as fmt
 PRODUCT_ID_SHELLY_EM = 0xB034
 PRODUCT_ID_SHELLY_SWITCH = 0xB074
 
-STATUS_OFF = 0x00
-STATUS_ON = 0x09
-
 class ShellyChannel(SwitchDevice, EnergyMeter, object):
 
 	@classmethod
-	async def create(cls, bus_type=None, serial=None, channel_id=0, has_em=False, server=None, restart=None, version=VERSION, productid=0x0000, productName="Shelly switch", processName=__file__):
+	async def create(cls, bus_type=None, serial=None, channel_id=0, has_em=False, has_switch=False, server=None, restart=None, version=VERSION, productid=0x0000, productName="Shelly switch", processName=__file__):
 		bus = await MessageBus(bus_type=bus_type).connect()
-		c = cls(bus, productid, serial, channel_id, version, server, restart, has_em, productName, processName)
+		c = cls(bus, productid, serial, channel_id, version, server, restart, has_em, has_switch, productName, processName)
 		c.settings = await wait_for_settings(bus)
 
 		role = 'acload' if c._has_em else 'switch'
@@ -42,7 +39,7 @@ class ShellyChannel(SwitchDevice, EnergyMeter, object):
 
 		return c
 
-	def __init__(self, bus, productid, serial, channel_id, version, connection, restart, has_em, productName, processName):
+	def __init__(self, bus, productid, serial, channel_id, version, connection, restart, has_em, has_switch, productName, processName):
 		self.service = None
 		self.settings = None
 		self._productId = productid
@@ -54,6 +51,7 @@ class ShellyChannel(SwitchDevice, EnergyMeter, object):
 		self._restart = restart
 		self._em_role = None
 		self._has_em = has_em
+		self._has_switch = has_switch
 		self.productName = productName
 		self.processName = processName
 
@@ -140,19 +138,13 @@ class ShellyChannel(SwitchDevice, EnergyMeter, object):
 		""" Handle a value change from the settings service. """
 		super().value_changed(path, value)
 
-	def update(self, values):
+	def update(self, status_json):
 		""" Update the service with new values. """
 		if not self.service:
 			return
 
-		with self.service as s:
-			for path, value in values.items():
-				if self.service.get_item(path) is not None:
-					s[path] = value
-				else:
-					logger.warning("Item %s not found in service %s", path, self.service.name)
-
-		super().update(values)
+		SwitchDevice.update(self, status_json)
+		EnergyMeter.update(self, status_json)
 
 
 # Represents a Shelly device, which can be a switch or an energy meter.
@@ -188,6 +180,14 @@ class ShellyDevice(object):
 		return self._serial
 
 	@property
+	def has_switch(self):
+		return self._has_switch
+
+	@property
+	def has_em(self):
+		return self._has_em
+
+	@property
 	def active_channels(self):
 		return list(self._channels.keys())
 
@@ -206,27 +206,17 @@ class ShellyDevice(object):
 
 		if not self._shelly_device.connected:
 			logger.warning("Failed to connect to shelly device")
-			return False
-		return True
-
-	async def start(self):
-		if not self._shelly_device or not self._shelly_device.connected:
-			if not await self.connect():
-				logger.error("Failed to connect to shelly device {}".format(self._serial))
-				return
-
-		logger.info("Starting shelly device {}".format(self._serial))
+			return
 
 		# List shelly methods
 		methods = await self.list_methods()
 		if len(methods) == 0:
 			logger.error("Failed to list shelly methods")
-			return
+			return False
 
 		if 'Switch.GetStatus' in methods:
-			channels = await self.get_channels()
-			self._num_channels = len(channels)
 			self._has_switch = True
+			channels = await self.get_channels()
 
 			if 'aenergy' in channels[0]:
 				# Energy metering capabilities -> acload service
@@ -241,8 +231,21 @@ class ShellyDevice(object):
 			# Using a shelly as grid meter is not supported because the update frequency is too low.
 			self.allowed_em_roles = ['acload', 'pvinverter', 'genset']
 
+		self._num_channels = len(channels) if self._has_switch else 1
+
 		logger.info("Shelly device %s has %d channels, support switching: %s, energy metering: %s",
 			self._serial, self._num_channels, self._has_switch, self._has_em)
+
+		return True
+
+	async def start(self):
+		if not self._shelly_device or not self._shelly_device.connected:
+			if not await self.connect():
+				logger.error(f"Failed to connect to shelly device {self._serial}")
+				return
+
+		logger.info(f"Starting shelly device {self._serial}")
+
 		if not self._has_em and not self._has_switch:
 			logger.error("Shelly device %s does not support switching or energy metering", self._serial)
 			return
@@ -259,6 +262,7 @@ class ShellyDevice(object):
 			serial=self._serial,
 			channel_id=channel,
 			has_em=self._has_em,
+			has_switch=self._has_switch,
 			server=self._server,
 			restart=partial(self.restart_channel, channel),
 			productid=PRODUCT_ID_SHELLY_SWITCH if self._has_switch else PRODUCT_ID_SHELLY_EM,
@@ -267,7 +271,8 @@ class ShellyDevice(object):
 		)
 		# Determine service name.
 		if self._has_em:
-			await ch.init_em(self.allowed_em_roles)
+			phases = await self.get_num_phases()
+			await ch.init_em(phases, self.allowed_em_roles)
 		await ch.init()
 		if self._has_switch:
 			await ch.add_output(
@@ -280,7 +285,6 @@ class ShellyDevice(object):
 			)
 		if self._has_em:
 			await ch.setup_em()
-			ch.add_em_channel(0) # L1
 
 		self._channels[channel] = ch
 		status = await self.request_channel_status(channel)
@@ -321,6 +325,15 @@ class ShellyDevice(object):
 	async def get_device_info(self):
 		return await self._rpc_call("Shelly.GetDeviceInfo")
 
+	async def get_num_phases(self):
+		status = await self.request_channel_status(0)
+		if status is not None:
+			if self._has_switch and self._has_em:
+				return 1
+			elif self._has_em:
+				return sum(['{}_voltage'.format(i) in status for i in ['a','b','c']])
+		return 0
+
 	async def get_channels(self):
 		channels = []
 		ch = 0
@@ -333,7 +346,7 @@ class ShellyDevice(object):
 				return channels
 
 	async def request_channel_status(self, channel):
-		return await self._rpc_call("Switch.GetStatus", {"id": channel})
+		return await self._rpc_call("Switch.GetStatus" if self.has_switch else "EM.GetStatus", {"id": channel})
 
 	async def list_methods(self):
 		resp = await self._rpc_call("Shelly.ListMethods")
@@ -357,27 +370,7 @@ class ShellyDevice(object):
 			pass
 
 	def parse_status(self, channel, status_json):
-		values = {}
-		try:
-			if self._has_switch:
-				switch_prefix = "/SwitchableOutput/0/"
-				status = STATUS_ON if status_json["output"] else STATUS_OFF
-				values[switch_prefix + 'State'] = 1 if status == STATUS_ON else 0
-				values[switch_prefix + 'Status'] = status
-
-			if self._has_em:
-				em_prefix = "/Ac/L1/"
-				values[em_prefix + 'Voltage'] = status_json["voltage"]
-				values[em_prefix + 'Current'] = status_json["current"]
-				values[em_prefix + 'Power'] = status_json["apower"]
-				values[em_prefix + 'PowerFactor'] = status_json["pf"] if 'pf' in status_json else None
-				# Shelly reports energy in Wh, so convert to kWh
-				values[em_prefix + 'Energy/Forward'] = status_json["aenergy"]["total"] / 1000 if 'aenergy' in status_json else None
-				values[em_prefix + 'Energy/Reverse'] = status_json["ret_aenergy"]["total"] / 1000 if 'ret_aenergy' in status_json else None
-		except:
-			pass
-
-		self._channels[channel].update(values)
+		self._channels[channel].update(status_json)
 
 	async def set_state_cb(self, channel, item, value):
 		await self._rpc_call(

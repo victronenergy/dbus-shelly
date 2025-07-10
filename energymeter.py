@@ -7,7 +7,8 @@ background_tasks = set()
 
 class EnergyMeter(object):
 
-	async def init_em(self, allowed_roles):
+	async def init_em(self, num_phases, allowed_roles):
+		self._num_phases = num_phases
 		self.allowed_em_roles = allowed_roles
 		# Determine role and instance
 		self._em_role, instance = self.role_instance(
@@ -28,35 +29,57 @@ class EnergyMeter(object):
 		self.service.add_item(DoubleItem('/Ac/Energy/Reverse', None, text=fmt['kwh']))
 		self.service.add_item(DoubleItem('/Ac/Power', None, text= fmt['watt']))
 
-	def add_em_channel(self, channel):
-		prefix = '/Ac/L{}/'.format(channel + 1)
-		self.service.add_item(DoubleItem(prefix + 'Voltage', None, text=fmt['volt']))
-		self.service.add_item(DoubleItem(prefix + 'Current', None, text=fmt['amp']))
-		self.service.add_item(DoubleItem(prefix + 'Power', None, text=fmt['watt']))
-		self.service.add_item(DoubleItem(prefix + 'Energy/Forward', None, text=fmt['kwh']))
-		self.service.add_item(DoubleItem(prefix + 'Energy/Reverse', None, text=fmt['kwh']))
-		self.service.add_item(DoubleItem(prefix + 'PowerFactor', None))
+		for channel in range(1, self._num_phases + 1):
+			prefix = '/Ac/L{}/'.format(channel)
+			self.service.add_item(DoubleItem(prefix + 'Voltage', None, text=fmt['volt']))
+			self.service.add_item(DoubleItem(prefix + 'Current', None, text=fmt['amp']))
+			self.service.add_item(DoubleItem(prefix + 'Power', None, text=fmt['watt']))
+			self.service.add_item(DoubleItem(prefix + 'Energy/Forward', None, text=fmt['kwh']))
+			self.service.add_item(DoubleItem(prefix + 'Energy/Reverse', None, text=fmt['kwh']))
+			self.service.add_item(DoubleItem(prefix + 'PowerFactor', None))
 
-	def update(self, values):
-		if not self._has_em:
-			return
-		eforward = 0
-		ereverse = 0
-		power = 0
+	def update(self, status_json):
+		if self._has_em:
+			eforward = 0
+			ereverse = 0
+			power = 0
 
-		def get_value(path):
-			i = self.service.get_item(path)
-			return i.value or 0 if i is not None else 0
+			try:
+				with self.service as s:
+					if self._has_switch:
+						em_prefix = "/Ac/L1/"
+						s[em_prefix + 'Voltage'] = status_json["voltage"]
+						s[em_prefix + 'Current'] = status_json["current"]
+						s[em_prefix + 'Power'] = status_json["apower"]
+						s[em_prefix + 'PowerFactor'] = status_json["pf"] if 'pf' in status_json else None
+						# Shelly reports energy in Wh, so convert to kWh
+						s[em_prefix + 'Energy/Forward'] = status_json["aenergy"]["total"] / 1000 if 'aenergy' in status_json else None
+						s[em_prefix + 'Energy/Reverse'] = status_json["ret_aenergy"]["total"] / 1000 if 'ret_aenergy' in status_json else None
+					else:
+						for l in range(1, self._num_phases + 1):
+							em_prefix = f"/Ac/L{l}/"
+							p = {1:'a', 2:'b', 3:'c'}.get(l)
+							s[em_prefix + 'Voltage'] = status_json[f"{p}_voltage"]
+							s[em_prefix + 'Current'] = status_json[f"{p}_current"]
+							s[em_prefix + 'Power'] = status_json[f"{p}_aprt_power"]
+							s[em_prefix + 'PowerFactor'] = status_json[f"{p}_pf"]
+			except KeyError as e:
+				logger.error("KeyError in update: %s", e)
+				pass
 
-		for l in range(1,3):
-			eforward += get_value('/Ac/L{}/Energy/Forward'.format(l))
-			ereverse += get_value('/Ac/L{}/Energy/Reverse'.format(l))
-			power += get_value('/Ac/L{}/Power'.format(l))
+			def get_value(path):
+				i = self.service.get_item(path)
+				return i.value or 0 if i is not None else 0
 
-		with self.service as s:
-			s['/Ac/Energy/Forward'] = eforward
-			s['/Ac/Energy/Reverse'] = ereverse
-			s['/Ac/Power'] = power
+			for l in range(1,3):
+				eforward += get_value('/Ac/L{}/Energy/Forward'.format(l))
+				ereverse += get_value('/Ac/L{}/Energy/Reverse'.format(l))
+				power += get_value('/Ac/L{}/Power'.format(l))
+
+			with self.service as s:
+				s['/Ac/Energy/Forward'] = eforward
+				s['/Ac/Energy/Reverse'] = ereverse
+				s['/Ac/Power'] = power
 
 	def role_changed(self, val):
 		if val not in self.allowed_em_roles:

@@ -10,6 +10,8 @@ sys.path.insert(1, os.path.join(os.path.dirname(__file__), 'ext', 'aiovelib'))
 from aiovelib.service import IntegerItem, TextItem
 from aiovelib.localsettings import Setting
 
+from utils import STATUS_OFF, STATUS_ON
+
 class OutputType(IntEnum):
 	MOMENTARY = 0
 	LATCHING = 1
@@ -226,3 +228,14 @@ class SwitchDevice(object):
 
 	def on_channel_function_changed(self, channel, value):
 		pass
+
+	def update(self, status_json):
+		if self._has_switch:
+			try:
+				switch_prefix = f"/SwitchableOutput/{self._channel_id}/"
+				status = STATUS_ON if status_json["output"] else STATUS_OFF
+				with self.service as s:
+					s[switch_prefix + 'State'] = 1 if status == STATUS_ON else 0
+					s[switch_prefix + 'Status'] = status
+			except:
+				pass

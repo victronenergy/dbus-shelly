@@ -13,6 +13,9 @@ from aiovelib.localsettings import SettingsService as SettingsClient, SETTINGS_S
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
+STATUS_OFF = 0x00
+STATUS_ON = 0x09
+
 # Text formatters
 formatters = {
 	'watt': lambda v: "{:.0f}W".format(v),
