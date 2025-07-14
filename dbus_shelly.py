@@ -97,7 +97,8 @@ def main():
 
 	shellyDiscovery = ShellyDiscovery(bus_type)
 
-	mainloop = asyncio.get_event_loop()
+	mainloop = asyncio.new_event_loop()
+	asyncio.set_event_loop(mainloop)
 
 	# This loop should be removed one day.
 	mainloop.run_until_complete(
