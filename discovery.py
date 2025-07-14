@@ -193,6 +193,8 @@ class ShellyDiscovery(object):
 		async with lock:
 			info = AsyncServiceInfo(service_type, name)
 			await info.async_request(zeroconf, 3000)
+			if not info or not info.server:
+				return
 			serial = info.server.split(".")[0].split("-")[-1]
 
 			if state_change == ServiceStateChange.Added or state_change == ServiceStateChange.Updated and serial not in self.discovered_devices:
