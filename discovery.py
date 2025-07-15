@@ -171,8 +171,8 @@ class ShellyDiscovery(object):
 		if not await shelly.connect():
 			return None, 0
 
-		if not (shelly.has_em or shelly.has_switch):
-			logger.warning("Shelly device %s does not have an energy meter or switch. This may be a dimmer, support for that will be added later.", server)
+		if not (shelly.has_em or shelly.has_switch or shelly.has_dimming):
+			logger.warning("Shelly device %s does not have an energy meter, switch or dimmer.", server)
 			await shelly.stop()
 			return None, 0
 
