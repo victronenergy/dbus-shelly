@@ -58,7 +58,7 @@ class EnergyMeter(object):
 
 			try:
 				with self.service as s:
-					if self._has_switch:
+					if self._has_switch or self._has_dimming:
 						em_prefix = "/Ac/L1/"
 						s[em_prefix + 'Voltage'] = status_json["voltage"]
 						s[em_prefix + 'Current'] = status_json["current"]

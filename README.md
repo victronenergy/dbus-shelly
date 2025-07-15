@@ -20,6 +20,7 @@ The following shelly devices have been verified to work correctly:
 - Shelly 1PM Gen4 (SW + EM)
 - Shelly Mini 1PM Gen4 (SW + EM)
 - Shelly Mini 1 Gen4 (SW only)
+- Shelly Dimmer Gen3
 
 # Legacy driver
 The legacy shelly driver in which the shelly connects to the GX is still supported. This will likely be removed in a future version.

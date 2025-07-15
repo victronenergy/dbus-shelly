@@ -73,11 +73,6 @@ class SwitchDevice(object):
 			Setting(base + 'Type', output_type, _min=0, _max=2, alias=f'Type_{self._serial}_{channel}'),
 		)
 
-		if output_type == OutputType.DIMMABLE:
-			await self.settings.add_settings(
-				Setting(base + 'Dimming', 0, _min=0, _max=100, alias=f'Dimming_{self._serial}_{channel}'),
-			)
-
 		self._restore_settings(channel)
 
 	def _restore_settings(self, channel):
@@ -230,12 +225,15 @@ class SwitchDevice(object):
 		pass
 
 	def update(self, status_json):
-		if self._has_switch:
-			try:
-				switch_prefix = f"/SwitchableOutput/{self._channel_id}/"
-				status = STATUS_ON if status_json["output"] else STATUS_OFF
-				with self.service as s:
-					s[switch_prefix + 'State'] = 1 if status == STATUS_ON else 0
-					s[switch_prefix + 'Status'] = status
-			except:
-				pass
+		if not (self._has_switch or self._has_dimming):
+			return
+		try:
+			switch_prefix = f"/SwitchableOutput/{self._channel_id}/"
+			status = STATUS_ON if status_json["output"] else STATUS_OFF
+			with self.service as s:
+				s[switch_prefix + 'State'] = 1 if status == STATUS_ON else 0
+				s[switch_prefix + 'Status'] = status
+				if self._has_dimming:
+					s[switch_prefix + 'Dimming'] = status_json.get("brightness", 0)
+		except:
+			pass
