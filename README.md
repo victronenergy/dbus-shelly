@@ -16,14 +16,10 @@ The following shelly devices have been verified to work correctly:
 - Shelly plus plug S
 - Shelly Pro 4PM
 - Shelly Pro 1PM
-
-On the list for testing:
-
-- Shelly Pro3 (switch only)
 - Shelly Pro3EM (3 phase EM only)
-- Shelly PM Mini Gen3 (EM only)
-- Shelly 1PM Mini Gen3 (SW + EM)
-- Shelly 1 Mini Gen3 (Sw only)
+- Shelly 1PM Gen4 (SW + EM)
+- Shelly Mini 1PM Gen4 (SW + EM)
+- Shelly Mini 1 Gen4 (SW only)
 
 # Legacy driver
 The legacy shelly driver in which the shelly connects to the GX is still supported. This will likely be removed in a future version.
