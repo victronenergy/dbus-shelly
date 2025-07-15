@@ -88,15 +88,26 @@ class EnergyMeter(object):
 				i = self.service.get_item(path)
 				return i.value or 0 if i is not None else 0
 
-			for l in range(1,3):
-				eforward += get_value('/Ac/L{}/Energy/Forward'.format(l))
-				ereverse += get_value('/Ac/L{}/Energy/Reverse'.format(l))
-				power += get_value('/Ac/L{}/Power'.format(l))
+			for l in range(1, self._num_phases + 1):
+				eforward += get_value(f'/Ac/L{l}/Energy/Forward')
+				ereverse += get_value(f'/Ac/L{l}/Energy/Reverse')
+				power += get_value(f'/Ac/L{l}/Power')
 
 			with self.service as s:
 				s['/Ac/Energy/Forward'] = eforward
 				s['/Ac/Energy/Reverse'] = ereverse
 				s['/Ac/Power'] = power
+
+	def update_energies(self, emdata):
+		try:
+			with self.service as s:
+				for l in range(1, self._num_phases + 1):
+					em_prefix = f'/Ac/L{l}/'
+					p = {1:'a', 2:'b', 3:'c'}.get(l)
+					s[em_prefix + 'Energy/Forward'] = emdata[f'{p}_total_act_energy'] / 1000
+					s[em_prefix + 'Energy/Reverse'] = emdata[f'{p}_total_act_ret_energy'] / 1000
+		except:
+			pass
 
 	def role_changed(self, val):
 		if val not in self.allowed_em_roles:

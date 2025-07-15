@@ -355,11 +355,13 @@ class ShellyDevice(object):
 	def device_updated(self, cb_device, update_type):
 		if update_type == RpcUpdateType.STATUS:
 			for channel in self._channels.keys():
+				if f'emdata:{channel}' in cb_device.status and self._has_em:
+					self._channels[channel].update_energies(cb_device.status[f'emdata:{channel}'])
 				# Get the switch status for this channel
-				switch="switch:{}".format(channel)
+				id="{}:{}".format('switch' if self._has_switch else 'em', channel)
 				# Check if the channel is present in the status
-				if switch in cb_device.status:
-					self.parse_status(channel, cb_device.status[switch])
+				if id in cb_device.status:
+					self.parse_status(channel, cb_device.status[id])
 		elif update_type == RpcUpdateType.DISCONNECTED:
 			logger.warning("Shelly device %s disconnected, closing service", self._serial)
 			self.shelly_device = None
