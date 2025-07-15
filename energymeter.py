@@ -75,21 +75,23 @@ class EnergyMeter(object):
 								s[em_prefix + 'Energy/Forward'] = status_json["aenergy"]["total"] / 1000 if 'aenergy' in status_json else None
 								s[em_prefix + 'Energy/Reverse'] = status_json["ret_aenergy"]["total"] / 1000 if 'ret_aenergy' in status_json else None
 							else:
-								em_prefix = "/Ac/L{}/".format(l)
-								s[em_prefix + 'Voltage'] = None
-								s[em_prefix + 'Current'] = None
-								s[em_prefix + 'Power'] = None
-								s[em_prefix + 'PowerFactor'] = None
-								s[em_prefix + 'Energy/Forward'] = None
-								s[em_prefix + 'Energy/Reverse'] = None
-					else:
-						for l in range(1, self._num_phases + 1):
-							em_prefix = f"/Ac/L{l}/"
-							p = {1:'a', 2:'b', 3:'c'}.get(l)
-							s[em_prefix + 'Voltage'] = status_json[f"{p}_voltage"]
-							s[em_prefix + 'Current'] = status_json[f"{p}_current"]
-							s[em_prefix + 'Power'] = status_json[f"{p}_aprt_power"]
-							s[em_prefix + 'PowerFactor'] = status_json[f"{p}_pf"]
+								for l in range(1, self._num_phases + 1):
+									em_prefix = f"/Ac/L{l}/"
+									p = {1:'a', 2:'b', 3:'c'}.get(l)
+									s[em_prefix + 'Voltage'] = status_json[f"{p}_voltage"]
+									s[em_prefix + 'Current'] = status_json[f"{p}_current"]
+									s[em_prefix + 'Power'] = status_json[f"{p}_aprt_power"]
+									s[em_prefix + 'PowerFactor'] = status_json[f"{p}_pf"]
+					if self._has_switch or self._has_dimming:
+						em_prefix = "/Ac/L1/"
+						s[em_prefix + 'Voltage'] = status_json["voltage"]
+						s[em_prefix + 'Current'] = status_json["current"]
+						s[em_prefix + 'Power'] = status_json["apower"]
+						s[em_prefix + 'PowerFactor'] = status_json["pf"] if 'pf' in status_json else None
+						# Shelly reports energy in Wh, so convert to kWh
+						s[em_prefix + 'Energy/Forward'] = status_json["aenergy"]["total"] / 1000 if 'aenergy' in status_json else None
+						s[em_prefix + 'Energy/Reverse'] = status_json["ret_aenergy"]["total"] / 1000 if 'ret_aenergy' in status_json else None
+
 			except KeyError as e:
 				logger.error("KeyError in update: %s", e)
 				pass

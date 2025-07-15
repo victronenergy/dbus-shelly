@@ -9,15 +9,16 @@ from aiovelib.localsettings import Setting
 from switch import SwitchDevice, MODULE_STATE_CONNECTED
 from energymeter import EnergyMeter
 
-from __main__ import VERSION
+from __main__ import VERSION, __file__ as processName
 from utils import logger, wait_for_settings, formatters as fmt
 
 class ShellyChannel(SwitchDevice, EnergyMeter, object):
 
 	@classmethod
-	async def create(cls, bus_type=None, serial=None, channel=0, has_em=False, has_switch=False, server=None, restart=None, version=VERSION, productid=0x0000, productName="Shelly switch", processName=__file__, deviceCustomName=None):
+	async def create(cls, bus_type=None, serial=None, channel_id=0, has_em=False, has_switch=False, has_dimming=False,
+				server=None, restart=None, productid=0x0000, productName=None):
 		bus = await MessageBus(bus_type=bus_type).connect()
-		c = cls(bus, productid, serial, channel, version, server, restart, has_em, has_switch, productName, processName, deviceCustomName)
+		c = cls(bus, productid, serial, channel_id, server, restart, has_em, has_switch, has_dimming, productName)
 		c.settings = await wait_for_settings(bus)
 
 		role = 'acload' if c._has_em else 'switch'
@@ -45,22 +46,20 @@ class ShellyChannel(SwitchDevice, EnergyMeter, object):
 	def serial(self):
 		return self._serial
 
-	def __init__(self, bus, productid, serial, channel, version, connection, restart, has_em, has_switch, productName, processName, deviceCustomName):
+	def __init__(self, bus, productid, serial, channel_id, connection, restart, has_em, has_switch, has_dimming, productName):
 		self.service = None
 		self.settings = None
 		self._productId = productid
 		self._serial = serial
 		self._channel = channel
 		self.bus = bus
-		self.version = version
 		self.connection = connection
 		self._restart = restart
 		self._em_role = None
 		self._has_em = has_em
 		self._has_switch = has_switch
+		self._has_dimming = has_dimming
 		self.productName = productName
-		self.processName = processName
-		self.deviceCustomName = deviceCustomName
 
 		# We don't know the service type yet. Will be .acload if shelly supports energy metering, otherwise .switch.
 		# If the shelly does not support switching, it may be acload, pvinverter or genset.
@@ -75,8 +74,8 @@ class ShellyChannel(SwitchDevice, EnergyMeter, object):
 
 		self.service = Service(self.bus, self.serviceName)
 
-		self.service.add_item(TextItem('/Mgmt/ProcessName', self.processName))
-		self.service.add_item(TextItem('/Mgmt/ProcessVersion', self.version))
+		self.service.add_item(TextItem('/Mgmt/ProcessName', processName))
+		self.service.add_item(TextItem('/Mgmt/ProcessVersion', VERSION))
 		self.service.add_item(TextItem('/Mgmt/Connection', self.connection))
 		self.service.add_item(IntegerItem('/ProductId', self._productId, text=fmt['productid']))
 		self.service.add_item(TextItem('/ProductName', self.productName))
