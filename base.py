@@ -122,7 +122,7 @@ class ShellyChannel(SwitchDevice, EnergyMeter, object):
 	def items_changed(self, service, values):
 		try:
 			self.customname = values[self.settings.alias("customname_{}_{}".format(self._serial, self._channel_id))]
-		except :
+		except:
 			pass # Not a customname change
 
 	def _set_customname(self, value):

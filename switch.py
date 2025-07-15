@@ -66,16 +66,16 @@ class SwitchDevice(object):
 
 		base = self._settings_base + '%s/' % channel
 		await self.settings.add_settings(
-			Setting(base + 'Group', "", alias='Group_%s' % channel),
-			Setting(base + 'CustomName', "", alias='CustomName_%s' % channel),
-			Setting(base + 'ShowUIControl', 1, _min=0, _max=1, alias='ShowUIControl_%s' % channel),
-			Setting(base + 'Function', int(OutputFunction.MANUAL), _min=0, _max=6, alias='Function_%s' % channel),
-			Setting(base + 'Type', output_type, _min=0, _max=2, alias='Type_%s' % channel)
+			Setting(base + 'Group', "", alias=f'Group_{self._serial}_{channel}'),
+			Setting(base + 'CustomName', "", alias=f'CustomName_{self._serial}_{channel}'),
+			Setting(base + 'ShowUIControl', 1, _min=0, _max=1, alias=f'ShowUIControl_{self._serial}_{channel}'),
+			Setting(base + 'Function', int(OutputFunction.MANUAL), _min=0, _max=6, alias=f'Function_{self._serial}_{channel}'),
+			Setting(base + 'Type', output_type, _min=0, _max=2, alias=f'Type_{self._serial}_{channel}'),
 		)
 
 		if output_type == OutputType.DIMMABLE:
 			await self.settings.add_settings(
-				Setting(base + 'Dimming', 0, _min=0, _max=100, alias='dimming_%s' % channel)
+				Setting(base + 'Dimming', 0, _min=0, _max=100, alias=f'Dimming_{self._serial}_{channel}'),
 			)
 
 		self._restore_settings(channel)
@@ -83,11 +83,11 @@ class SwitchDevice(object):
 	def _restore_settings(self, channel):
 		try:
 			with self.service as s:
-				s['/SwitchableOutput/%s/Settings/Group' % channel] = self.settings.get_value(self.settings.alias('Group_%s' % channel))
-				s['/SwitchableOutput/%s/Settings/CustomName' % channel] = self.settings.get_value(self.settings.alias('CustomName_%s' % channel))
-				s['/SwitchableOutput/%s/Settings/ShowUIControl' % channel] = self.settings.get_value(self.settings.alias('ShowUIControl_%s' % channel))
-				s['/SwitchableOutput/%s/Settings/Function' % channel] = self.settings.get_value(self.settings.alias('Function_%s' % channel))
-				s['/SwitchableOutput/%s/Settings/Type' % channel] = self.settings.get_value(self.settings.alias('Type_%s' % channel))
+				s['/SwitchableOutput/%s/Settings/Group' % channel] = self.settings.get_value(self.settings.alias(f'Group_{self._serial}_{channel}'))
+				s['/SwitchableOutput/%s/Settings/CustomName' % channel] = self.settings.get_value(self.settings.alias(f'CustomName_{self._serial}_{channel}'))
+				s['/SwitchableOutput/%s/Settings/ShowUIControl' % channel] = self.settings.get_value(self.settings.alias(f'ShowUIControl_{self._serial}_{channel}'))
+				s['/SwitchableOutput/%s/Settings/Function' % channel] = self.settings.get_value(self.settings.alias(f'Function_{self._serial}_{channel}'))
+				s['/SwitchableOutput/%s/Settings/Type' % channel] = self.settings.get_value(self.settings.alias(f'Type_{self._serial}_{channel}'))
 		except :
 			pass
 
@@ -100,7 +100,7 @@ class SwitchDevice(object):
 			elif split[-1] == 'Function':
 				if not self._set_channel_function(split[-3], value):
 					return
-			setting = split[-1] + '_' + split[-3]
+			setting = split[-1] + '_' + self._serial + '_' + split[-3]
 			try:
 				await self.settings.set_value(self.settings.alias(setting), value)
 			except :
