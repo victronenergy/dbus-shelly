@@ -1,6 +1,7 @@
 import asyncio
 from aiovelib.service import Service, IntegerItem, DoubleItem, TextItem
 from aiovelib.service import TextArrayItem
+from aiovelib.localsettings import Setting
 
 from utils import logger, formatters as fmt
 background_tasks = set()
@@ -23,6 +24,22 @@ class EnergyMeter(object):
 		self.service.add_item(TextItem('/Role', self._em_role, writeable=True,
 			onchange=self.role_changed))
 		self.service.add_item(TextArrayItem('/AllowedRoles', self.allowed_em_roles, writeable=False))
+
+		# We don't need the setting when the device supports switching, as it can then only be an acload.
+		if not self._has_switch:
+			await self.settings.add_settings(
+				Setting(self._settings_base + 'Position', 0, 0, 2, alias="position")
+			)
+
+			# Position for pvinverter
+			if self._em_role == 'pvinverter':
+				self.service.add_item(IntegerItem('/Position',
+					self.settings.get_value(self.settings.alias("position")),
+					writeable=True, onchange=self.position_changed))
+
+		# Indicate when we're masquerading for another device
+		if self._em_role != "grid":
+			self.service.add_item(IntegerItem('/IsGenericEnergyMeter', 1))
 
 		# Meter paths
 		self.service.add_item(DoubleItem('/Ac/Energy/Forward', None, text=fmt['kwh']))
@@ -93,6 +110,14 @@ class EnergyMeter(object):
 		task = asyncio.get_event_loop().create_task(self._restart())
 		background_tasks.add(task)
 		task.add_done_callback(background_tasks.discard)
+		return True
+
+	async def position_changed(self, item, value):
+		if not 0 <= value <= 2:
+			return False
+
+		await self.settings.set_value(self.settings.alias("position"), value)
+		item.set_local_value(value)
 		return True
 
 	async def restart(self):
