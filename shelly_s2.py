@@ -65,11 +65,11 @@ class ShellyChannelWithRm(base.ShellyChannel):
 
 	@property
 	def s2_active(self):
-		return self.service.get_item(f'/Devices/{self._channel}/S2/S2Active').value or 0
+		return self.service.get_item(f'/Devices/{self._channel}/S2/Active').value or 0
 
 	@s2_active.setter
 	def s2_active(self, value):
-		self.service.get_item(f'/Devices/{self._channel}/S2/S2Active').set_local_value(value)
+		self.service.get_item(f'/Devices/{self._channel}/S2/Active').set_local_value(value)
 
 	@property
 	def has_rm(self):
@@ -170,7 +170,7 @@ class ShellyChannelWithRm(base.ShellyChannel):
 		phase_setting = self.settings.get_value(self.settings.alias(f'Phase_{self._serial}_{channel}'))
 
 		path_base = "/Devices/{}/S2/".format(channel)
-		self.service.add_item(IntegerItem(path_base + 'S2Active', 0))
+		self.service.add_item(IntegerItem(path_base + 'Active', 0))
 		self.service.add_item(IntegerItem(path_base + 'PowerSetting', power_setting, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'PowerSetting'), text=fmt['watt']))
 		self.service.add_item(IntegerItem(path_base + 'ConsumerType', consumertype_setting, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'ConsumerType')))
 		self.service.add_item(IntegerItem(path_base + 'Priority', priority_setting, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'Priority')))
