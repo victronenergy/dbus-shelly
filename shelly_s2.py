@@ -60,6 +60,10 @@ class ShellyChannelWithRm(base.ShellyChannel):
 		return self.service.get_item(f'/Ac/L1/Power').value or 0
 
 	@property
+	def power_setting(self):
+		return self.service.get_item(f'/Devices/{self._channel}/S2/PowerSetting').value or 0
+
+	@property
 	def s2_active(self):
 		return self.service.get_item(f'/Devices/{self._channel}/S2/S2Active').value or 0
 
@@ -73,8 +77,37 @@ class ShellyChannelWithRm(base.ShellyChannel):
 
 	def __init__(self, *args, **kwargs):
 		super().__init__(*args, **kwargs)
-		self._control_type = None
 		self.rm_item = None
+		self._control_type_ombc = None
+		self._control_type_noctrl = None
+
+		# Indicates if the RM is enabled, i.e., the OMBC control type has been offered to HEMS.
+		# Whether the OMBC control type is actually activated by the HEMS is determined by self._control_type_ombc.active.
+		self._rm_enabled = False
+
+	async def enable_rm(self, channel):
+		logger.info("Enabling S2 Resource Manager for device %s", self.serial)
+		if not self.has_rm:
+			# Paths not yet present, add them to the service.
+			await self._add_rm_to_service(channel)
+		else:
+			# Let the HEMS know the RM is enabled by updating the allowed control types.
+			try:
+				await self.rm_item.send_resource_manager_details(control_types=[self._control_type_noctrl, self._control_type_ombc], asset_details=self._rm_details)
+			except:
+				pass
+		self._rm_enabled = True
+
+	async def disable_rm(self, channel):
+		logger.info("Disabling S2 Resource Manager for device %s", self.serial)
+		# Let the HEMS know the RM is disabled by updating the allowed control types to only NoControl.
+		try:
+			await self.rm_item.send_resource_manager_details(control_types=[self._control_type_noctrl], asset_details=self._rm_details)
+		except:
+			# Will throw when the HEMS is not connected, but will still update the available control types.
+			# So next time HEMS connects, it will only be offered the NoControl control type.
+			pass
+		self._rm_enabled = False
 
 	async def add_output(self, channel, output_type, set_state_cb, valid_functions, name=None, customName=None, set_dimming_cb=None):
 		valid_functions |= (1 << OutputFunction.S2_RM)
@@ -82,22 +115,22 @@ class ShellyChannelWithRm(base.ShellyChannel):
 
 		function = self.service.get_item(f'/SwitchableOutput/{channel}/Settings/Function').value
 		if function and function == OutputFunction.S2_RM:
-			await self.add_rm_to_service(channel)
+			await self.enable_rm(channel)
 			logger.debug("Setting output state off initially")
 			await set_state_cb(self.service.get_item(f'/SwitchableOutput/{channel}/State'), 0)
 			logger.info("S2 Resource Manager added to service")
 
 	def update(self, status_json):
 		super().update(status_json)
-		if self.has_rm:
+		if self._rm_enabled and self._control_type_ombc is not None and self._control_type_ombc.active:
 			# Pull relevant values from the device and forward to the control type
-			self._control_type.values_changed({'Status': self.status,'Power': self.power,})
+			self._control_type_ombc.values_changed({'Status': self.status,'Power': self.power,})
 
 	async def on_channel_function_changed(self, channel, function):
 		if function == OutputFunction.S2_RM:
-			await self.add_rm_to_service(channel)
-		elif self.has_rm:
-			logger.info("Cannot remove S2 item from service, restart the service.")
+			await self.enable_rm(channel)
+		elif self._rm_enabled:
+			await self.disable_rm(channel)
 
 	async def _s2_value_changed(self, path, item, value):
 		split = path.split('/')
@@ -110,40 +143,44 @@ class ShellyChannelWithRm(base.ShellyChannel):
 
 			item.set_local_value(value)
 
-	async def add_rm_to_service(self, channel):
-		if self.has_rm:
-			logger.info("S2 Resource Manager already exists for channel device %s channel %s",self.serial, channel)
-			return
+			# Update OMBC system description when power setting changes.
+			if split[-1] == 'PowerSetting' and self._rm_enabled and self._control_type_ombc.active:
+				logger.debug("Power setting changed, updating OMBC system description")
+				task = asyncio.create_task(self._control_type_ombc.send_system_description())
+				background_tasks.add(task)
+				task.add_done_callback(background_tasks.discard)
 
-		logger.info("Enabling S2 Resource Manager for device %s channel %s", self.serial, channel)
-
-		path_base = "/Devices/{}/S2/".format(channel)
-		self.service.add_item(IntegerItem(path_base + 'S2Active', 0))
-		self.service.add_item(IntegerItem(path_base + 'ConsumerType', 0, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'ConsumerType')))
-		self.service.add_item(IntegerItem(path_base + 'Priority', 0, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'Priority')))
-		self.service.add_item(IntegerItem(path_base + 'Phase', 1, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'Phase')))
+	async def _add_rm_to_service(self, channel):
+		# Paths will be added once when the function is set to S2 resource manager.
+		# After that, enabling/disabling the RM will only update the allowed control types.
+		logger.info("Adding S2 Resource Manager paths to service")
 
 		# Add settings paths
 		settings_base = self._settings_base + f'{channel}/S2/'
 		await self.settings.add_settings(
+			Setting(settings_base + 'PowerSetting', 1000, alias=f'PowerSetting_{self._serial}_{channel}'),
 			Setting(settings_base + 'ConsumerType', 0, alias=f'ConsumerType_{self._serial}_{channel}'),
 			Setting(settings_base + 'Priority', 0, alias=f'Priority_{self._serial}_{channel}'),
 			Setting(settings_base + 'Phase', 1, _min=1, _max=3, alias=f'Phase_{self._serial}_{channel}')
 		)
 
-		# Restore settings
-		try:
-			with self.service as s:
-				s[path_base + 'ConsumerType'] = self.settings.get_value(self.settings.alias(f'ConsumerType_{self._serial}_{channel}'))
-				s[path_base + 'Priority'] = self.settings.get_value(self.settings.alias(f'Priority_{self._serial}_{channel}'))
-				s[path_base + 'Phase'] = self.settings.get_value(self.settings.alias(f'Phase_{self._serial}_{channel}'))
-		except Exception as e:
-			logger.error("Failed to restore settings for S2 Resource Manager: %s", e)
+		power_setting = self.settings.get_value(self.settings.alias(f'PowerSetting_{self._serial}_{channel}'))
+		consumertype_setting = self.settings.get_value(self.settings.alias(f'ConsumerType_{self._serial}_{channel}'))
+		priority_setting = self.settings.get_value(self.settings.alias(f'Priority_{self._serial}_{channel}'))
+		phase_setting = self.settings.get_value(self.settings.alias(f'Phase_{self._serial}_{channel}'))
+
+		path_base = "/Devices/{}/S2/".format(channel)
+		self.service.add_item(IntegerItem(path_base + 'S2Active', 0))
+		self.service.add_item(IntegerItem(path_base + 'PowerSetting', power_setting, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'PowerSetting'), text=fmt['watt']))
+		self.service.add_item(IntegerItem(path_base + 'ConsumerType', consumertype_setting, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'ConsumerType')))
+		self.service.add_item(IntegerItem(path_base + 'Priority', priority_setting, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'Priority')))
+		self.service.add_item(IntegerItem(path_base + 'Phase', phase_setting, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'Phase')))
 
 		# Get channel custom name, if not available use the default name
 		name = self.service.get_item(f'/SwitchableOutput/{channel}/Settings/CustomName').value or \
 			self.service.get_item(f'/SwitchableOutput/{channel}/Name').value
 
+		# TODO: Update the asset details when the device custom name changes?
 		self._rm_details = AssetDetails(
 			resource_id=uuid.uuid4(),
 			provides_forecast=False,
@@ -156,16 +193,20 @@ class ShellyChannelWithRm(base.ShellyChannel):
 			serial_number=self._serial
 		)
 
-		self._control_type = SwitchDeviceControlType(self)
+		self._control_type_ombc = ShellyOMBC(self)
+		self._control_type_noctrl = ShellyNOCTRL(self)
 		self.rm_item = S2ResourceManagerItem(
 			'/Devices/{}/S2'.format(self._channel),
-			control_types=[self._control_type],
-			asset_details=self._rm_details)
+			control_types=[self._control_type_noctrl, self._control_type_ombc],
+			asset_details=self._rm_details
+		)
 
 		self.service.add_item(self.rm_item)
 
+		#FIXME: When the S2 paths are added after the service was already registered, itemschanged will not be sent automatically.
+		# This may cause the HEMS to not pick up the new paths, and thus not attempt to connect to the RM.
 
-class SwitchDeviceControlType(OMBCControlType):
+class ShellyOMBC(OMBCControlType):
 	MINIMUM_POWER_CHANGE = 0.05 # change in percentage before a power measurement is sent
 
 	@property
@@ -191,8 +232,8 @@ class SwitchDeviceControlType(OMBCControlType):
 			diagnostic_label="On",
 			abnormal_condition_only=False,
 			power_ranges=[PowerRange(
-				start_of_range=self._switch_item.power,
-				end_of_range=self._switch_item.power,
+				start_of_range=self._switch_item.power_setting,
+				end_of_range=self._switch_item.power_setting,
 				commodity_quantity=CommodityQuantity.ELECTRIC_POWER_L1
 			)]
 		)
@@ -261,7 +302,6 @@ class SwitchDeviceControlType(OMBCControlType):
 				task.add_done_callback(background_tasks.discard)
 
 	def handle_instruction(self, conn, msg, send_okay):
-		logger.debug("Handle instruction: %s", msg)
 		if not isinstance(msg, OMBCInstruction):
 			logger.error("Received message is not an OMBCInstruction: %s", msg)
 			return
@@ -276,16 +316,14 @@ class SwitchDeviceControlType(OMBCControlType):
 			return
 
 		exec_time = msg.execution_time
-		seconds = (datetime.datetime.now(timezone.utc) - datetime.datetime.strptime(exec_time, "%Y-%m-%d %H:%M:%S.%f%z")).total_seconds()
-		task = asyncio.create_task(
-			self._set_operation_mode(op_id, max(0, seconds))
-		)
+		seconds = (datetime.strptime(exec_time, "%Y-%m-%dT%H:%M:%S.%f%z") - datetime.now(timezone.utc)).total_seconds()
+		task = asyncio.create_task(self._set_operation_mode(op_id, max(0, seconds)))
 		background_tasks.add(task)
 		task.add_done_callback(background_tasks.discard)
 
 	async def _set_operation_mode(self, op_id, wait):
 		if (wait):
-			logger.debug("Waiting for %d seconds before setting operation mode to %s", wait, "on" if op_id == self._id_on else "off")
+			logger.debug("Waiting for %f seconds before setting operation mode to %s", wait, "on" if op_id == self._id_on else "off")
 			await asyncio.sleep(wait)
 		self._switch_item.state = (1 if op_id == self._id_on else 0)
 		logger.debug("Set operation mode to %s", "on" if op_id == self._id_on else "off")
@@ -343,7 +381,7 @@ class SwitchDeviceControlType(OMBCControlType):
 					active_operation_mode_id=str(operation_mode),
 					operation_mode_factor=1,
 					previous_operation_mode_id=str(self._previous_operation_mode) if self._previous_operation_mode is not None else None,
-					transition_timestamp=datetime.datetime.now(timezone.utc) if self._previous_operation_mode is not None else None
+					transition_timestamp=datetime.now(timezone.utc) if self._previous_operation_mode is not None else None
 				)
 			)
 		except Exception as e:
@@ -358,7 +396,7 @@ class SwitchDeviceControlType(OMBCControlType):
 			await self.rm_item.send_msg_and_await_reception_status(
 				PowerMeasurement(
 					message_id=uuid.uuid4(),
-					measurement_timestamp=datetime.datetime.now(timezone.utc),
+					measurement_timestamp=datetime.now(timezone.utc),
 					values=[
 						PowerValue(
 							commodity_quantity=CommodityQuantity.ELECTRIC_POWER_L1,
@@ -369,3 +407,23 @@ class SwitchDeviceControlType(OMBCControlType):
 			)
 		except Exception as e:
 			logger.error("Failed to send power measurement: %s", e)
+
+
+class ShellyNOCTRL(NoControlControlType):
+
+	def __init__(self, switch_item: ShellyChannelWithRm):
+		self._switch_item = switch_item
+		super().__init__()
+
+	def activate(self, conn):
+		logger.info("NOCTRL activated.")
+		self._switch_item.s2_active = 1
+		self.system_description=None
+		self.on_id=None
+		self.off_id=None
+		return super().activate(conn)
+
+	def deactivate(self, conn):
+		logger.info("NOCTRL deactivated.")
+		self._switch_item.s2_active = 0
+		return super().deactivate(conn)
