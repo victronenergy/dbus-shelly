@@ -69,7 +69,7 @@ class ShellyChannelWithRm(base.ShellyChannel):
 
 	@s2_active.setter
 	def s2_active(self, value):
-		self.service.get_item(f'/Devices/{self._channel}/S2/S2Active')._set_value(value)
+		self.service.get_item(f'/Devices/{self._channel}/S2/S2Active').set_local_value(value)
 
 	@property
 	def has_rm(self):
@@ -417,7 +417,6 @@ class ShellyNOCTRL(NoControlControlType):
 
 	def activate(self, conn):
 		logger.info("NOCTRL activated.")
-		self._switch_item.s2_active = 1
 		self.system_description=None
 		self.on_id=None
 		self.off_id=None
@@ -425,5 +424,4 @@ class ShellyNOCTRL(NoControlControlType):
 
 	def deactivate(self, conn):
 		logger.info("NOCTRL deactivated.")
-		self._switch_item.s2_active = 0
 		return super().deactivate(conn)
