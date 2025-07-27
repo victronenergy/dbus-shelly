@@ -144,10 +144,10 @@ class ShellyChannel(SwitchDevice, EnergyMeter, object):
 		""" Handle a value change from the settings service. """
 		super().value_changed(path, value)
 
-	def update(self, status_json):
+	def update(self, status_json, phase):
 		""" Update the service with new values. """
 		if not self.service:
 			return
 
 		SwitchDevice.update(self, status_json)
-		EnergyMeter.update(self, status_json)
+		EnergyMeter.update(self, status_json, phase)

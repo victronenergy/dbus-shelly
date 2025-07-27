@@ -53,11 +53,36 @@ logger = logging.getLogger('switch-device-rm')
 logger.setLevel(logging.DEBUG)
 background_tasks = set()
 
+def phase_setting_to_commodity(phase:int)-> CommodityQuantity:
+	'''
+		translates the phase setting 0-3 to the CommodityQuanity
+	'''
+	if phase == 0: return CommodityQuantity.ELECTRIC_POWER_3_PHASE_SYMMETRIC
+	if phase == 1: return CommodityQuantity.ELECTRIC_POWER_L1
+	if phase == 2: return CommodityQuantity.ELECTRIC_POWER_L2
+	if phase == 3: return CommodityQuantity.ELECTRIC_POWER_L3
+
+	#invalid? Default to 0. That's the smallest error on every phase. 
+	return CommodityQuantity.ELECTRIC_POWER_3_PHASE_SYMMETRIC
+
 class ShellyChannelWithRm(base.ShellyChannel):
 
 	@property
 	def power(self):
-		return self.service.get_item(f'/Ac/L1/Power').value or 0
+		return (self.service.get_item(f'/Ac/L1/Power').value or 0) + (self.service.get_item(f'/Ac/L2/Power').value or 0) + (self.service.get_item(f'/Ac/L3/Power').value or 0)
+	
+	@property
+	def phase_setting(self):
+		service_item = self.service.get_item(f'/Devices/{self._channel}/S2/Phase') or None
+		return service_item.value if service_item is not None else None
+	
+	@property
+	def on_hysteresis(self):
+		return self.service.get_item(f'/Devices/{self._channel}/S2/OnHysteresis').value or 0
+	
+	@property
+	def off_hysteresis(self):
+		return self.service.get_item(f'/Devices/{self._channel}/S2/OffHysteresis').value or 0
 
 	@property
 	def power_setting(self):
@@ -86,10 +111,10 @@ class ShellyChannelWithRm(base.ShellyChannel):
 		self._rm_enabled = False
 
 	async def enable_rm(self, channel):
-		logger.info("Enabling S2 Resource Manager for device %s", self.serial)
 		if not self.has_rm:
 			# Paths not yet present, add them to the service.
 			await self._add_rm_to_service(channel)
+			logger.info("Enabled S2 Resource Manager for device %s (%s)", self.serial, self._rm_details.name)
 		else:
 			# Let the HEMS know the RM is enabled by updating the allowed control types.
 			try:
@@ -116,12 +141,13 @@ class ShellyChannelWithRm(base.ShellyChannel):
 		function = self.service.get_item(f'/SwitchableOutput/{channel}/Settings/Function').value
 		if function and function == OutputFunction.S2_RM:
 			await self.enable_rm(channel)
+			#FIXME: Better read the current state, and just report that, so a restart of S2 just continues where it was.
 			logger.debug("Setting output state off initially")
 			await set_state_cb(self.service.get_item(f'/SwitchableOutput/{channel}/State'), 0)
 			logger.info("S2 Resource Manager added to service")
 
 	def update(self, status_json):
-		super().update(status_json)
+		super().update(status_json, self.phase_setting)
 		if self._rm_enabled and self._control_type_ombc is not None and self._control_type_ombc.active:
 			# Pull relevant values from the device and forward to the control type
 			self._control_type_ombc.values_changed({'Status': self.status,'Power': self.power,})
@@ -143,8 +169,9 @@ class ShellyChannelWithRm(base.ShellyChannel):
 
 			item.set_local_value(value)
 
-			# Update OMBC system description when power setting changes.
-			if split[-1] == 'PowerSetting' and self._rm_enabled and self._control_type_ombc.active:
+			# Update OMBC system description when (relevant)power setting changes.
+			relevant_settings = ["PowerSetting", "Phase", "OnHysteresis", "OffHysteresis"]
+			if split[-1] in relevant_settings and self._rm_enabled and self._control_type_ombc.active:
 				logger.debug("Power setting changed, updating OMBC system description")
 				task = asyncio.create_task(self._control_type_ombc.send_system_description())
 				background_tasks.add(task)
@@ -161,30 +188,37 @@ class ShellyChannelWithRm(base.ShellyChannel):
 			Setting(settings_base + 'PowerSetting', 1000, alias=f'PowerSetting_{self._serial}_{channel}'),
 			Setting(settings_base + 'ConsumerType', 0, alias=f'ConsumerType_{self._serial}_{channel}'),
 			Setting(settings_base + 'Priority', 0, alias=f'Priority_{self._serial}_{channel}'),
-			Setting(settings_base + 'Phase', 1, _min=1, _max=3, alias=f'Phase_{self._serial}_{channel}')
+			Setting(settings_base + 'Phase', 1, _min=0, _max=3, alias=f'Phase_{self._serial}_{channel}'), #Phase 0 will map to a 3 phased symmetric load.
+			Setting(settings_base + 'OnHysteresis', 30, _min=0, _max=999999, alias=f'OnHysteresis_{self._serial}_{channel}'),
+			Setting(settings_base + 'OffHysteresis', 30, _min=0, _max=999999, alias=f'OffHysteresis_{self._serial}_{channel}')
 		)
 
 		power_setting = self.settings.get_value(self.settings.alias(f'PowerSetting_{self._serial}_{channel}'))
 		consumertype_setting = self.settings.get_value(self.settings.alias(f'ConsumerType_{self._serial}_{channel}'))
 		priority_setting = self.settings.get_value(self.settings.alias(f'Priority_{self._serial}_{channel}'))
 		phase_setting = self.settings.get_value(self.settings.alias(f'Phase_{self._serial}_{channel}'))
-
+		on_hysteresis = self.settings.get_value(self.settings.alias(f'OnHysteresis_{self._serial}_{channel}'))
+		off_hysteresis = self.settings.get_value(self.settings.alias(f'OffHysteresis_{self._serial}_{channel}'))
+		
 		path_base = "/Devices/{}/S2/".format(channel)
 		self.service.add_item(IntegerItem(path_base + 'Active', 0))
 		self.service.add_item(IntegerItem(path_base + 'PowerSetting', power_setting, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'PowerSetting'), text=fmt['watt']))
 		self.service.add_item(IntegerItem(path_base + 'ConsumerType', consumertype_setting, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'ConsumerType')))
 		self.service.add_item(IntegerItem(path_base + 'Priority', priority_setting, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'Priority')))
 		self.service.add_item(IntegerItem(path_base + 'Phase', phase_setting, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'Phase')))
+		self.service.add_item(IntegerItem(path_base + 'OnHysteresis', on_hysteresis, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'OnHysteresis')))
+		self.service.add_item(IntegerItem(path_base + 'OffHysteresis', off_hysteresis, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'OffHysteresis')))
 
 		# Get channel custom name, if not available use the default name
 		name = self.service.get_item(f'/SwitchableOutput/{channel}/Settings/CustomName').value or \
 			self.service.get_item(f'/SwitchableOutput/{channel}/Name').value
 
 		# TODO: Update the asset details when the device custom name changes?
+		logger.info("Setting up phase as {}".format(phase_setting))
 		self._rm_details = AssetDetails(
 			resource_id=uuid.uuid4(),
 			provides_forecast=False,
-			provides_power_measurements=[CommodityQuantity.ELECTRIC_POWER_L1],
+			provides_power_measurements=[phase_setting_to_commodity(phase_setting or 0)],
 			instruction_processing_delay=Duration(0),
 			roles=[Role(role=RoleType.ENERGY_CONSUMER, commodity='ELECTRICITY')],
 			name=name,
@@ -200,7 +234,7 @@ class ShellyChannelWithRm(base.ShellyChannel):
 			control_types=[self._control_type_noctrl, self._control_type_ombc],
 			asset_details=self._rm_details
 		)
-
+		
 		self.service.add_item(self.rm_item)
 
 		#FIXME: When the S2 paths are added after the service was already registered, itemschanged will not be sent automatically.
@@ -234,7 +268,7 @@ class ShellyOMBC(OMBCControlType):
 			power_ranges=[PowerRange(
 				start_of_range=self._switch_item.power_setting,
 				end_of_range=self._switch_item.power_setting,
-				commodity_quantity=CommodityQuantity.ELECTRIC_POWER_L1
+				commodity_quantity=phase_setting_to_commodity(self._switch_item.phase_setting)
 			)]
 		)
 
@@ -245,13 +279,15 @@ class ShellyOMBC(OMBCControlType):
 			power_ranges=[PowerRange(
 				start_of_range=0,
 				end_of_range=0,
-				commodity_quantity=CommodityQuantity.ELECTRIC_POWER_L1
+				commodity_quantity=phase_setting_to_commodity(self._switch_item.phase_setting)
 			)]
 		)
 
-		# Opportunity loads controlled by shelly can be turned on and off at will, so no hysteresis required.
-		self.on_timer = Timer(id=uuid.uuid4(), diagnostic_label="On Hysteresis", duration=0)
-		self.off_timer = Timer(id=uuid.uuid4(), diagnostic_label="Off Hysteresis", duration=0)
+		# User can configure desired On/Off Hysteresis to avoid certain consumers turning on/off to frequently
+		# and eventually cause damage. These limits will be obeyed by the EMS, eventually not in offgrid cases,
+		# when an overload situation happens. 
+		self.on_timer = Timer(id=uuid.uuid4(), diagnostic_label="On Hysteresis", duration=(self._switch_item.on_hysteresis or 0) * 1000)
+		self.off_timer = Timer(id=uuid.uuid4(), diagnostic_label="Off Hysteresis", duration=(self._switch_item.off_hysteresis or 0) * 1000)
 
 		self.transition_to_on = Transition(
 			id=str(self._id_off_on),
@@ -301,7 +337,7 @@ class ShellyOMBC(OMBCControlType):
 				background_tasks.add(task)
 				task.add_done_callback(background_tasks.discard)
 
-	def handle_instruction(self, conn, msg, send_okay):
+	async def handle_instruction(self, conn, msg, send_okay):
 		if not isinstance(msg, OMBCInstruction):
 			logger.error("Received message is not an OMBCInstruction: %s", msg)
 			return
@@ -315,16 +351,18 @@ class ShellyOMBC(OMBCControlType):
 			logger.error("Received unknown operation mode ID: %s", op_id)
 			return
 
-		exec_time = msg.execution_time
-		seconds = (datetime.strptime(exec_time, "%Y-%m-%dT%H:%M:%S.%f%z") - datetime.now(timezone.utc)).total_seconds()
+		logger.info("Op-Id selected by EMS: {}".format(op_id))
+		seconds = (msg.execution_time - datetime.now(timezone.utc)).total_seconds()
 		task = asyncio.create_task(self._set_operation_mode(op_id, max(0, seconds)))
 		background_tasks.add(task)
 		task.add_done_callback(background_tasks.discard)
+		await send_okay
 
 	async def _set_operation_mode(self, op_id, wait):
 		if (wait):
 			logger.debug("Waiting for %f seconds before setting operation mode to %s", wait, "on" if op_id == self._id_on else "off")
 			await asyncio.sleep(wait)
+
 		self._switch_item.state = (1 if op_id == self._id_on else 0)
 		logger.debug("Set operation mode to %s", "on" if op_id == self._id_on else "off")
 		# Don't set _status here. It will be updated by values_changed when its done. Status message will then also be sent to HEMS.
@@ -379,9 +417,9 @@ class ShellyOMBC(OMBCControlType):
 				OMBCStatus(
 					message_id=uuid.uuid4(),
 					active_operation_mode_id=str(operation_mode),
-					operation_mode_factor=1,
+					operation_mode_factor=1, #FIXME: This needs to report the factor requested by OMBC-Instruction.
 					previous_operation_mode_id=str(self._previous_operation_mode) if self._previous_operation_mode is not None else None,
-					transition_timestamp=datetime.now(timezone.utc) if self._previous_operation_mode is not None else None
+					transition_timestamp=datetime.now(timezone.utc)
 				)
 			)
 		except Exception as e:
@@ -393,13 +431,13 @@ class ShellyOMBC(OMBCControlType):
 		if not self._active:
 			return
 		try:
-			await self.rm_item.send_msg_and_await_reception_status(
+			await self._switch_item.rm_item.send_msg_and_await_reception_status(
 				PowerMeasurement(
 					message_id=uuid.uuid4(),
 					measurement_timestamp=datetime.now(timezone.utc),
 					values=[
 						PowerValue(
-							commodity_quantity=CommodityQuantity.ELECTRIC_POWER_L1,
+							commodity_quantity= phase_setting_to_commodity(self._switch_item.phase_setting),
 							value=self._switch_item.power
 						)
 					]

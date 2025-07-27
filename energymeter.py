@@ -46,7 +46,10 @@ class EnergyMeter(object):
 		self.service.add_item(DoubleItem('/Ac/Energy/Reverse', None, text=fmt['kwh']))
 		self.service.add_item(DoubleItem('/Ac/Power', None, text= fmt['watt']))
 
-		for channel in range(1, self._num_phases + 1):
+		# a shelly with a switch may only be single-phased, but it could be mapped to any of these. 
+		# thus, we need to create all 3 phase-paths, but only make use of the values (in update) the shelly
+		# is actually mapped to.
+		for channel in range(1, 4):
 			prefix = '/Ac/L{}/'.format(channel)
 			self.service.add_item(DoubleItem(prefix + 'Voltage', None, text=fmt['volt']))
 			self.service.add_item(DoubleItem(prefix + 'Current', None, text=fmt['amp']))
@@ -55,7 +58,7 @@ class EnergyMeter(object):
 			self.service.add_item(DoubleItem(prefix + 'Energy/Reverse', None, text=fmt['kwh']))
 			self.service.add_item(DoubleItem(prefix + 'PowerFactor', None))
 
-	def update(self, status_json):
+	def update(self, status_json, phase=1):
 		if self._has_em:
 			eforward = 0
 			ereverse = 0
@@ -64,14 +67,26 @@ class EnergyMeter(object):
 			try:
 				with self.service as s:
 					if self._has_switch:
-						em_prefix = "/Ac/L1/"
-						s[em_prefix + 'Voltage'] = status_json["voltage"]
-						s[em_prefix + 'Current'] = status_json["current"]
-						s[em_prefix + 'Power'] = status_json["apower"]
-						s[em_prefix + 'PowerFactor'] = status_json["pf"] if 'pf' in status_json else None
-						# Shelly reports energy in Wh, so convert to kWh
-						s[em_prefix + 'Energy/Forward'] = status_json["aenergy"]["total"] / 1000 if 'aenergy' in status_json else None
-						s[em_prefix + 'Energy/Reverse'] = status_json["ret_aenergy"]["total"] / 1000 if 'ret_aenergy' in status_json else None
+						#a shelly with a switch is single phased. But it may be connected to either phase. 
+						#so, report values on the proper phase.
+						for l in range(1, 4): 
+							if l == phase:
+								em_prefix = "/Ac/L{}/".format(phase)
+								s[em_prefix + 'Voltage'] = status_json["voltage"]
+								s[em_prefix + 'Current'] = status_json["current"]
+								s[em_prefix + 'Power'] = status_json["apower"]
+								s[em_prefix + 'PowerFactor'] = status_json["pf"] if 'pf' in status_json else None
+								# Shelly reports energy in Wh, so convert to kWh
+								s[em_prefix + 'Energy/Forward'] = status_json["aenergy"]["total"] / 1000 if 'aenergy' in status_json else None
+								s[em_prefix + 'Energy/Reverse'] = status_json["ret_aenergy"]["total"] / 1000 if 'ret_aenergy' in status_json else None
+							else:
+								em_prefix = "/Ac/L{}/".format(l)
+								s[em_prefix + 'Voltage'] = None
+								s[em_prefix + 'Current'] = None
+								s[em_prefix + 'Power'] = None
+								s[em_prefix + 'PowerFactor'] = None
+								s[em_prefix + 'Energy/Forward'] = None
+								s[em_prefix + 'Energy/Reverse'] = None
 					else:
 						for l in range(1, self._num_phases + 1):
 							em_prefix = f"/Ac/L{l}/"
@@ -88,7 +103,7 @@ class EnergyMeter(object):
 				i = self.service.get_item(path)
 				return i.value or 0 if i is not None else 0
 
-			for l in range(1, self._num_phases + 1):
+			for l in range(1, 4):
 				eforward += get_value(f'/Ac/L{l}/Energy/Forward')
 				ereverse += get_value(f'/Ac/L{l}/Energy/Reverse')
 				power += get_value(f'/Ac/L{l}/Power')
@@ -98,14 +113,21 @@ class EnergyMeter(object):
 				s['/Ac/Energy/Reverse'] = ereverse
 				s['/Ac/Power'] = power
 
-	def update_energies(self, emdata):
+	def update_energies(self, emdata, phase=None):
 		try:
 			with self.service as s:
-				for l in range(1, self._num_phases + 1):
-					em_prefix = f'/Ac/L{l}/'
-					p = {1:'a', 2:'b', 3:'c'}.get(l)
+				if phase is None:
+					for l in range(1, self._num_phases + 1):
+						em_prefix = f'/Ac/L{l}/'
+						p = {1:'a', 2:'b', 3:'c'}.get(l)
+						s[em_prefix + 'Energy/Forward'] = emdata[f'{p}_total_act_energy'] / 1000
+						s[em_prefix + 'Energy/Reverse'] = emdata[f'{p}_total_act_ret_energy'] / 1000
+				else:
+					em_prefix = f'/Ac/L{phase}/'
+					p = {1:'a', 2:'b', 3:'c'}.get(phase)
 					s[em_prefix + 'Energy/Forward'] = emdata[f'{p}_total_act_energy'] / 1000
 					s[em_prefix + 'Energy/Reverse'] = emdata[f'{p}_total_act_ret_energy'] / 1000
+					
 		except:
 			pass
 
