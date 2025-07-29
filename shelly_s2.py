@@ -318,8 +318,10 @@ class ShellyOMBC(OMBCControlType):
 		)
 
 	def values_changed(self, values):
-		if not self._active:
+		#Ensure a 0 power package is transfered, even if the device isn't active anymore.
+		if not self._active and self._previous_power == 0:
 			return
+		
 		if 'Status' in values and self._status != values['Status']:
 			# Status has changed, update the HEMS
 			self._status = values['Status']
@@ -329,13 +331,13 @@ class ShellyOMBC(OMBCControlType):
 
 		if 'Power' in values:
 			power = values['Power']
-			if power > self._previous_power * (1 + self.MINIMUM_POWER_CHANGE) or \
-					power < self._previous_power * (1 - self.MINIMUM_POWER_CHANGE):
-				# Power has changed significantly, send a power measurement
-				self._previous_power = power
-				task = asyncio.create_task(self.send_power_measurement())
-				background_tasks.add(task)
-				task.add_done_callback(background_tasks.discard)
+			# we cannot monitor for a significant power change here.
+			# Sometimes the shelly reports 2 or 3 watt as last state before beeing off,
+			# this would then get "stuck", cause the 0 is no longer transfered.
+			self._previous_power = power
+			task = asyncio.create_task(self.send_power_measurement())
+			background_tasks.add(task)
+			task.add_done_callback(background_tasks.discard)
 
 	async def handle_instruction(self, conn, msg, send_okay):
 		if not isinstance(msg, OMBCInstruction):
