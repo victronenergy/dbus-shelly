@@ -165,7 +165,7 @@ class ShellyDevice(object):
 			await self._channels[channel].start()
 
 			# poll power every 2 seconds
-			asyncio.create_task(self.request_update(channel))
+			# asyncio.create_task(self.request_update(channel))
 
 	async def request_update(self, channel):
 		while True:

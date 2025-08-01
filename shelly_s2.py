@@ -126,8 +126,23 @@ class ShellyChannelWithRm(base.ShellyChannel):
 	async def disable_rm(self, channel):
 		logger.info("Disabling S2 Resource Manager for device %s", self.serial)
 		# Let the HEMS know the RM is disabled by updating the allowed control types to only NoControl.
+		#        For now, let's simply completly disconnect and see if that works out fine.
 		try:
 			await self.rm_item.send_resource_manager_details(control_types=[self._control_type_noctrl], asset_details=self._rm_details)
+
+			#make sure to send a 0 power measurement to EMS as well. 
+			await self.rm_item.send_msg_and_await_reception_status(
+				PowerMeasurement(
+					message_id=uuid.uuid4(),
+					measurement_timestamp=datetime.now(timezone.utc),
+					values=[
+						PowerValue(
+							commodity_quantity = phase_setting_to_commodity(self.phase_setting),
+							value=0
+						)
+					]
+				)
+			)
 		except:
 			# Will throw when the HEMS is not connected, but will still update the available control types.
 			# So next time HEMS connects, it will only be offered the NoControl control type.
@@ -153,6 +168,7 @@ class ShellyChannelWithRm(base.ShellyChannel):
 			self._control_type_ombc.values_changed({'Status': self.status,'Power': self.power,})
 
 	async def on_channel_function_changed(self, channel, function):
+		#FIXME: Switching from 2 to 6 during runtime does not work. (Nothing happens, requires service restart to take effect)
 		if function == OutputFunction.S2_RM:
 			await self.enable_rm(channel)
 		elif self._rm_enabled:
@@ -241,8 +257,6 @@ class ShellyChannelWithRm(base.ShellyChannel):
 		# This may cause the HEMS to not pick up the new paths, and thus not attempt to connect to the RM.
 
 class ShellyOMBC(OMBCControlType):
-	MINIMUM_POWER_CHANGE = 0.05 # change in percentage before a power measurement is sent
-
 	@property
 	def active(self):
 		return self._active
@@ -433,6 +447,7 @@ class ShellyOMBC(OMBCControlType):
 		if not self._active:
 			return
 		try:
+			logger.info("Sending Power Measurement {}={}W".format(self._switch_item.rm_item.asset_details.name, self._switch_item.power))
 			await self._switch_item.rm_item.send_msg_and_await_reception_status(
 				PowerMeasurement(
 					message_id=uuid.uuid4(),
