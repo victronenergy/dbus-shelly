@@ -14,7 +14,7 @@ from utils import STATUS_OFF, STATUS_ON
 
 class OutputType(IntEnum):
 	MOMENTARY = 0
-	LATCHING = 1
+	TOGGLE = 1
 	DIMMABLE = 2
 
 class OutputFunction(IntEnum):
@@ -48,7 +48,7 @@ class SwitchDevice(object):
 
 		# Settings
 		validTypesDimmable = 1 << OutputType.DIMMABLE.value
-		validTypesLatching = 1 << OutputType.LATCHING.value
+		validTypesToggle = 1 << OutputType.TOGGLE.value
 		validTypesMomentary = 1 << OutputType.MOMENTARY.value
 
 		self.service.add_item(TextItem(path_base + 'Settings/Group', "", writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/Group')))
@@ -60,7 +60,7 @@ class SwitchDevice(object):
 							text=self._function_text_callback))
 
 		self.service.add_item(IntegerItem(path_base + 'Settings/ValidTypes', validTypesDimmable if
-							output_type == OutputType.DIMMABLE else validTypesLatching | validTypesMomentary, 
+							output_type == OutputType.DIMMABLE else validTypesToggle | validTypesMomentary,
 							writeable=False, text=self._valid_types_text_callback))
 		self.service.add_item(IntegerItem(path_base + 'Settings/ValidFunctions', int(valid_functions), writeable=False,
 							text=self._valid_functions_text_callback))
@@ -157,8 +157,8 @@ class SwitchDevice(object):
 	def _type_text_callback(self, value):
 		if value == OutputType.MOMENTARY:
 			return "Momentary"
-		if value == OutputType.LATCHING:
-			return "Latching"
+		if value == OutputType.TOGGLE:
+			return "Toggle"
 		if value == OutputType.DIMMABLE:
 			return "Dimmable"
 		return "Unknown"
@@ -184,10 +184,10 @@ class SwitchDevice(object):
 		str = ""
 		if value & (1 << OutputType.DIMMABLE):
 			str += "Dimmable"
-		if value & (1 << OutputType.LATCHING):
+		if value & (1 << OutputType.TOGGLE):
 			if str:
 				str += ", "
-			str += "Latching"
+			str += "Toggle"
 		if value & (1 << OutputType.MOMENTARY):
 			if str:
 				str += ", "
