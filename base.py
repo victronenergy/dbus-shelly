@@ -286,7 +286,7 @@ class ShellyDevice(object):
 		if self._has_switch or self._has_dimming:
 			await ch.add_output(
 				channel=0,
-				output_type=OutputType.LATCHING if not self._has_dimming else OutputType.DIMMABLE,
+				output_type=OutputType.TOGGLE if not self._has_dimming else OutputType.DIMMABLE,
 				set_state_cb=partial(self.set_state_cb, channel),
 				valid_functions=(1 << OutputFunction.MANUAL),
 				name="Channel {}".format(channel + 1),
