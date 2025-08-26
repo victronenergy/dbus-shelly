@@ -26,10 +26,10 @@ class EnergyMeter(object):
 		self.service.add_item(TextArrayItem('/AllowedRoles', self.allowed_em_roles, writeable=False))
 
 		await self.settings.add_settings(
-			Setting(self._settings_base + 'Position', 0, 0, 2, alias="position")
+			Setting(self._settings_base + '%s/' % self._channel_id + 'Position', 0, 0, 2, alias="position_{}_{}".format(self._serial, self._channel_id))
 		)
 
-		self.service.add_item(IntegerItem('/Position', self.settings.get_value(self.settings.alias("position")),
+		self.service.add_item(IntegerItem('/Position', self.settings.get_value(self.settings.alias("position_{}_{}".format(self._serial, self._channel_id))),
 				writeable=True, onchange=self.position_changed))
 
 		# Indicate when we're masquerading for another device
@@ -122,7 +122,7 @@ class EnergyMeter(object):
 		if not 0 <= value <= 2:
 			return False
 
-		await self.settings.set_value(self.settings.alias("position"), value)
+		await self.settings.set_value(self.settings.alias("position_{}_{}".format(self._serial, self._channel_id)), value)
 		item.set_local_value(value)
 		return True
 
