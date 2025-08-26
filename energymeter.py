@@ -25,17 +25,12 @@ class EnergyMeter(object):
 			onchange=self.role_changed))
 		self.service.add_item(TextArrayItem('/AllowedRoles', self.allowed_em_roles, writeable=False))
 
-		# We don't need the setting when the device supports switching, as it can then only be an acload.
-		if not self._has_switch:
-			await self.settings.add_settings(
-				Setting(self._settings_base + 'Position', 0, 0, 2, alias="position")
-			)
+		await self.settings.add_settings(
+			Setting(self._settings_base + 'Position', 0, 0, 2, alias="position")
+		)
 
-			# Position for pvinverter
-			if self._em_role == 'pvinverter':
-				self.service.add_item(IntegerItem('/Position',
-					self.settings.get_value(self.settings.alias("position")),
-					writeable=True, onchange=self.position_changed))
+		self.service.add_item(IntegerItem('/Position', self.settings.get_value(self.settings.alias("position")),
+				writeable=True, onchange=self.position_changed))
 
 		# Indicate when we're masquerading for another device
 		if self._em_role != "grid":
