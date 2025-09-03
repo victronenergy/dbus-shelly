@@ -33,6 +33,7 @@ class ShellyDevice(object):
 		self._has_switch = False
 		self._has_em = False
 		self._channels = {}
+		self.device_custom_name = None
 		self._num_channels = 0
 
 	@property
@@ -102,8 +103,12 @@ class ShellyDevice(object):
 
 		self._num_channels = len(channels) if self._has_switch else 1
 
-		logger.info("Shelly device %s has %d channels, support switching: %s, energy metering: %s",
-			self._serial, self._num_channels, self._has_switch, self._has_em)
+		#get the shellies friendly name from device info. 
+		device_info = await self.get_device_info()
+		self.device_custom_name = device_info["name"]
+
+		logger.info("Shelly device %s (%s) has %d channels, support switching: %s, energy metering: %s",
+			self._serial, self.device_custom_name, self._num_channels, self._has_switch, self._has_em)
 
 		return True
 
@@ -136,7 +141,8 @@ class ShellyDevice(object):
 			restart=partial(self.restart_channel, channel),
 			productid=PRODUCT_ID_SHELLY_SWITCH if self._has_switch else PRODUCT_ID_SHELLY_EM,
 			productName="Shelly switch" if self._has_switch else "Shelly energy meter",
-			processName="dbus-shelly"
+			processName="dbus-shelly",
+			deviceCustomName=self.device_custom_name
 		)
 		# Determine service name.
 		if self._has_em:

@@ -15,9 +15,9 @@ from utils import logger, wait_for_settings, formatters as fmt
 class ShellyChannel(SwitchDevice, EnergyMeter, object):
 
 	@classmethod
-	async def create(cls, bus_type=None, serial=None, channel=0, has_em=False, has_switch=False, server=None, restart=None, version=VERSION, productid=0x0000, productName="Shelly switch", processName=__file__):
+	async def create(cls, bus_type=None, serial=None, channel=0, has_em=False, has_switch=False, server=None, restart=None, version=VERSION, productid=0x0000, productName="Shelly switch", processName=__file__, deviceCustomName=None):
 		bus = await MessageBus(bus_type=bus_type).connect()
-		c = cls(bus, productid, serial, channel, version, server, restart, has_em, has_switch, productName, processName)
+		c = cls(bus, productid, serial, channel, version, server, restart, has_em, has_switch, productName, processName, deviceCustomName)
 		c.settings = await wait_for_settings(bus)
 
 		role = 'acload' if c._has_em else 'switch'
@@ -45,7 +45,7 @@ class ShellyChannel(SwitchDevice, EnergyMeter, object):
 	def serial(self):
 		return self._serial
 
-	def __init__(self, bus, productid, serial, channel, version, connection, restart, has_em, has_switch, productName, processName):
+	def __init__(self, bus, productid, serial, channel, version, connection, restart, has_em, has_switch, productName, processName, deviceCustomName):
 		self.service = None
 		self.settings = None
 		self._productId = productid
@@ -60,6 +60,7 @@ class ShellyChannel(SwitchDevice, EnergyMeter, object):
 		self._has_switch = has_switch
 		self.productName = productName
 		self.processName = processName
+		self.deviceCustomName = deviceCustomName
 
 		# We don't know the service type yet. Will be .acload if shelly supports energy metering, otherwise .switch.
 		# If the shelly does not support switching, it may be acload, pvinverter or genset.
@@ -81,7 +82,12 @@ class ShellyChannel(SwitchDevice, EnergyMeter, object):
 		self.service.add_item(TextItem('/ProductName', self.productName))
 		self.service.add_item(IntegerItem('/Connected', 1))
 		self.service.add_item(TextItem('/Serial', self._serial))
-		self.service.add_item(TextItem('/CustomName', self.settings.get_value(self.settings.alias("customname_{}_{}".format(self._serial, self._channel))), writeable=True, onchange=self._set_customname))
+		initial_custom_name = self.settings.get_value(self.settings.alias("customname_{}_{}".format(self._serial, self._channel)))
+		if initial_custom_name is None or initial_custom_name == "": 
+			logger.debug("Setting initial custom name to {}".format(self.deviceCustomName))
+			initial_custom_name = "{} {}".format(self.deviceCustomName, self._channel)
+
+		self.service.add_item(TextItem('/CustomName', initial_custom_name, writeable=True, onchange=self._set_customname))
 		self.service.add_item(IntegerItem('/State', MODULE_STATE_CONNECTED))
 		self.service.add_item(IntegerItem('/DeviceInstance', int(self.settings.get_value(self.settings.alias('instance_{}_{}'.format(self._serial, self._channel))).split(':')[-1])))
 
