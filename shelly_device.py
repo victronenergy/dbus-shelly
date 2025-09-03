@@ -156,7 +156,7 @@ class ShellyDevice(object):
 		if self._has_switch:
 			await ch.add_output(
 				channel=channel,
-				output_type=0,
+				output_type=1,
 				set_state_cb=partial(self.set_state_cb, channel),
 				valid_functions=(1 << OutputFunction.MANUAL),
 				name="Channel {}".format(channel + 1),
