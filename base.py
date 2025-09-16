@@ -15,16 +15,16 @@ from utils import logger, wait_for_settings, formatters as fmt
 class ShellyChannel(SwitchDevice, EnergyMeter, object):
 
 	@classmethod
-	async def create(cls, bus_type=None, serial=None, channel_id=0, has_em=False, has_switch=False, has_dimming=False,
-				server=None, restart=None, productid=0x0000, productName=None):
+	async def create(cls, bus_type=None, serial=None, channel_id=0, rpc_device_type=None, has_em=False,
+				server=None, restart=None, rpc_callback=None, productid=0x0000, productName=None):
 		bus = await MessageBus(bus_type=bus_type).connect()
-		c = cls(bus, productid, serial, channel_id, server, restart, has_em, has_switch, has_dimming, productName)
+		c = cls(bus, productid, serial, channel_id, server, restart, rpc_callback, rpc_device_type, has_em, productName)
 		c.settings = await wait_for_settings(bus)
 
 		role = 'acload' if c._has_em else 'switch'
 		await c.settings.add_settings(
-			Setting(c._settings_base + 'ClassAndVrmInstance'.format(c._serial, c._channel), '{}:50'.format(role), alias='instance_{}_{}'.format(c._serial, c._channel)),
-			Setting(c._settings_base + 'CustomName'.format(c._serial, c._channel), "", alias="customname_{}_{}".format(c._serial, c._channel)),
+			Setting(c._settings_base + 'ClassAndVrmInstance', f'{role}:50', alias=f'instance_{c._serial}_{c._channel_id}'),
+			Setting(c._settings_base + 'CustomName', "", alias=f'customname_{c._serial}_{c._channel_id}'),
 		)
 
 		return c
@@ -46,31 +46,33 @@ class ShellyChannel(SwitchDevice, EnergyMeter, object):
 	def serial(self):
 		return self._serial
 
-	def __init__(self, bus, productid, serial, channel_id, connection, restart, has_em, has_switch, has_dimming, productName):
+	def __init__(self, bus, productid, serial, channel_id, connection, restart, rpc_callback, rpc_device_type, has_em, productName):
 		self.service = None
 		self.settings = None
 		self._productId = productid
 		self._serial = serial
-		self._channel = channel
+		self._channel_id = channel_id
 		self.bus = bus
 		self.connection = connection
 		self._restart = restart
 		self._em_role = None
+		self._rpc_device_type = rpc_device_type
+		self._has_dimming = rpc_device_type == 'Dimming'
+		self._has_switch = rpc_device_type == 'Switch'
 		self._has_em = has_em
-		self._has_switch = has_switch
-		self._has_dimming = has_dimming
+		self._rpc_call = rpc_callback
 		self.productName = productName
 
 		# We don't know the service type yet. Will be .acload if shelly supports energy metering, otherwise .switch.
 		# If the shelly does not support switching, it may be acload, pvinverter or genset.
 		self.serviceName = ''
-		self._settings_base = '/Settings/Devices/shelly_{}_{}/'.format(self._serial, self._channel)
+		self._settings_base = f'/Settings/Devices/shelly_{self._serial}_{self._channel_id}/'
 
 	async def init(self):
 		# Set up the service name
 		stype = self._em_role if self._has_em else 'switch'
 		self.set_service_type(stype)
-		self.serviceName = "com.victronenergy.{}.shelly_{}_{}".format(stype, self._serial, self._channel)
+		self.serviceName = f'com.victronenergy.{stype}.shelly_{self._serial}_{self._channel_id}'
 
 		self.service = Service(self.bus, self.serviceName)
 
@@ -81,14 +83,9 @@ class ShellyChannel(SwitchDevice, EnergyMeter, object):
 		self.service.add_item(TextItem('/ProductName', self.productName))
 		self.service.add_item(IntegerItem('/Connected', 1))
 		self.service.add_item(TextItem('/Serial', self._serial))
-		initial_custom_name = self.settings.get_value(self.settings.alias("customname_{}_{}".format(self._serial, self._channel)))
-		if initial_custom_name is None or initial_custom_name == "": 
-			logger.debug("Setting initial custom name to {}".format(self.deviceCustomName))
-			initial_custom_name = "{} {}".format(self.deviceCustomName, self._channel)
-
-		self.service.add_item(TextItem('/CustomName', initial_custom_name, writeable=True, onchange=self._set_customname))
+		self.service.add_item(TextItem('/CustomName', self.settings.get_value(self.settings.alias(f'customname_{self._serial}_{self._channel_id}')), writeable=True, onchange=self._set_customname))
 		self.service.add_item(IntegerItem('/State', MODULE_STATE_CONNECTED))
-		self.service.add_item(IntegerItem('/DeviceInstance', int(self.settings.get_value(self.settings.alias('instance_{}_{}'.format(self._serial, self._channel))).split(':')[-1])))
+		self.service.add_item(IntegerItem('/DeviceInstance', int(self.settings.get_value(self.settings.alias(f'instance_{self._serial}_{self._channel_id}')).split(':')[-1])))
 
 	def stop(self):
 		if self.service is not None:
@@ -115,16 +112,16 @@ class ShellyChannel(SwitchDevice, EnergyMeter, object):
 			s["/CustomName"] = v or "Switching device"
 
 	def set_service_type(self, _stype):
-		setting = self.settings.get_value(self.settings.alias('instance_{}_{}'.format(self._serial, self._channel)))
+		setting = self.settings.get_value(self.settings.alias(f'instance_{self._serial}_{self._channel_id}'))
 		if setting is None:
-			logger.warning("No instance setting found for {}, setting default to switch:50".format(self._serial))
+			logger.warning(f'No instance setting found for {self._serial}, setting default to switch:50')
 			return
 		stype, instance = self.role_instance(setting)
 
 		if stype != _stype:
-			p = self.settings.alias('instance_{}_{}'.format(self._serial, self._channel))
+			p = self.settings.alias(f'instance_{self._serial}_{self._channel_id}')
 			role, instance = self.role_instance(self.settings.get_value(p))
-			self.settings.set_value_async(p, "{}:{}".format(_stype, instance))
+			self.settings.set_value_async(p, f'{_stype}:{instance}')
 
 	def role_instance(self, value):
 		val = value.split(':')
@@ -132,15 +129,15 @@ class ShellyChannel(SwitchDevice, EnergyMeter, object):
 
 	def items_changed(self, service, values):
 		try:
-			self.customname = values[self.settings.alias("customname_{}_{}".format(self._serial, self._channel))]
+			self.customname = values[self.settings.alias(f'customname_{self._serial}_{self._channel_id}')]
 		except:
 			pass # Not a customname change
 
 	def _set_customname(self, value):
 		try:
-			cn = self.settings.get_value(self.settings.alias("customname_{}_{}".format(self._serial, self._channel)))
+			cn = self.settings.get_value(self.settings.alias(f'customname_{self._serial}_{self._channel_id}'))
 			if cn != value:
-				self.settings.set_value_async(self.settings.alias("customname_{}_{}".format(self._serial, self._channel)), value)
+				self.settings.set_value_async(self.settings.alias(f'customname_{self._serial}_{self._channel_id}'), value)
 			return True
 		except:
 			return False

@@ -30,9 +30,7 @@ class ShellyDevice(object):
 		self._aiohttp_session = None
 		self._server = server
 		self._rpc_lock = asyncio.Lock()
-		self._dimming_lock = asyncio.Lock()
-		self._desired_dimming_value = None
-		self._has_switch = False
+		self._rpc_device_type = None
 		self._has_em = False
 		self._has_dimming = False
 		self._channels = {}
@@ -53,7 +51,11 @@ class ShellyDevice(object):
 
 	@property
 	def has_switch(self):
-		return self._has_switch
+		return self._rpc_device_type == 'Switch'
+
+	@property
+	def has_dimming(self):
+		return self._rpc_device_type == 'Dimming'
 
 	@property
 	def has_em(self):
@@ -90,10 +92,12 @@ class ShellyDevice(object):
 			logger.error("Failed to list shelly methods")
 			return False
 
-		self._has_switch = 'Switch.GetStatus' in methods
-		self._has_dimming = 'Light.GetStatus' in methods
+		if 'Switch.GetStatus' in methods:
+			self._rpc_device_type = 'Switch'
+		elif 'Light.GetStatus' in methods:
+			self._rpc_device_type = 'Dimming'
 
-		if self._has_switch or self._has_dimming:
+		if self.has_switch or self.has_dimming:
 			channels = await self.get_channels()
 
 			if 'aenergy' in channels[0]:
@@ -106,13 +110,14 @@ class ShellyDevice(object):
 		elif 'EM.GetStatus' in methods:
 			# Energy metering capabilities -> acload service
 			self._has_em = True
+			self._rpc_device_type = 'EM'
 			# Using a shelly as grid meter is not supported because the update frequency is too low.
 			self.allowed_em_roles = ['acload', 'pvinverter', 'genset']
 
-		self._num_channels = len(channels) if self._has_switch or self._has_dimming else 1
+		self._num_channels = len(channels) if self.has_switch or self.has_dimming else 1
 
 		logger.info("Shelly device %s has %d channels, supports switching: %s, energy metering: %s, dimming: %s",
-			self._serial, self._num_channels, self._has_switch, self._has_em, self._has_dimming)
+			self._serial, self._num_channels, self.has_switch, self.has_em, self.has_dimming)
 
 		return True
 
@@ -124,7 +129,7 @@ class ShellyDevice(object):
 
 		logger.info(f"Starting shelly device {self._serial}")
 
-		if not (self._has_em or self._has_switch or self._has_dimming):
+		if not (self.has_em or self.has_switch or self.has_dimming):
 			logger.error("Shelly device %s does not support switching or energy metering", self._serial)
 			return
 
@@ -139,30 +144,29 @@ class ShellyDevice(object):
 			bus_type=self._bus_type,
 			serial=self._serial,
 			channel_id=channel,
+			rpc_device_type=self._rpc_device_type,
 			has_em=self._has_em,
-			has_switch=self._has_switch,
 			server=self._shelly_device.ip_address or self._server,
-			has_dimming=self._has_dimming,
 			restart=partial(self.restart_channel, channel),
-			productid=PRODUCT_ID_SHELLY_SWITCH if self._has_switch or self._has_dimming else PRODUCT_ID_SHELLY_EM,
-			productName="Shelly switch" if self._has_switch else "Shelly dimmer" if self._has_dimming else "Shelly EM",
+			rpc_callback=self.rpc_call,
+			productid=PRODUCT_ID_SHELLY_SWITCH if self.has_switch or self.has_dimming else PRODUCT_ID_SHELLY_EM,
+			productName="Shelly switch" if self.has_switch else "Shelly dimmer" if self.has_dimming else "Shelly EM",
 		)
 		# Determine service name.
-		if self._has_em:
+		if self.has_em:
 			phases = await self.get_num_phases()
 			await ch.init_em(phases, self.allowed_em_roles)
 		await ch.init()
-		if self._has_switch or self._has_dimming:
+		if self.has_switch or self.has_dimming:
+			type = OutputType.DIMMABLE if self.has_dimming \
+				else OutputType.TOGGLE
 			await ch.add_output(
 				channel=0,
-				output_type=OutputType.LATCHING if not self._has_dimming else OutputType.DIMMABLE,
-				set_state_cb=partial(self.set_state_cb, channel),
+				output_type=type,
 				valid_functions=(1 << OutputFunction.MANUAL),
-				name="Channel {}".format(channel + 1),
-				customName="Shelly Switch",
-				set_dimming_cb=partial(self.set_dimming_value, channel), # Won't be called if output type is not DIMMABLE
+				name=f'Channel {channel + 1}'
 			)
-		if self._has_em:
+		if self.has_em:
 			await ch.setup_em()
 
 		self._channels[channel] = ch
@@ -190,7 +194,7 @@ class ShellyDevice(object):
 		self._aiohttp_session = None
 		self.set_event("stopped")
 
-	async def _rpc_call(self, method, params=None):
+	async def rpc_call(self, method, params=None):
 		resp = None
 		try:
 			async with self._rpc_lock:
@@ -203,15 +207,15 @@ class ShellyDevice(object):
 		return resp
 
 	async def get_device_info(self):
-		return await self._rpc_call("Shelly.GetDeviceInfo")
+		return await self.rpc_call("Shelly.GetDeviceInfo")
 
 	async def get_num_phases(self):
 		status = await self.request_channel_status(0)
 		if status is not None:
-			if (self._has_dimming or self._has_switch) and self._has_em:
+			if (self.has_dimming or self.has_switch) and self.has_em:
 				return 1
-			elif self._has_em:
-				return sum(['{}_voltage'.format(i) in status for i in ['a','b','c']])
+			elif self.has_em:
+				return sum([f'{i}_voltage' in status for i in ['a','b','c']])
 		return 0
 
 	async def get_channels(self):
@@ -226,19 +230,19 @@ class ShellyDevice(object):
 				return channels
 
 	async def request_channel_status(self, channel):
-		return await self._rpc_call("{}.GetStatus".format("Switch" if self._has_switch else "Light" if self._has_dimming else "EM"), {"id": channel})
+		return await self.rpc_call(f'{self._rpc_device_type}.GetStatus', {"id": channel})
 
 	async def list_methods(self):
-		resp = await self._rpc_call("Shelly.ListMethods")
+		resp = await self.rpc_call("Shelly.ListMethods")
 		return resp['methods'] if resp and 'methods' in resp else []
 
 	def device_updated(self, cb_device, update_type):
 		if update_type == RpcUpdateType.STATUS:
 			for channel in self._channels.keys():
-				if f'emdata:{channel}' in cb_device.status and self._has_em:
+				if f'emdata:{channel}' in cb_device.status and self.has_em:
 					self._channels[channel].update_energies(cb_device.status[f'emdata:{channel}'])
 				# Get the switch status for this channel
-				id="{}:{}".format('switch' if self._has_switch else 'light' if self._has_dimming else 'em', channel)
+				id=f'{self._rpc_device_type.lower()}:{channel}'
 				# Check if the channel is present in the status
 				if id in cb_device.status:
 					self.parse_status(channel, cb_device.status[id])

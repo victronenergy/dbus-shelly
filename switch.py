@@ -5,6 +5,7 @@ import sys
 import os
 from functools import partial
 from enum import IntEnum
+import asyncio
 # aiovelib
 sys.path.insert(1, os.path.join(os.path.dirname(__file__), 'ext', 'aiovelib'))
 from aiovelib.service import IntegerItem, TextItem
@@ -15,7 +16,7 @@ from utils import STATUS_OFF, STATUS_ON
 class OutputType(IntEnum):
 	MOMENTARY = 0
 	TOGGLE = 1
-	DIMMABLE = 2
+	TYPE_MAX = DIMMABLE = 2
 
 class OutputFunction(IntEnum):
 	ALARM = 0
@@ -36,45 +37,49 @@ MODULE_STATE_UNDER_VOLTAGE = 0x105
 # Base class for all switching devices.
 class SwitchDevice(object):
 
-	async def add_output(self, channel, output_type, set_state_cb, valid_functions=(1 << OutputFunction.MANUAL) | 0, name="", customName="", set_dimming_cb=None):
-		path_base  = '/SwitchableOutput/%s/' % channel
-		self._set_state_cb = set_state_cb
-		self.service.add_item(IntegerItem(path_base + 'State', 0, writeable=True, onchange=set_state_cb))
+	def __init__(self, service, settings, serial, channel_id, capabilities, server, restart, rpc_callback, productid, productName):
+		self._dimming_lock = asyncio.Lock()
+		self._desired_dimming_value = None
+
+	async def add_output(self, channel, output_type, valid_functions=(1 << OutputFunction.MANUAL) | 0, name=""):
+		self._channel_id = channel
+		path_base  = '/SwitchableOutput/%s/' % self._channel_id
+		self.service.add_item(IntegerItem(path_base + 'State', 0, writeable=True, onchange=self.set_state))
 		self.service.add_item(IntegerItem(path_base + 'Status', 0, writeable=False, text=self._status_text_callback))
 		self.service.add_item(TextItem(path_base + 'Name', name, writeable=False))
 		valid_functions |= (1 << OutputFunction.MANUAL) # Always allow manual function
 		if output_type == OutputType.DIMMABLE:
-			self.service.add_item(IntegerItem(path_base + 'Dimming', 0, writeable=True, onchange=set_dimming_cb, text=lambda y: str(y) + '%'))
-
-		# Settings
-		validTypesDimmable = 1 << OutputType.DIMMABLE.value
-		validTypesToggle = 1 << OutputType.TOGGLE.value
-		validTypesMomentary = 1 << OutputType.MOMENTARY.value
+			self.service.add_item(IntegerItem(path_base + 'Dimming', 0, writeable=True, onchange=self.set_dimming_value, text=lambda y: str(y) + '%'))
 
 		self.service.add_item(TextItem(path_base + 'Settings/Group', "", writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/Group')))
-		self.service.add_item(TextItem(path_base + 'Settings/CustomName', customName, writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/CustomName')))
+		self.service.add_item(TextItem(path_base + 'Settings/CustomName', "", writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/CustomName')))
 		self.service.add_item(IntegerItem(path_base + 'Settings/ShowUIControl', 1, writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/ShowUIControl')))
 		self.service.add_item(IntegerItem(path_base + 'Settings/Type', output_type, writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/Type'),
 							text=self._type_text_callback))
 		self.service.add_item(IntegerItem(path_base + 'Settings/Function', int(OutputFunction.MANUAL), writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/Function'),
 							text=self._function_text_callback))
 
-		self.service.add_item(IntegerItem(path_base + 'Settings/ValidTypes', validTypesDimmable if
-							output_type == OutputType.DIMMABLE else validTypesToggle | validTypesMomentary,
+		self.service.add_item(IntegerItem(path_base + 'Settings/ValidTypes', int(self._get_valid_types()),
 							writeable=False, text=self._valid_types_text_callback))
 		self.service.add_item(IntegerItem(path_base + 'Settings/ValidFunctions', int(valid_functions), writeable=False,
 							text=self._valid_functions_text_callback))
 
-		base = self._settings_base + '%s/' % channel
+		base = self._settings_base + '%s/' % self._channel_id
 		await self.settings.add_settings(
-			Setting(base + 'Group', "", alias=f'Group_{self._serial}_{channel}'),
-			Setting(base + 'CustomName', "", alias=f'CustomName_{self._serial}_{channel}'),
-			Setting(base + 'ShowUIControl', 1, _min=0, _max=1, alias=f'ShowUIControl_{self._serial}_{channel}'),
-			Setting(base + 'Function', int(OutputFunction.MANUAL), _min=0, _max=6, alias=f'Function_{self._serial}_{channel}'),
-			Setting(base + 'Type', output_type, _min=0, _max=2, alias=f'Type_{self._serial}_{channel}'),
+			Setting(base + 'Group', "", alias=f'Group_{self._serial}_{self._channel_id}'),
+			Setting(base + 'CustomName', "", alias=f'CustomName_{self._serial}_{self._channel_id}'),
+			Setting(base + 'ShowUIControl', 1, _min=0, _max=1, alias=f'ShowUIControl_{self._serial}_{self._channel_id}'),
+			Setting(base + 'Function', int(OutputFunction.MANUAL), _min=0, _max=6, alias=f'Function_{self._serial}_{self._channel_id}'),
+			Setting(base + 'Type', output_type, _min=0, _max=OutputType.TYPE_MAX, alias=f'Type_{self._serial}_{self._channel_id}'),
 		)
 
-		self._restore_settings(channel)
+		self._restore_settings(self._channel_id)
+
+	def _get_valid_types(self):
+		if self._has_dimming:
+			return 1 << OutputType.DIMMABLE.value
+		else:
+			return 1 << OutputType.TOGGLE.value | 1 << OutputType.MOMENTARY.value
 
 	def _restore_settings(self, channel):
 		try:
@@ -225,11 +230,49 @@ class SwitchDevice(object):
 	async def on_channel_function_changed(self, channel, value):
 		pass
 
+	async def set_state(self, item, value):
+		if value not in (0, 1):
+			return
+
+		await self._rpc_call(
+			f'{self._rpc_device_type}.Set',
+			{
+				# id is the switch channel, starting from 0
+				"id":self._channel_id,
+				"on":True if value == 1 else False,
+			}
+		)
+
+		item.set_local_value(value)
+
+	async def set_dimming_value(self, item, value):
+		self._desired_dimming_value = value
+		asyncio.create_task(self._set_dimming_value(item, value))
+
+	async def _set_dimming_value(self, item, value):
+		if value < 0 or value > 100:
+			return
+
+		async with self._dimming_lock:
+			# If a new dimming setpoint has been set by the time this thread wakes up, then exit.
+			if value != self._desired_dimming_value:
+				return
+
+			await self._rpc_call(
+				"Light.Set",
+				{
+					"id": self._channel_id,
+					"brightness": value,
+				}
+			)
+
+			item.set_local_value(value)
+
 	def update(self, status_json):
 		if not (self._has_switch or self._has_dimming):
 			return
 		try:
-			switch_prefix = f"/SwitchableOutput/{self._channel_id}/"
+			switch_prefix = f'/SwitchableOutput/{self._channel_id}/'
 			status = STATUS_ON if status_json["output"] else STATUS_OFF
 			with self.service as s:
 				s[switch_prefix + 'State'] = 1 if status == STATUS_ON else 0
