@@ -6,17 +6,19 @@ import os
 from functools import partial
 from enum import IntEnum
 import asyncio
+import colorsys
 # aiovelib
 sys.path.insert(1, os.path.join(os.path.dirname(__file__), 'ext', 'aiovelib'))
 from aiovelib.service import IntegerItem, TextItem
 from aiovelib.localsettings import Setting
 
-from utils import STATUS_OFF, STATUS_ON
+from utils import logger, STATUS_OFF, STATUS_ON
 
 class OutputType(IntEnum):
 	MOMENTARY = 0
 	TOGGLE = 1
-	DIMMABLE = 2
+	DIMMABLE = 2,
+	TYPE_MAX = RGB_DIMMABLE = 11
 
 class OutputFunction(IntEnum):
 	ALARM = 0
@@ -50,6 +52,18 @@ class SwitchDevice(object):
 		valid_functions |= (1 << OutputFunction.MANUAL) # Always allow manual function
 		if output_type == OutputType.DIMMABLE:
 			self.service.add_item(IntegerItem(path_base + 'Dimming', 0, writeable=True, onchange=self.set_dimming_value, text=lambda y: str(y) + '%'))
+		elif output_type == OutputType.RGB_DIMMABLE:
+				if not (self._has_rgb_dimming or self._has_rgbw_dimming):
+					logger.warning("Output type RGB selected, but device does not support RGB or RGBW dimming.")
+					return
+
+				# Shelly RGB(W) dimmers must be controlled with RGB values, an optional brightness and a white component (RGBW only)
+				self.service.add_item(IntegerItem(path_base + 'Dimming', 0, writeable=True, onchange=self.set_dimming_brightness, text=lambda y: str(y) + '%'))
+				self.service.add_item(IntegerItem(path_base + 'Hue', 0, writeable=True, onchange=partial(self.set_dimming_rgb, 'h'), text=lambda y: str(y)))
+				self.service.add_item(IntegerItem(path_base + 'Saturation', 0, writeable=True, onchange=partial(self.set_dimming_rgb, 's'), text=lambda y: str(y) + '%'))
+				self.service.add_item(IntegerItem(path_base + 'Value', 0, writeable=True, onchange=partial(self.set_dimming_rgb, 'v'), text=lambda y: str(y) + '%'))
+				if self._has_rgbw_dimming:
+					self.service.add_item(IntegerItem(path_base + 'White', 0, writeable=True, onchange=self.set_dimming_white, text=lambda y: str(y) + '%'))
 
 		self.service.add_item(TextItem(path_base + 'Settings/Group', "", writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/Group')))
 		self.service.add_item(TextItem(path_base + 'Settings/CustomName', "", writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/CustomName')))
@@ -163,6 +177,8 @@ class SwitchDevice(object):
 			return "Toggle"
 		if value == OutputType.DIMMABLE:
 			return "Dimmable"
+		if value == OutputType.RGB_DIMMABLE:
+			return "RGB Dimmable"
 		return "Unknown"
 
 	def _function_text_callback(self, value):
@@ -194,6 +210,10 @@ class SwitchDevice(object):
 			if str:
 				str += ", "
 			str += "Momentary"
+		if value & (1 << OutputType.RGB_DIMMABLE):
+			if str:
+				str += ", "
+			str += "RGB Dimmable"
 		return str
 
 	def _valid_functions_text_callback(self, value):
@@ -270,8 +290,67 @@ class SwitchDevice(object):
 
 			item.set_local_value(value)
 
+	async def set_dimming_brightness(self, item, value):
+		if value < 0 or value > 100:
+			return
+		await self._rpc_call(
+					f'{self._rpc_device_type}.Set',
+					{
+						"id": self._channel_id,
+						"brightness": value,
+					}
+				)
+		item.set_local_value(value)
+
+	async def set_dimming_white(self, item, value):
+		if value < 0 or value > 100:
+			return
+		await self._rpc_call(
+					f'{self._rpc_device_type}.Set',
+					{
+						"id": self._channel_id,
+						"white": value * 255 // 100,
+					}
+				)
+		item.set_local_value(value)
+
+	async def set_dimming_rgb(self, param, item, value):
+		hsv = {'h': None, 's': None, 'v': None}
+		hsv[param] = value
+
+		try:
+			if not hsv['h']:
+				hsv['h'] = int(self.service.get_item(f'/SwitchableOutput/{self._channel_id}/Hue').value)
+			if not hsv['s']:
+				hsv['s'] = int(self.service.get_item(f'/SwitchableOutput/{self._channel_id}/Saturation').value)
+			if not hsv['v']:
+				hsv['v'] = int(self.service.get_item(f'/SwitchableOutput/{self._channel_id}/Dimming').value)
+		except:
+			return
+		if hsv['h'] < 0 or hsv['h'] > 360 or hsv['s'] < 0 or hsv['s'] > 100 or hsv['v'] < 0 or hsv['v'] > 100:
+			return
+
+		item.set_local_value(value)
+
+		# Convert HSV to RGB
+		rgb = colorsys.hsv_to_rgb(hsv['h'] / 360, hsv['s'] / 100, hsv['v'] / 100)
+		rgb = [int(c * 255) for c in rgb]
+
+		await self._set_dimming_rgb(rgb)
+
+	async def _set_dimming_rgb(self, rgb):
+		async with self._dimming_lock:
+			logger.debug("Setting RGB dimming for channel %d to %s", self._channel_id, rgb)
+			if any(c < 0 or c > 255 for c in rgb):
+				return
+
+			await self._rpc_call(
+				f'{self._rpc_device_type}.Set',
+				{"id": self._channel_id, "rgb": rgb[:3]}
+			)
+
 	def update(self, status_json):
-		if not (self._has_switch or self._has_dimming):
+		if not (self._has_switch or self._has_dimming or self._has_rgb_dimming or self._has_rgbw_dimming):
 			return
 		try:
 			switch_prefix = f'/SwitchableOutput/{self._channel_id}/'
@@ -281,5 +360,16 @@ class SwitchDevice(object):
 				s[switch_prefix + 'Status'] = status
 				if self._has_dimming:
 					s[switch_prefix + 'Dimming'] = status_json.get("brightness", 0)
+				elif self._has_rgb_dimming or self._has_rgbw_dimming:
+					#TODO if the conversion from RGB to HSV and vice versa is a bit off (due to rounding errors), it may cause an unstable loop of the set_dimming_rgb callback being called repeatedly.
+					# Check if this is the case. Otherwise, consider storing the last set RGB value and use that to update the HSV values instead of converting back.
+					r, g, b = status_json.get("rgb", [0, 0, 0])
+					hue, saturation, value = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
+					s[switch_prefix + 'Hue'] = round(hue * 360)
+					s[switch_prefix + 'Saturation'] = round(saturation * 100)
+					s[switch_prefix + 'Value'] = round(value * 100)
+					s[switch_prefix + 'Dimming'] = status_json.get("brightness", 0)
+					if self._has_rgbw_dimming:
+						s[switch_prefix + 'White'] = round(status_json.get("white", 0) * 100 / 255)
 		except:
 			pass

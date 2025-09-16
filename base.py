@@ -52,6 +52,8 @@ class ShellyChannel(SwitchDevice, EnergyMeter, object):
 		self._em_role = None
 		self._rpc_device_type = rpc_device_type
 		self._has_dimming = rpc_device_type == 'Dimming'
+		self._has_rgb_dimming = rpc_device_type == 'RGB'
+		self._has_rgbw_dimming = rpc_device_type == 'RGBW'
 		self._has_switch = rpc_device_type == 'Switch'
 		self._has_em = has_em
 		self._rpc_call = rpc_callback
@@ -165,7 +167,6 @@ class ShellyDevice(object):
 		self._rpc_lock = asyncio.Lock()
 		self._rpc_device_type = None
 		self._has_em = False
-		self._has_dimming = False
 		self._channels = {}
 		self._num_channels = 0
 
@@ -190,15 +191,17 @@ class ShellyDevice(object):
 	def has_dimming(self):
 		return self._rpc_device_type == 'Dimming'
 
+	@property
+	def has_rgb_dimming(self):
+		return self._rpc_device_type == 'RGB'
 
+	@property
+	def has_rgbw_dimming(self):
+		return self._rpc_device_type == 'RGBW'
 
 	@property
 	def has_em(self):
 		return self._has_em
-
-	@property
-	def has_dimming(self):
-		return self._has_dimming
 
 	@property
 	def active_channels(self):
@@ -231,6 +234,10 @@ class ShellyDevice(object):
 			self._rpc_device_type = 'Switch'
 		elif 'Light.GetStatus' in methods:
 			self._rpc_device_type = 'Dimming'
+		elif 'RGB.GetStatus' in methods:
+			self._rpc_device_type = 'RGB'
+		elif 'RGBW.GetStatus' in methods:
+			self._rpc_device_type = 'RGBW'
 
 		if self.has_switch or self.has_dimming:
 			channels = await self.get_channels()
@@ -250,8 +257,8 @@ class ShellyDevice(object):
 
 		self._num_channels = len(channels) if self.has_switch or self.has_dimming else 1
 
-		logger.info("Shelly device %s has %d channels, supports switching: %s, energy metering: %s, dimming: %s",
-			self._serial, self._num_channels, self.has_switch, self.has_em, self.has_dimming)
+		logger.info("Shelly device %s has %d channels, supports switching: %s, energy metering: %s, dimming: %s, rgb dimming: %s, rgbw dimming: %s",
+			self._serial, self._num_channels, self.has_switch, self.has_em, self.has_dimming, self.has_rgb_dimming, self.has_rgbw_dimming)
 
 		return True
 
@@ -263,7 +270,7 @@ class ShellyDevice(object):
 
 		logger.info(f"Starting shelly device {self._serial}")
 
-		if not (self.has_em or self.has_switch or self.has_dimming):
+		if not (self.has_em or self.has_switch or self.has_dimming or self.has_rgb_dimming or self.has_rgbw_dimming):
 			logger.error("Shelly device %s does not support switching or energy metering", self._serial)
 			return
 
@@ -284,7 +291,7 @@ class ShellyDevice(object):
 			restart=partial(self.restart_channel, channel),
 			rpc_callback=self.rpc_call,
 			productid=PRODUCT_ID_SHELLY_SWITCH if self.has_switch or self.has_dimming else PRODUCT_ID_SHELLY_EM,
-			productName="Shelly switch" if self.has_switch else "Shelly dimmer" if self.has_dimming else "Shelly EM",
+			productName="Shelly switch" if self.has_switch else "Shelly dimmer" if self.has_dimming or self.has_rgb_dimming or self.has_rgbw_dimming else "Shelly EM",
 		)
 		# Determine service name.
 		if self.has_em:
@@ -293,6 +300,7 @@ class ShellyDevice(object):
 		await ch.init()
 		if self.has_switch or self.has_dimming or self.has_rgb_dimming or self.has_rgbw_dimming:
 			type = OutputType.DIMMABLE if self.has_dimming \
+				else OutputType.RGB_DIMMABLE if self.has_rgb_dimming or self.has_rgbw_dimming \
 				else OutputType.TOGGLE
 			await ch.add_output(
 				channel=0,
@@ -391,40 +399,3 @@ class ShellyDevice(object):
 
 	def parse_status(self, channel, status_json):
 		self._channels[channel].update(status_json)
-
-	async def set_state_cb(self, channel, item, value):
-		if value not in (0, 1):
-			return
-
-		await self._rpc_call(
-			f"{'Light' if self._has_dimming else 'Switch'}.Set",
-			{
-				# id is the switch channel, starting from 0
-				"id":channel,
-				"on":True if value == 1 else False,
-			}
-		)
-
-		item.set_local_value(value)
-
-	async def set_dimming_value(self, channel, item, value):
-		self._desired_dimming_value = value
-		asyncio.create_task(self._set_dimming_value(channel, item, value))
-
-	async def _set_dimming_value(self, channel, item, value):
-		if value < 0 or value > 100:
-			return
-
-		async with self._dimming_lock:
-			if value != self._desired_dimming_value:
-				return
-
-			await self._rpc_call(
-				"Light.Set",
-				{
-					"id": channel,
-					"brightness": value,
-				}
-			)
-
-			item.set_local_value(value)
