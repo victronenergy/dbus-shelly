@@ -192,15 +192,13 @@ class ShellyDiscovery(object):
 
 	def on_service_state_change(self, zeroconf, service_type, name, state_change):
 		rgx = re.compile(
-    		r"^shelly[\d\w\-]+-[0-9a-f]{12}\._shelly\._tcp\.local\.$"
+			r"^shelly[\d\w\-]+-[0-9a-f]{12}\._shelly\._tcp\.local\.$"
 		)
 
 		if rgx.match(name):
 			task = asyncio.get_event_loop().create_task(self._on_service_state_change_async(zeroconf, service_type, name, state_change))
 			task.add_done_callback(background_tasks.discard)
 			background_tasks.add(task)
-		else:
-			logger.warning("name {} does not match expected service name pattern. ignoring.".format(name))
 
 	async def _on_service_state_change_async(self, zeroconf, service_type, name, state_change):
 		async with lock:
