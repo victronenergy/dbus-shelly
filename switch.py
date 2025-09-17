@@ -37,11 +37,8 @@ MODULE_STATE_UNDER_VOLTAGE = 0x105
 # Base class for all switching devices.
 class SwitchDevice(object):
 
-	def __init__(self, service, settings, serial, channel_id, capabilities, server, restart, rpc_callback, productid, productName):
-		self._dimming_lock = asyncio.Lock()
-		self._desired_dimming_value = None
-
 	async def add_output(self, channel, output_type, valid_functions=(1 << OutputFunction.MANUAL) | 0, name=""):
+
 		self._channel_id = channel
 		path_base  = '/SwitchableOutput/%s/' % self._channel_id
 		self.service.add_item(IntegerItem(path_base + 'State', 0, writeable=True, onchange=self.set_state))
@@ -246,17 +243,24 @@ class SwitchDevice(object):
 		item.set_local_value(value)
 
 	async def set_dimming_value(self, item, value):
-		self._desired_dimming_value = value
-		asyncio.create_task(self._set_dimming_value(item, value))
+		async with self._dimming_lock:
+			self._desired_dimming_value = value
+			if self._dimming_task is not None:
+				# Cancel the existing dimming task
+				self._dimming_task.cancel()
+			self._dimming_task = asyncio.create_task(self._set_dimming_value(item, value))
 
 	async def _set_dimming_value(self, item, value):
-		if value < 0 or value > 100:
-			return
-
-		async with self._dimming_lock:
-			# If a new dimming setpoint has been set by the time this thread wakes up, then exit.
-			if value != self._desired_dimming_value:
+		try:
+			if value < 0 or value > 100:
 				return
+
+			async with self._dimming_lock:
+				# If a new dimming setpoint has been set by the time this thread wakes up, then exit.
+				if value != self._desired_dimming_value:
+					return
+
+			item.set_local_value(value) # Set the value here already to make the UI more responsive
 
 			await self._rpc_call(
 				"Light.Set",
@@ -265,8 +269,9 @@ class SwitchDevice(object):
 					"brightness": value,
 				}
 			)
-
-			item.set_local_value(value)
+		except asyncio.CancelledError:
+			# Task was cancelled, just exit
+			return
 
 	def update(self, status_json):
 		if not (self._has_switch or self._has_dimming):
