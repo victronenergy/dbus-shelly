@@ -4,6 +4,7 @@ from __future__ import annotations
 import sys
 import os
 import asyncio
+import re
 from functools import partial
 
 # aiovelib
@@ -190,9 +191,14 @@ class ShellyDiscovery(object):
 		return info, num_channels
 
 	def on_service_state_change(self, zeroconf, service_type, name, state_change):
-		task = asyncio.get_event_loop().create_task(self._on_service_state_change_async(zeroconf, service_type, name, state_change))
-		background_tasks.add(task)
-		task.add_done_callback(background_tasks.discard)
+		rgx = re.compile(
+			r"^shelly[\d\w\-]+-[0-9a-f]{12}\._shelly\._tcp\.local\.$"
+		)
+
+		if rgx.match(name):
+			task = asyncio.get_event_loop().create_task(self._on_service_state_change_async(zeroconf, service_type, name, state_change))
+			task.add_done_callback(background_tasks.discard)
+			background_tasks.add(task)
 
 	async def _on_service_state_change_async(self, zeroconf, service_type, name, state_change):
 		async with lock:
