@@ -55,15 +55,11 @@ class ShellyDevice(object):
 
 	@property
 	def has_dimming(self):
-		return self._rpc_device_type == 'Dimming'
+		return self._rpc_device_type == 'Light'
 
 	@property
 	def has_em(self):
 		return self._has_em
-
-	@property
-	def has_dimming(self):
-		return self._has_dimming
 
 	@property
 	def active_channels(self):
@@ -95,7 +91,7 @@ class ShellyDevice(object):
 		if 'Switch.GetStatus' in methods:
 			self._rpc_device_type = 'Switch'
 		elif 'Light.GetStatus' in methods:
-			self._rpc_device_type = 'Dimming'
+			self._rpc_device_type = 'Light'
 
 		if self.has_switch or self.has_dimming:
 			channels = await self.get_channels()
@@ -257,40 +253,3 @@ class ShellyDevice(object):
 
 	def parse_status(self, channel, status_json):
 		self._channels[channel].update(status_json)
-
-	async def set_state_cb(self, channel, item, value):
-		if value not in (0, 1):
-			return
-
-		await self._rpc_call(
-			f"{'Light' if self._has_dimming else 'Switch'}.Set",
-			{
-				# id is the switch channel, starting from 0
-				"id":channel,
-				"on":True if value == 1 else False,
-			}
-		)
-
-		item.set_local_value(value)
-
-	async def set_dimming_value(self, channel, item, value):
-		self._desired_dimming_value = value
-		asyncio.create_task(self._set_dimming_value(channel, item, value))
-
-	async def _set_dimming_value(self, channel, item, value):
-		if value < 0 or value > 100:
-			return
-
-		async with self._dimming_lock:
-			if value != self._desired_dimming_value:
-				return
-
-			await self._rpc_call(
-				"Light.Set",
-				{
-					"id": channel,
-					"brightness": value,
-				}
-			)
-
-			item.set_local_value(value)

@@ -57,11 +57,14 @@ class ShellyChannel(SwitchDevice, EnergyMeter, object):
 		self._restart = restart
 		self._em_role = None
 		self._rpc_device_type = rpc_device_type
-		self._has_dimming = rpc_device_type == 'Dimming'
+		self._has_dimming = rpc_device_type == 'Light'
 		self._has_switch = rpc_device_type == 'Switch'
 		self._has_em = has_em
 		self._rpc_call = rpc_callback
 		self.productName = productName
+		self._dimming_lock = asyncio.Lock()
+		self._dimming_task = None
+		self._desired_dimming_value = None
 
 		# We don't know the service type yet. Will be .acload if shelly supports energy metering, otherwise .switch.
 		# If the shelly does not support switching, it may be acload, pvinverter or genset.
