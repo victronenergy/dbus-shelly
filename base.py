@@ -1,3 +1,6 @@
+import asyncio
+from functools import partial
+
 try:
 	from dbus_fast.aio import MessageBus
 except ImportError:
@@ -86,7 +89,8 @@ class ShellyChannel(SwitchDevice, EnergyMeter, object):
 		self.service.add_item(TextItem('/ProductName', self.productName))
 		self.service.add_item(IntegerItem('/Connected', 1))
 		self.service.add_item(TextItem('/Serial', self._serial))
-		self.service.add_item(TextItem('/CustomName', self.settings.get_value(self.settings.alias(f'customname_{self._serial}_{self._channel_id}')), writeable=True, onchange=self._set_customname))
+		initial_custom_name = await self._get_device_customname()
+		self.service.add_item(TextItem('/CustomName', initial_custom_name, writeable=True, onchange=self.set_customname))
 		self.service.add_item(IntegerItem('/State', MODULE_STATE_CONNECTED))
 		self.service.add_item(IntegerItem('/DeviceInstance', int(self.settings.get_value(self.settings.alias(f'instance_{self._serial}_{self._channel_id}')).split(':')[-1])))
 
@@ -105,15 +109,6 @@ class ShellyChannel(SwitchDevice, EnergyMeter, object):
 	async def restart(self):
 		await self._restart()
 
-	@property
-	def customname(self):
-		return self.service.get_item("/CustomName").value
-
-	@customname.setter
-	def customname(self, v):
-		with self.service as s:
-			s["/CustomName"] = v or "Switching device"
-
 	def set_service_type(self, _stype):
 		setting = self.settings.get_value(self.settings.alias(f'instance_{self._serial}_{self._channel_id}'))
 		if setting is None:
@@ -130,26 +125,49 @@ class ShellyChannel(SwitchDevice, EnergyMeter, object):
 		val = value.split(':')
 		return val[0], int(val[1])
 
-	def items_changed(self, service, values):
-		try:
-			self.customname = values[self.settings.alias(f'customname_{self._serial}_{self._channel_id}')]
-		except:
-			pass # Not a customname change
-
-	def _set_customname(self, value):
-		try:
-			cn = self.settings.get_value(self.settings.alias(f'customname_{self._serial}_{self._channel_id}'))
-			if cn != value:
-				self.settings.set_value_async(self.settings.alias(f'customname_{self._serial}_{self._channel_id}'), value)
-			return True
-		except:
-			return False
+	async def set_customname(self, item, value):
+		if value is not None:
+			logger.debug("Setting device name for shelly device %s to: %s", self._serial, value)
+			item.set_local_value(value)
+			await self._rpc_call("Sys.SetConfig", {"config": {"device": {"name": value}}})
+			item.set_local_value(value)
 
 	def value_changed(self, path, value):
 		""" Handle a value change from the settings service. """
 		super().value_changed(path, value)
 
-	def update(self, status_json, phase):
+	def channel_config_changed(self, device_name=None):
+		asyncio.create_task(self._set_channel_customname())
+		asyncio.create_task(self._set_device_customname(device_name=device_name))
+
+		# TODO: other things to handle?
+	async def _set_device_customname(self, device_name=None):
+		with self.service as s:
+			s['/CustomName'] = device_name if device_name else await self._get_device_customname()
+
+	async def _get_device_customname(self):
+		config = await self.request_device_config()
+		if config is not None and 'device' in config and 'name' in config['device'] and config['device']['name']:
+			return config['device']['name']
+		return f'Shelly {self._serial}'
+
+	async def _set_channel_customname(self):
+		with self.service as s:
+			s[f'/SwitchableOutput/{self._channel_id}/Settings/CustomName'] = await self._get_channel_customname()
+
+	async def _get_channel_customname(self):
+		config = await self.request_channel_config(self._channel_id)
+		if config is not None and 'name' in config and config['name']:
+			return config['name']
+		return f'[Channel {self._channel_id + 1}]'
+
+	async def request_device_config(self):
+		return await self._rpc_call("Sys.GetConfig", {})
+
+	async def request_channel_config(self, channel):
+		return await self._rpc_call(f"{self._rpc_device_type}.GetConfig" if self._rpc_device_type is not None else "EM.GetConfig", {"id": channel})
+
+	def update(self, status_json):
 		""" Update the service with new values. """
 		if not self.service:
 			return

@@ -248,8 +248,11 @@ class ShellyDevice(object):
 			self.set_event("disconnected")
 
 		elif update_type == RpcUpdateType.EVENT:
-			# TODO: Anything that needs to be handled?
-			pass
+			for event in cb_device.event['events']:
+				if event['event'] == "config_changed":
+					for channel in self._channels.keys():
+						self._channels[channel].channel_config_changed(self._shelly_device.name)
+					return
 
 	def parse_status(self, channel, status_json):
 		self._channels[channel].update(status_json)
