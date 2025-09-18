@@ -11,7 +11,7 @@ sys.path.insert(1, os.path.join(os.path.dirname(__file__), 'ext', 'aiovelib'))
 from aiovelib.service import IntegerItem, TextItem
 from aiovelib.localsettings import Setting
 
-from utils import STATUS_OFF, STATUS_ON
+from utils import logger, STATUS_OFF, STATUS_ON
 
 class OutputType(IntEnum):
 	MOMENTARY = 0
@@ -48,8 +48,9 @@ class SwitchDevice(object):
 		if output_type == OutputType.DIMMABLE:
 			self.service.add_item(IntegerItem(path_base + 'Dimming', 0, writeable=True, onchange=self.set_dimming_value, text=lambda y: str(y) + '%'))
 
+		initial_customname = await self._get_channel_customname()
 		self.service.add_item(TextItem(path_base + 'Settings/Group', "", writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/Group')))
-		self.service.add_item(TextItem(path_base + 'Settings/CustomName', "", writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/CustomName')))
+		self.service.add_item(TextItem(path_base + 'Settings/CustomName', initial_customname, writeable=True, onchange=self.set_channel_name))
 		self.service.add_item(IntegerItem(path_base + 'Settings/ShowUIControl', 1, writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/ShowUIControl')))
 		self.service.add_item(IntegerItem(path_base + 'Settings/Type', output_type, writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/Type'),
 							text=self._type_text_callback))
@@ -64,7 +65,6 @@ class SwitchDevice(object):
 		base = self._settings_base + '%s/' % self._channel_id
 		await self.settings.add_settings(
 			Setting(base + 'Group', "", alias=f'Group_{self._serial}_{self._channel_id}'),
-			Setting(base + 'CustomName', "", alias=f'CustomName_{self._serial}_{self._channel_id}'),
 			Setting(base + 'ShowUIControl', 1, _min=0, _max=1, alias=f'ShowUIControl_{self._serial}_{self._channel_id}'),
 			Setting(base + 'Function', int(OutputFunction.MANUAL), _min=0, _max=6, alias=f'Function_{self._serial}_{self._channel_id}'),
 			Setting(base + 'Type', output_type, _min=0, _max=OutputType.TYPE_MAX, alias=f'Type_{self._serial}_{self._channel_id}'),
@@ -82,12 +82,17 @@ class SwitchDevice(object):
 		try:
 			with self.service as s:
 				s['/SwitchableOutput/%s/Settings/Group' % channel] = self.settings.get_value(self.settings.alias(f'Group_{self._serial}_{channel}'))
-				s['/SwitchableOutput/%s/Settings/CustomName' % channel] = self.settings.get_value(self.settings.alias(f'CustomName_{self._serial}_{channel}'))
 				s['/SwitchableOutput/%s/Settings/ShowUIControl' % channel] = self.settings.get_value(self.settings.alias(f'ShowUIControl_{self._serial}_{channel}'))
 				s['/SwitchableOutput/%s/Settings/Function' % channel] = self.settings.get_value(self.settings.alias(f'Function_{self._serial}_{channel}'))
 				s['/SwitchableOutput/%s/Settings/Type' % channel] = self.settings.get_value(self.settings.alias(f'Type_{self._serial}_{channel}'))
 		except :
 			pass
+
+	async def set_channel_name(self, item, value):
+		if value is not None:
+			logger.debug("Setting channel name for shelly device %s channel %d to: %s", self._serial, self._channel_id, value)
+			await self._rpc_call(f"{self._rpc_device_type}.SetConfig" if self._rpc_device_type is not None else "EM.SetConfig", {"id": self._channel_id, "config": {"name": value}})
+			item.set_local_value(value)
 
 	async def _value_changed(self, path, item, value):
 		split = path.split('/')
