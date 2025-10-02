@@ -118,7 +118,6 @@ class ShellyDiscovery(object):
 	async def disable_shelly_channel(self, serial, channel):
 		""" Disable a shelly channel. """
 		if serial not in self.shellies:
-			logger.error("Shelly device %s not found", serial)
 			return
 		self.shellies[serial]['device'].stop_channel(channel)
 
@@ -208,7 +207,7 @@ class ShellyDiscovery(object):
 				return
 			serial = info.server.split(".")[0].split("-")[-1]
 
-			if state_change == ServiceStateChange.Added or state_change == ServiceStateChange.Updated and serial not in self.discovered_devices:
+			if (state_change == ServiceStateChange.Added or state_change == ServiceStateChange.Updated) and serial not in self.discovered_devices:
 				logger.info("Found shelly device: %s", serial)
 				device_info, num_channels = await self._get_device_info(info.server)
 				if device_info is None:
@@ -248,9 +247,10 @@ class ShellyDiscovery(object):
 
 					self.discovered_devices.append(serial)
 
-			elif state_change == ServiceStateChange.Removed:
+			elif state_change == ServiceStateChange.Removed and serial in self.discovered_devices:
 				logger.warning("Shelly device: %s disappeared", serial)
-				self.remove_discovered_device(serial)
+				if serial in self.shellies:
+					self.shellies[serial]['device'].do_reconnect()
 
 	async def _on_enabled_changed(self, serial, channel, item, value):
 		if value not in (0, 1) or item.service is None:

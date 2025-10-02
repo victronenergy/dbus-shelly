@@ -101,8 +101,8 @@ class EnergyMeter(object):
 					p = {1:'a', 2:'b', 3:'c'}.get(l)
 					s[em_prefix + 'Energy/Forward'] = emdata[f'{p}_total_act_energy'] / 1000
 					s[em_prefix + 'Energy/Reverse'] = emdata[f'{p}_total_act_ret_energy'] / 1000
-		except:
-			pass
+		except Exception as e:
+			logger.error("Error updating energy values for %s: %s", self._serial, e)
 
 	def role_changed(self, val):
 		if val not in self.allowed_em_roles:
