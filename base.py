@@ -1,4 +1,5 @@
 import asyncio
+import async_timeout
 from functools import partial
 
 try:
@@ -14,6 +15,8 @@ from energymeter import EnergyMeter
 
 from __main__ import VERSION, __file__ as processName
 from utils import logger, wait_for_settings, formatters as fmt
+
+background_tasks = set()
 
 class ShellyChannel(SwitchDevice, EnergyMeter, object):
 
@@ -94,6 +97,22 @@ class ShellyChannel(SwitchDevice, EnergyMeter, object):
 		self.service.add_item(IntegerItem('/State', MODULE_STATE_CONNECTED))
 		self.service.add_item(IntegerItem('/DeviceInstance', int(self.settings.get_value(self.settings.alias(f'instance_{self._serial}_{self._channel_id}')).split(':')[-1])))
 
+	# Reinitialize the callbacks without restarting the service.
+	async def reinit(self, rpc_callback, restart):
+		self._rpc_call = rpc_callback
+		self._restart = restart
+
+		# Update the service with the latest status
+		status = await self._rpc_call(f'{self._rpc_device_type if self._rpc_device_type else "EM"}.GetStatus', {"id": self._channel_id})
+		if status is not None:
+			self.update(status)
+		await self._set_device_customname()
+
+	def disable(self):
+		if self.service.get_item(f'/SwitchableOutput/{self._channel_id}/Status') is not None:
+			with self.service as s:
+				s['/SwitchableOutput/%s/Status' % self._channel_id] = 0x20 # Disabled
+
 	def stop(self):
 		if self.service is not None:
 			self.service.__del__()
@@ -130,20 +149,25 @@ class ShellyChannel(SwitchDevice, EnergyMeter, object):
 			logger.debug("Setting device name for shelly device %s to: %s", self._serial, value)
 			item.set_local_value(value)
 			await self._rpc_call("Sys.SetConfig", {"config": {"device": {"name": value}}})
-			item.set_local_value(value)
 
 	def value_changed(self, path, value):
 		""" Handle a value change from the settings service. """
 		super().value_changed(path, value)
 
-	def channel_config_changed(self, device_name=None):
-		asyncio.create_task(self._set_channel_customname())
-		asyncio.create_task(self._set_device_customname(device_name=device_name))
+	def channel_config_changed(self):
+		t1 = asyncio.create_task(self._set_channel_customname())
+		t2 = asyncio.create_task(self._set_device_customname())
+		background_tasks.add(t1)
+		background_tasks.add(t2)
+		t1.add_done_callback(background_tasks.discard)
+		t2.add_done_callback(background_tasks.discard)
 
 		# TODO: other things to handle?
-	async def _set_device_customname(self, device_name=None):
+
+	async def _set_device_customname(self):
+		name = await self._get_device_customname()
 		with self.service as s:
-			s['/CustomName'] = device_name if device_name else await self._get_device_customname()
+			s['/CustomName'] = name
 
 	async def _get_device_customname(self):
 		config = await self.request_device_config()
@@ -152,14 +176,17 @@ class ShellyChannel(SwitchDevice, EnergyMeter, object):
 		return f'Shelly {self._serial}'
 
 	async def _set_channel_customname(self):
+		if self.service.get_item(f'/SwitchableOutput/{self._channel_id}/Settings/CustomName') is None:
+			return
+		name = await self._get_channel_customname()
 		with self.service as s:
-			s[f'/SwitchableOutput/{self._channel_id}/Settings/CustomName'] = await self._get_channel_customname()
+			s[f'/SwitchableOutput/{self._channel_id}/Settings/CustomName'] = name
 
 	async def _get_channel_customname(self):
 		config = await self.request_channel_config(self._channel_id)
 		if config is not None and 'name' in config and config['name']:
 			return config['name']
-		return f'[Channel {self._channel_id + 1}]'
+		return f'Channel {self._channel_id + 1}'
 
 	async def request_device_config(self):
 		return await self._rpc_call("Sys.GetConfig", {})

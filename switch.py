@@ -37,9 +37,8 @@ MODULE_STATE_UNDER_VOLTAGE = 0x105
 # Base class for all switching devices.
 class SwitchDevice(object):
 
-	async def add_output(self, channel, output_type, valid_functions=(1 << OutputFunction.MANUAL) | 0, name=""):
+	async def add_output(self, output_type, valid_functions=(1 << OutputFunction.MANUAL) | 0, name=""):
 
-		self._channel_id = channel
 		path_base  = '/SwitchableOutput/%s/' % self._channel_id
 		self.service.add_item(IntegerItem(path_base + 'State', 0, writeable=True, onchange=self.set_state))
 		self.service.add_item(IntegerItem(path_base + 'Status', 0, writeable=False, text=self._status_text_callback))

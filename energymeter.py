@@ -124,7 +124,6 @@ class EnergyMeter(object):
 					p = {1:'a', 2:'b', 3:'c'}.get(phase)
 					s[em_prefix + 'Energy/Forward'] = emdata[f'{p}_total_act_energy'] / 1000
 					s[em_prefix + 'Energy/Reverse'] = emdata[f'{p}_total_act_ret_energy'] / 1000
-					
 		except:
 			pass
 
