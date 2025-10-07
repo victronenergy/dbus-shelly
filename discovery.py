@@ -62,6 +62,25 @@ class ShellyDiscovery(object):
 
 	async def refresh(self, item, value):
 		if value == 1:
+			# Delete discovered devices that are currently disabled.
+			for serial in self.discovered_devices[:]:
+				delete = True
+				i = 0
+				while (True):
+					enabled_item = self.service.get_item(f'/Devices/{serial}/{i}/Enabled')
+					if enabled_item is None:
+						break
+					# Only delete if all channels are disabled
+					if enabled_item.value == 1:
+						delete = False
+						break
+					i += 1
+				if delete:
+					# Remove from the list if not enabled
+					self.remove_discovered_device(serial)
+				elif serial in self.shellies:
+					# Try reconnecting if enabled.
+					self.shellies[serial]['device'].do_reconnect()
 			async with lock:
 				if self.aiobrowser is not None:
 					await self.aiobrowser.async_cancel()
@@ -245,7 +264,7 @@ class ShellyDiscovery(object):
 					if enabled:
 						await self._on_enabled_changed(serial, i, enabled_item, enabled)
 
-					self.discovered_devices.append(serial)
+				self.discovered_devices.append(serial)
 
 			elif state_change == ServiceStateChange.Removed and serial in self.discovered_devices:
 				logger.warning("Shelly device: %s disappeared", serial)
