@@ -137,7 +137,7 @@ class ShellyDevice(object):
 			channel=channel,
 			has_em=self._has_em,
 			has_switch=self._has_switch,
-			server=self._server,
+			server=self._shelly_device.ip_address or self._server,
 			restart=partial(self.restart_channel, channel),
 			productid=PRODUCT_ID_SHELLY_SWITCH if self._has_switch else PRODUCT_ID_SHELLY_EM,
 			productName="Shelly switch" if self._has_switch else "Shelly energy meter",
