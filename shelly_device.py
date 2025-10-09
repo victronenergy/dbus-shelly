@@ -248,8 +248,17 @@ class ShellyDevice(object):
 		self._channels[channel] = ch
 		status = await self.request_channel_status(channel)
 		if status is not None:
-			self.parse_status(channel, status)
+			phase = self._shelly_device.phase_setting if isinstance(self._shelly_device, ShellyChannel) else None
+			self.parse_status(channel, status, phase)
 			await self._channels[channel].start()
+
+			# poll power every 2 seconds
+			# asyncio.create_task(self.request_update(channel))
+
+	async def request_update(self, channel):
+		while True:
+			await asyncio.sleep(2)
+			resp = await self.request_channel_status(channel)
 
 	async def restart_channel(self, channel):
 		self.stop_channel(channel)
@@ -332,26 +341,35 @@ class ShellyDevice(object):
 		return resp['methods'] if resp and 'methods' in resp else []
 
 	def device_updated(self, cb_device, update_type):
-		if update_type == RpcUpdateType.STATUS:
-			for channel in self._channels.keys():
-				if f'emdata:{channel}' in cb_device.status and self.has_em:
-					self._channels[channel].update_energies(cb_device.status[f'emdata:{channel}'])
-				# Get the switch status for this channel
-				id=f'{self._rpc_device_type.lower()}:{channel}'
-				# Check if the channel is present in the status
-				if id in cb_device.status:
-					self.parse_status(channel, cb_device.status[id])
-		elif update_type == RpcUpdateType.DISCONNECTED:
-			if self._shelly_device:
-				logger.warning("Shelly device %s disconnected", self._serial)
-				self.do_reconnect()
+		#logger.info("DeviceUpdated: cb_device: {} -> {}".format(cb_device.status, update_type))
+		try:
+			if update_type == RpcUpdateType.STATUS:
+				for channel in self._channels.keys():
+					if f'emdata:{channel}' in cb_device.status and self._has_em:
+						phase = self._shelly_device.phase_setting if isinstance(self._shelly_device, ShellyChannel) else None
+						self._channels[channel].update_energies(cb_device.status[f'emdata:{channel}'], phase)
+					# Get the switch status for this channel
+					id="{}:{}".format('switch' if self._has_switch else 'em', channel)
+					# Check if the channel is present in the status
+					if id in cb_device.status:
+						phase = self._shelly_device.phase_setting if isinstance(self._shelly_device, ShellyChannel) else None
+						self.parse_status(channel, cb_device.status[id], phase)
 
-		elif update_type == RpcUpdateType.EVENT:
-			for event in cb_device.event['events']:
-				if event['event'] == "config_changed":
-					for channel in self._channels.keys():
-						self._channels[channel].channel_config_changed()
-					return
+			elif update_type == RpcUpdateType.DISCONNECTED:
+				logger.warning("Shelly devices websocket %s disconnected. stopping service.", self._serial)
+				self.shelly_device = None
+				self.set_event("disconnected")
 
-	def parse_status(self, channel, status_json):
-		self._channels[channel].update(status_json)
+			elif update_type == RpcUpdateType.EVENT:
+				# TODO: Anything that needs to be handled?
+				pass
+		except Exception as ex:
+			logger.error("Exception in device_updated: ", exc_info=ex)
+			raise
+
+	def parse_status(self, channel, status_json, phase):
+		if phase is not None:
+			#is ShellyWithRm channel.
+			self._channels[channel].update(status_json, phase)
+		else:
+			self._channels[channel].update(status_json)

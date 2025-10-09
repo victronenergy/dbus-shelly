@@ -194,7 +194,7 @@ class ShellyChannel(SwitchDevice, EnergyMeter, object):
 	async def request_channel_config(self, channel):
 		return await self._rpc_call(f"{self._rpc_device_type}.GetConfig" if self._rpc_device_type is not None else "EM.GetConfig", {"id": channel})
 
-	def update(self, status_json):
+	def update(self, status_json, phase):
 		""" Update the service with new values. """
 		if not self.service:
 			return
