@@ -37,16 +37,16 @@ class ShellyChannel(SwitchDevice, EnergyMeter, object):
 
 	@property
 	def status(self):
-		return self.service.get_item(f'/SwitchableOutput/{self._channel}/Status').value
+		return self.service.get_item(f'/SwitchableOutput/{self._channel_id}/Status').value
 
 	@property
 	def state(self):
-		return self.service.get_item(f'/SwitchableOutput/{self._channel}/State').value
+		return self.service.get_item(f'/SwitchableOutput/{self._channel_id}/State').value
 
 	@state.setter
 	def state(self, value):
 		""" Set the state of the switch. """
-		self.service.get_item(f'/SwitchableOutput/{self._channel}/State')._set_value(value)
+		self.service.get_item(f'/SwitchableOutput/{self._channel_id}/State')._set_value(value)
 
 	@property
 	def serial(self):

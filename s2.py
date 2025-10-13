@@ -116,7 +116,7 @@ class S2ResourceManagerItem(S2ServerItem):
             except asyncio.CancelledError:
                 pass
 
-        self._destroy_connection()
+        await self._destroy_connection()
         logger.debug("Finished S2 connection eventloop.")
 
     async def _on_s2_message(self, message):

@@ -349,7 +349,7 @@ class ShellyDevice(object):
 						phase = self._shelly_device.phase_setting if isinstance(self._shelly_device, ShellyChannel) else None
 						self._channels[channel].update_energies(cb_device.status[f'emdata:{channel}'], phase)
 					# Get the switch status for this channel
-					id="{}:{}".format('switch' if self._has_switch else 'em', channel)
+					id="{}:{}".format('switch' if self.has_switch else 'em', channel)
 					# Check if the channel is present in the status
 					if id in cb_device.status:
 						phase = self._shelly_device.phase_setting if isinstance(self._shelly_device, ShellyChannel) else None

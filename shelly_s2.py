@@ -73,32 +73,32 @@ class ShellyChannelWithRm(base.ShellyChannel):
 	
 	@property
 	def phase_setting(self):
-		service_item = self.service.get_item(f'/Devices/{self._channel}/S2/Phase') or None
+		service_item = self.service.get_item(f'/Devices/{self._channel_id}/S2/Phase') or None
 		return service_item.value if service_item is not None else None
 	
 	@property
 	def on_hysteresis(self):
-		return self.service.get_item(f'/Devices/{self._channel}/S2/OnHysteresis').value or 0
+		return self.service.get_item(f'/Devices/{self._channel_id}/S2/OnHysteresis').value or 0
 	
 	@property
 	def off_hysteresis(self):
-		return self.service.get_item(f'/Devices/{self._channel}/S2/OffHysteresis').value or 0
+		return self.service.get_item(f'/Devices/{self._channel_id}/S2/OffHysteresis').value or 0
 
 	@property
 	def power_setting(self):
-		return self.service.get_item(f'/Devices/{self._channel}/S2/PowerSetting').value or 0
+		return self.service.get_item(f'/Devices/{self._channel_id}/S2/PowerSetting').value or 0
 
 	@property
 	def s2_active(self):
-		return self.service.get_item(f'/Devices/{self._channel}/S2/Active').value or 0
+		return self.service.get_item(f'/Devices/{self._channel_id}/S2/Active').value or 0
 
 	@s2_active.setter
 	def s2_active(self, value):
-		self.service.get_item(f'/Devices/{self._channel}/S2/Active').set_local_value(value)
+		self.service.get_item(f'/Devices/{self._channel_id}/S2/Active').set_local_value(value)
 
 	@property
 	def has_rm(self):
-		return self.service.get_item("/Devices/{}/S2".format(self._channel)) is not None
+		return self.service.get_item("/Devices/{}/S2".format(self._channel_id)) is not None
 
 	def __init__(self, *args, **kwargs):
 		super().__init__(*args, **kwargs)
@@ -149,16 +149,16 @@ class ShellyChannelWithRm(base.ShellyChannel):
 			pass
 		self._rm_enabled = False
 
-	async def add_output(self, channel, output_type, set_state_cb, valid_functions, name=None, customName=None, set_dimming_cb=None):
+	async def add_output(self, output_type, valid_functions, name=None):
 		valid_functions |= (1 << OutputFunction.S2_RM)
-		await super().add_output(channel, output_type, set_state_cb, valid_functions, name, customName, set_dimming_cb)
+		await super().add_output(output_type, valid_functions, name)
 
-		function = self.service.get_item(f'/SwitchableOutput/{channel}/Settings/Function').value
+		function = self.service.get_item(f'/SwitchableOutput/{self._channel_id}/Settings/Function').value
 		if function and function == OutputFunction.S2_RM:
-			await self.enable_rm(channel)
+			await self.enable_rm(self._channel_id)
 			#FIXME: Better read the current state, and just report that, so a restart of S2 just continues where it was.
 			logger.debug("Setting output state off initially")
-			await set_state_cb(self.service.get_item(f'/SwitchableOutput/{channel}/State'), 0)
+			await self.set_state(self.service.get_item(f'/SwitchableOutput/{self._channel_id}/State'), 0)
 			logger.info("S2 Resource Manager added to service")
 
 	def update(self, status_json):
@@ -246,7 +246,7 @@ class ShellyChannelWithRm(base.ShellyChannel):
 		self._control_type_ombc = ShellyOMBC(self)
 		self._control_type_noctrl = ShellyNOCTRL(self)
 		self.rm_item = S2ResourceManagerItem(
-			'/Devices/{}/S2'.format(self._channel),
+			'/Devices/{}/S2'.format(self._channel_id),
 			control_types=[self._control_type_noctrl, self._control_type_ombc],
 			asset_details=self._rm_details
 		)

@@ -13,12 +13,12 @@ class EnergyMeter(object):
 		self.allowed_em_roles = allowed_roles
 		# Determine role and instance
 		self._em_role, instance = self.role_instance(
-			self.settings.get_value(self.settings.alias('instance_{}_{}'.format(self._serial, self._channel))))
+			self.settings.get_value(self.settings.alias('instance_{}_{}'.format(self._serial, self._channel_id))))
 
 		if self._em_role not in self.allowed_em_roles:
 			logger.warning("Role {} not allowed for shelly energy meter, resetting to {}".format(self._em_role, self.allowed_em_roles[0]))
 			self._em_role = self.allowed_em_roles[0]
-			await self.settings.set_value(self.settings.alias('instance_{}_{}'.format(self._serial, self._channel)), "{}:{}".format(self._em_role, instance))
+			await self.settings.set_value(self.settings.alias('instance_{}_{}'.format(self._serial, self._channel_id)), "{}:{}".format(self._em_role, instance))
 
 	async def setup_em(self):
 		self.service.add_item(TextItem('/Role', self._em_role, writeable=True,
@@ -26,10 +26,10 @@ class EnergyMeter(object):
 		self.service.add_item(TextArrayItem('/AllowedRoles', self.allowed_em_roles, writeable=False))
 
 		await self.settings.add_settings(
-			Setting(self._settings_base + '%s/' % self._channel + 'Position', 0, 0, 2, alias="position_{}_{}".format(self._serial, self._channel))
+			Setting(self._settings_base + '%s/' % self._channel_id + 'Position', 0, 0, 2, alias="position_{}_{}".format(self._serial, self._channel_id))
 		)
 
-		self.service.add_item(IntegerItem('/Position', self.settings.get_value(self.settings.alias("position_{}_{}".format(self._serial, self._channel))),
+		self.service.add_item(IntegerItem('/Position', self.settings.get_value(self.settings.alias("position_{}_{}".format(self._serial, self._channel_id))),
 				writeable=True, onchange=self.position_changed))
 
 		# Indicate when we're masquerading for another device
@@ -61,29 +61,10 @@ class EnergyMeter(object):
 
 			try:
 				with self.service as s:
-					if self._has_switch:
+					if self._has_switch or self._has_dimming:
 						#a shelly with a switch is single phased. But it may be connected to either phase. 
 						#so, report values on the proper phase.
-						for l in range(1, 4): 
-							if l == phase:
-								em_prefix = "/Ac/L{}/".format(phase)
-								s[em_prefix + 'Voltage'] = status_json["voltage"]
-								s[em_prefix + 'Current'] = status_json["current"]
-								s[em_prefix + 'Power'] = status_json["apower"]
-								s[em_prefix + 'PowerFactor'] = status_json["pf"] if 'pf' in status_json else None
-								# Shelly reports energy in Wh, so convert to kWh
-								s[em_prefix + 'Energy/Forward'] = status_json["aenergy"]["total"] / 1000 if 'aenergy' in status_json else None
-								s[em_prefix + 'Energy/Reverse'] = status_json["ret_aenergy"]["total"] / 1000 if 'ret_aenergy' in status_json else None
-							else:
-								for l in range(1, self._num_phases + 1):
-									em_prefix = f"/Ac/L{l}/"
-									p = {1:'a', 2:'b', 3:'c'}.get(l)
-									s[em_prefix + 'Voltage'] = status_json[f"{p}_voltage"]
-									s[em_prefix + 'Current'] = status_json[f"{p}_current"]
-									s[em_prefix + 'Power'] = status_json[f"{p}_act_power"]
-									s[em_prefix + 'PowerFactor'] = status_json[f"{p}_pf"]
-					if self._has_switch or self._has_dimming:
-						em_prefix = "/Ac/L1/"
+						em_prefix = "/Ac/L{}/".format(self._phase)
 						s[em_prefix + 'Voltage'] = status_json["voltage"]
 						s[em_prefix + 'Current'] = status_json["current"]
 						s[em_prefix + 'Power'] = status_json["apower"]
@@ -91,6 +72,14 @@ class EnergyMeter(object):
 						# Shelly reports energy in Wh, so convert to kWh
 						s[em_prefix + 'Energy/Forward'] = status_json["aenergy"]["total"] / 1000 if 'aenergy' in status_json else None
 						s[em_prefix + 'Energy/Reverse'] = status_json["ret_aenergy"]["total"] / 1000 if 'ret_aenergy' in status_json else None
+					else:
+						for l in range(1, self._num_phases + 1):
+							em_prefix = f"/Ac/L{l}/"
+							p = {1:'a', 2:'b', 3:'c'}.get(l)
+							s[em_prefix + 'Voltage'] = status_json[f"{p}_voltage"]
+							s[em_prefix + 'Current'] = status_json[f"{p}_current"]
+							s[em_prefix + 'Power'] = status_json[f"{p}_act_power"]
+							s[em_prefix + 'PowerFactor'] = status_json[f"{p}_pf"]
 
 			except KeyError as e:
 				logger.error("KeyError in update: %s", e)
@@ -131,7 +120,7 @@ class EnergyMeter(object):
 		if val not in self.allowed_em_roles:
 			return False
 
-		p = self.settings.alias('instance_{}_{}'.format(self._serial, self._channel))
+		p = self.settings.alias('instance_{}_{}'.format(self._serial, self._channel_id))
 		role, instance = self.role_instance(self.settings.get_value(p))
 		self.settings.set_value_async(p, "{}:{}".format(val, instance))
 		self._em_role = val
@@ -145,7 +134,7 @@ class EnergyMeter(object):
 		if not 0 <= value <= 2:
 			return False
 
-		await self.settings.set_value(self.settings.alias("position_{}_{}".format(self._serial, self._channel)), value)
+		await self.settings.set_value(self.settings.alias("position_{}_{}".format(self._serial, self._channel_id)), value)
 		item.set_local_value(value)
 		return True
 
