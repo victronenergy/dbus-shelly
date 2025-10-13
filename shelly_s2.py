@@ -70,16 +70,11 @@ class ShellyChannelWithRm(base.ShellyChannel):
 	@property
 	def power(self):
 		return (self.service.get_item(f'/Ac/L1/Power').value or 0) + (self.service.get_item(f'/Ac/L2/Power').value or 0) + (self.service.get_item(f'/Ac/L3/Power').value or 0)
-	
-	@property
-	def phase_setting(self):
-		service_item = self.service.get_item(f'/Devices/{self._channel_id}/S2/Phase') or None
-		return service_item.value if service_item is not None else None
-	
+
 	@property
 	def on_hysteresis(self):
 		return self.service.get_item(f'/Devices/{self._channel_id}/S2/OnHysteresis').value or 0
-	
+
 	@property
 	def off_hysteresis(self):
 		return self.service.get_item(f'/Devices/{self._channel_id}/S2/OffHysteresis').value or 0
@@ -137,7 +132,7 @@ class ShellyChannelWithRm(base.ShellyChannel):
 					measurement_timestamp=datetime.now(timezone.utc),
 					values=[
 						PowerValue(
-							commodity_quantity = phase_setting_to_commodity(self.phase_setting),
+							commodity_quantity = phase_setting_to_commodity(self.phase),
 							value=0
 						)
 					]
@@ -162,10 +157,19 @@ class ShellyChannelWithRm(base.ShellyChannel):
 			logger.info("S2 Resource Manager added to service")
 
 	def update(self, status_json):
-		super().update(status_json, self.phase_setting)
+		super().update(status_json)
 		if self._rm_enabled and self._control_type_ombc is not None and self._control_type_ombc.active:
 			# Pull relevant values from the device and forward to the control type
 			self._control_type_ombc.values_changed({'Status': self.status,'Power': self.power,})
+
+	async def value_changed(self, item, value):
+		ret = await super().value_changed(item, value)
+
+		if item.path.endswith('/PhaseSetting') and ret and self._rm_enabled and self._control_type_ombc.active:
+			logger.debug("Phase setting changed, updating OMBC system description")
+			task = asyncio.create_task(self._control_type_ombc.send_system_description())
+			background_tasks.add(task)
+			task.add_done_callback(background_tasks.discard)
 
 	async def on_channel_function_changed(self, channel, function):
 		#FIXME: Switching from 2 to 6 during runtime does not work. (Nothing happens, requires service restart to take effect)
@@ -186,7 +190,7 @@ class ShellyChannelWithRm(base.ShellyChannel):
 			item.set_local_value(value)
 
 			# Update OMBC system description when (relevant)power setting changes.
-			relevant_settings = ["PowerSetting", "Phase", "OnHysteresis", "OffHysteresis"]
+			relevant_settings = ["PowerSetting", "OnHysteresis", "OffHysteresis"]
 			if split[-1] in relevant_settings and self._rm_enabled and self._control_type_ombc.active:
 				logger.debug("Power setting changed, updating OMBC system description")
 				task = asyncio.create_task(self._control_type_ombc.send_system_description())
@@ -212,7 +216,6 @@ class ShellyChannelWithRm(base.ShellyChannel):
 		power_setting = self.settings.get_value(self.settings.alias(f'PowerSetting_{self._serial}_{channel}'))
 		consumertype_setting = self.settings.get_value(self.settings.alias(f'ConsumerType_{self._serial}_{channel}'))
 		priority_setting = self.settings.get_value(self.settings.alias(f'Priority_{self._serial}_{channel}'))
-		phase_setting = self.settings.get_value(self.settings.alias(f'Phase_{self._serial}_{channel}'))
 		on_hysteresis = self.settings.get_value(self.settings.alias(f'OnHysteresis_{self._serial}_{channel}'))
 		off_hysteresis = self.settings.get_value(self.settings.alias(f'OffHysteresis_{self._serial}_{channel}'))
 		
@@ -221,7 +224,6 @@ class ShellyChannelWithRm(base.ShellyChannel):
 		self.service.add_item(IntegerItem(path_base + 'PowerSetting', power_setting, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'PowerSetting'), text=fmt['watt']))
 		self.service.add_item(IntegerItem(path_base + 'ConsumerType', consumertype_setting, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'ConsumerType')))
 		self.service.add_item(IntegerItem(path_base + 'Priority', priority_setting, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'Priority')))
-		self.service.add_item(IntegerItem(path_base + 'Phase', phase_setting, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'Phase')))
 		self.service.add_item(IntegerItem(path_base + 'OnHysteresis', on_hysteresis, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'OnHysteresis')))
 		self.service.add_item(IntegerItem(path_base + 'OffHysteresis', off_hysteresis, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'OffHysteresis')))
 
@@ -230,11 +232,11 @@ class ShellyChannelWithRm(base.ShellyChannel):
 			self.service.get_item(f'/SwitchableOutput/{channel}/Name').value
 
 		# TODO: Update the asset details when the device custom name changes?
-		logger.info("Setting up phase as {}".format(phase_setting))
+		logger.info("Setting up phase as {}".format(self.phase))
 		self._rm_details = AssetDetails(
 			resource_id=uuid.uuid4(),
 			provides_forecast=False,
-			provides_power_measurements=[phase_setting_to_commodity(phase_setting or 0)],
+			provides_power_measurements=[phase_setting_to_commodity(self.phase or 0)],
 			instruction_processing_delay=Duration(0),
 			roles=[Role(role=RoleType.ENERGY_CONSUMER, commodity='ELECTRICITY')],
 			name=name,
@@ -282,7 +284,7 @@ class ShellyOMBC(OMBCControlType):
 			power_ranges=[PowerRange(
 				start_of_range=self._switch_item.power_setting,
 				end_of_range=self._switch_item.power_setting,
-				commodity_quantity=phase_setting_to_commodity(self._switch_item.phase_setting)
+				commodity_quantity=phase_setting_to_commodity(self._switch_item.phase)
 			)]
 		)
 
@@ -293,7 +295,7 @@ class ShellyOMBC(OMBCControlType):
 			power_ranges=[PowerRange(
 				start_of_range=0,
 				end_of_range=0,
-				commodity_quantity=phase_setting_to_commodity(self._switch_item.phase_setting)
+				commodity_quantity=phase_setting_to_commodity(self._switch_item.phase)
 			)]
 		)
 
@@ -454,7 +456,7 @@ class ShellyOMBC(OMBCControlType):
 					measurement_timestamp=datetime.now(timezone.utc),
 					values=[
 						PowerValue(
-							commodity_quantity= phase_setting_to_commodity(self._switch_item.phase_setting),
+							commodity_quantity= phase_setting_to_commodity(self._switch_item.phase),
 							value=self._switch_item.power
 						)
 					]

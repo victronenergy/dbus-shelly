@@ -8,9 +8,14 @@ background_tasks = set()
 
 class EnergyMeter(object):
 
+	@property
+	def phase(self):
+		return self._phase
+
 	async def init_em(self, num_phases, allowed_roles):
 		self._num_phases = num_phases
 		self.allowed_em_roles = allowed_roles
+		self._phase = None
 		# Determine role and instance
 		self._em_role, instance = self.role_instance(
 			self.settings.get_value(self.settings.alias('instance_{}_{}'.format(self._serial, self._channel_id))))
@@ -31,6 +36,14 @@ class EnergyMeter(object):
 
 		self.service.add_item(IntegerItem('/Position', self.settings.get_value(self.settings.alias("position_{}_{}".format(self._serial, self._channel_id))),
 				writeable=True, onchange=self.position_changed))
+
+		if self._num_phases == 1:
+			await self.settings.add_settings(
+				Setting(self._settings_base + '%s/' % self._channel_id + 'PhaseSetting', 1, 1, 3, alias="phasesetting_{}_{}".format(self._serial, self._channel_id))
+			)
+
+			self._phase = self.settings.get_value(self.settings.alias("phasesetting_{}_{}".format(self._serial, self._channel_id)))
+			self.service.add_item(IntegerItem('/PhaseSetting', self._phase, writeable=True, onchange=self.value_changed))
 
 		# Indicate when we're masquerading for another device
 		if self._em_role != "grid":
@@ -53,7 +66,7 @@ class EnergyMeter(object):
 			self.service.add_item(DoubleItem(prefix + 'Energy/Reverse', None, text=fmt['kwh']))
 			self.service.add_item(DoubleItem(prefix + 'PowerFactor', None))
 
-	def update(self, status_json, phase=1):
+	def update(self, status_json):
 		if self._has_em:
 			eforward = 0
 			ereverse = 0
@@ -99,18 +112,18 @@ class EnergyMeter(object):
 				s['/Ac/Energy/Reverse'] = ereverse
 				s['/Ac/Power'] = power
 
-	def update_energies(self, emdata, phase=None):
+	def update_energies(self, emdata):
 		try:
 			with self.service as s:
-				if phase is None:
+				if self._phase is None:
 					for l in range(1, self._num_phases + 1):
 						em_prefix = f'/Ac/L{l}/'
 						p = {1:'a', 2:'b', 3:'c'}.get(l)
 						s[em_prefix + 'Energy/Forward'] = emdata[f'{p}_total_act_energy'] / 1000
 						s[em_prefix + 'Energy/Reverse'] = emdata[f'{p}_total_act_ret_energy'] / 1000
 				else:
-					em_prefix = f'/Ac/L{phase}/'
-					p = {1:'a', 2:'b', 3:'c'}.get(phase)
+					em_prefix = f'/Ac/L{self._phase}/'
+					p = {1:'a', 2:'b', 3:'c'}.get(self._phase)
 					s[em_prefix + 'Energy/Forward'] = emdata[f'{p}_total_act_energy'] / 1000
 					s[em_prefix + 'Energy/Reverse'] = emdata[f'{p}_total_act_ret_energy'] / 1000
 		except:
@@ -128,6 +141,30 @@ class EnergyMeter(object):
 		task = asyncio.get_event_loop().create_task(self._restart())
 		background_tasks.add(task)
 		task.add_done_callback(background_tasks.discard)
+		return True
+
+	async def value_changed(self, item, value):
+		if not 1 <= value <= 3:
+			return False
+
+		self._phase = value
+		await self.settings.set_value(self.settings.alias("phasesetting_{}_{}".format(self._serial, self._channel_id)), value)
+
+		# Clear values of other phases
+		for i in range (1, 4):
+			if i == value:
+				continue
+			prefix = '/Ac/L{}/'.format(i)
+			with self.service as s:
+				s[prefix + 'Voltage'] = None
+				s[prefix + 'Current'] = None
+				s[prefix + 'Power'] = None
+				s[prefix + 'Energy/Forward'] = None
+				s[prefix + 'Energy/Reverse'] = None
+				s[prefix + 'PowerFactor'] = None
+
+		await self.force_update()
+		item.set_local_value(value)
 		return True
 
 	async def position_changed(self, item, value):

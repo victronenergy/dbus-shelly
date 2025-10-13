@@ -103,10 +103,13 @@ class ShellyChannel(SwitchDevice, EnergyMeter, object):
 		self._restart = restart
 
 		# Update the service with the latest status
+		await self.force_update()
+		await self._set_device_customname()
+
+	async def force_update(self):
 		status = await self._rpc_call(f'{self._rpc_device_type if self._rpc_device_type else "EM"}.GetStatus', {"id": self._channel_id})
 		if status is not None:
 			self.update(status)
-		await self._set_device_customname()
 
 	def disable(self):
 		if self.service.get_item(f'/SwitchableOutput/{self._channel_id}/Status') is not None:
@@ -150,9 +153,9 @@ class ShellyChannel(SwitchDevice, EnergyMeter, object):
 			item.set_local_value(value)
 			await self._rpc_call("Sys.SetConfig", {"config": {"device": {"name": value}}})
 
-	def value_changed(self, path, value):
+	async def value_changed(self, item, value):
 		""" Handle a value change from the settings service. """
-		super().value_changed(path, value)
+		return await super().value_changed(item, value)
 
 	def channel_config_changed(self):
 		t1 = asyncio.create_task(self._set_channel_customname())
@@ -194,10 +197,10 @@ class ShellyChannel(SwitchDevice, EnergyMeter, object):
 	async def request_channel_config(self, channel):
 		return await self._rpc_call(f"{self._rpc_device_type}.GetConfig" if self._rpc_device_type is not None else "EM.GetConfig", {"id": channel})
 
-	def update(self, status_json, phase):
+	def update(self, status_json):
 		""" Update the service with new values. """
 		if not self.service:
 			return
 
 		SwitchDevice.update(self, status_json)
-		EnergyMeter.update(self, status_json, phase)
+		EnergyMeter.update(self, status_json)

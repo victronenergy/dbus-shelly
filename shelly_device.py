@@ -234,6 +234,8 @@ class ShellyDevice(object):
 			phases = await self.get_num_phases()
 			await ch.init_em(phases, self.allowed_em_roles)
 		await ch.init()
+		if self.has_em:
+			await ch.setup_em()
 		if self.has_switch or self.has_dimming:
 			type = OutputType.DIMMABLE if self.has_dimming \
 				else OutputType.TOGGLE
@@ -242,14 +244,11 @@ class ShellyDevice(object):
 				valid_functions=(1 << OutputFunction.MANUAL),
 				name=f'Channel {channel + 1}'
 			)
-		if self.has_em:
-			await ch.setup_em()
 
 		self._channels[channel] = ch
 		status = await self.request_channel_status(channel)
 		if status is not None:
-			phase = self._shelly_device.phase_setting if isinstance(self._shelly_device, ShellyChannel) else None
-			self.parse_status(channel, status, phase)
+			self._channels[channel].update(status)
 			await self._channels[channel].start()
 
 			# poll power every 2 seconds
@@ -346,14 +345,12 @@ class ShellyDevice(object):
 			if update_type == RpcUpdateType.STATUS:
 				for channel in self._channels.keys():
 					if f'emdata:{channel}' in cb_device.status and self._has_em:
-						phase = self._shelly_device.phase_setting if isinstance(self._shelly_device, ShellyChannel) else None
-						self._channels[channel].update_energies(cb_device.status[f'emdata:{channel}'], phase)
+						self._channels[channel].update_energies(cb_device.status[f'emdata:{channel}'])
 					# Get the switch status for this channel
 					id="{}:{}".format('switch' if self.has_switch else 'em', channel)
 					# Check if the channel is present in the status
 					if id in cb_device.status:
-						phase = self._shelly_device.phase_setting if isinstance(self._shelly_device, ShellyChannel) else None
-						self.parse_status(channel, cb_device.status[id], phase)
+						self._channels[channel].update(cb_device.status[id])
 
 			elif update_type == RpcUpdateType.DISCONNECTED:
 				logger.warning("Shelly devices websocket %s disconnected. stopping service.", self._serial)
@@ -366,10 +363,3 @@ class ShellyDevice(object):
 		except Exception as ex:
 			logger.error("Exception in device_updated: ", exc_info=ex)
 			raise
-
-	def parse_status(self, channel, status_json, phase):
-		if phase is not None:
-			#is ShellyWithRm channel.
-			self._channels[channel].update(status_json, phase)
-		else:
-			self._channels[channel].update(status_json)
