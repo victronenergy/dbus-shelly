@@ -11,6 +11,7 @@ class EnergyMeter(object):
 	async def init_em(self, num_phases, allowed_roles):
 		self._num_phases = num_phases
 		self.allowed_em_roles = allowed_roles
+		self._phase = None
 		# Determine role and instance
 		self._em_role, instance = self.role_instance(
 			self.settings.get_value(self.settings.alias('instance_{}_{}'.format(self._serial, self._channel_id))))
@@ -32,6 +33,14 @@ class EnergyMeter(object):
 		self.service.add_item(IntegerItem('/Position', self.settings.get_value(self.settings.alias("position_{}_{}".format(self._serial, self._channel_id))),
 				writeable=True, onchange=self.position_changed))
 
+		if self._num_phases == 1:
+			await self.settings.add_settings(
+				Setting(self._settings_base + '%s/' % self._channel_id + 'Phase', 1, 1, 3, alias="phase_{}_{}".format(self._serial, self._channel_id))
+			)
+
+			self._phase = self.settings.get_value(self.settings.alias("phase_{}_{}".format(self._serial, self._channel_id)))
+			self.service.add_item(IntegerItem('/Phase', self._phase, writeable=True, onchange=self.value_changed))
+
 		# Indicate when we're masquerading for another device
 		if self._em_role != "grid":
 			self.service.add_item(IntegerItem('/IsGenericEnergyMeter', 1))
@@ -41,7 +50,7 @@ class EnergyMeter(object):
 		self.service.add_item(DoubleItem('/Ac/Energy/Reverse', None, text=fmt['kwh']))
 		self.service.add_item(DoubleItem('/Ac/Power', None, text= fmt['watt']))
 
-		for channel in range(1, self._num_phases + 1):
+		for channel in range(1, 4):
 			prefix = '/Ac/L{}/'.format(channel)
 			self.service.add_item(DoubleItem(prefix + 'Voltage', None, text=fmt['volt']))
 			self.service.add_item(DoubleItem(prefix + 'Current', None, text=fmt['amp']))
@@ -59,7 +68,7 @@ class EnergyMeter(object):
 			try:
 				with self.service as s:
 					if self._has_switch or self._has_dimming:
-						em_prefix = "/Ac/L1/"
+						em_prefix = f"/Ac/L{self._phase}/"
 						s[em_prefix + 'Voltage'] = status_json["voltage"]
 						s[em_prefix + 'Current'] = status_json["current"]
 						s[em_prefix + 'Power'] = status_json["apower"]
@@ -83,7 +92,7 @@ class EnergyMeter(object):
 				i = self.service.get_item(path)
 				return i.value or 0 if i is not None else 0
 
-			for l in range(1, self._num_phases + 1):
+			for l in range(1, 4):
 				eforward += get_value(f'/Ac/L{l}/Energy/Forward')
 				ereverse += get_value(f'/Ac/L{l}/Energy/Reverse')
 				power += get_value(f'/Ac/L{l}/Power')
@@ -96,13 +105,19 @@ class EnergyMeter(object):
 	def update_energies(self, emdata):
 		try:
 			with self.service as s:
-				for l in range(1, self._num_phases + 1):
-					em_prefix = f'/Ac/L{l}/'
-					p = {1:'a', 2:'b', 3:'c'}.get(l)
+				if self._phase is None:
+					for l in range(1, self._num_phases + 1):
+						em_prefix = f'/Ac/L{l}/'
+						p = {1:'a', 2:'b', 3:'c'}.get(l)
+						s[em_prefix + 'Energy/Forward'] = emdata[f'{p}_total_act_energy'] / 1000
+						s[em_prefix + 'Energy/Reverse'] = emdata[f'{p}_total_act_ret_energy'] / 1000
+				else:
+					em_prefix = f'/Ac/L{self._phase}/'
+					p = {1:'a', 2:'b', 3:'c'}.get(self._phase)
 					s[em_prefix + 'Energy/Forward'] = emdata[f'{p}_total_act_energy'] / 1000
 					s[em_prefix + 'Energy/Reverse'] = emdata[f'{p}_total_act_ret_energy'] / 1000
-		except Exception as e:
-			logger.error("Error updating energy values for %s: %s", self._serial, e)
+		except:
+			pass
 
 	def role_changed(self, val):
 		if val not in self.allowed_em_roles:
@@ -116,6 +131,30 @@ class EnergyMeter(object):
 		task = asyncio.get_event_loop().create_task(self._restart())
 		background_tasks.add(task)
 		task.add_done_callback(background_tasks.discard)
+		return True
+
+	async def value_changed(self, item, value):
+		if not 1 <= value <= 3:
+			return False
+
+		self._phase = value
+		await self.settings.set_value(self.settings.alias("phase_{}_{}".format(self._serial, self._channel_id)), value)
+
+		# Clear values of other phases
+		for i in range (1, 4):
+			if i == value:
+				continue
+			prefix = '/Ac/L{}/'.format(i)
+			with self.service as s:
+				s[prefix + 'Voltage'] = None
+				s[prefix + 'Current'] = None
+				s[prefix + 'Power'] = None
+				s[prefix + 'Energy/Forward'] = None
+				s[prefix + 'Energy/Reverse'] = None
+				s[prefix + 'PowerFactor'] = None
+
+		await self.force_update()
+		item.set_local_value(value)
 		return True
 
 	async def position_changed(self, item, value):
