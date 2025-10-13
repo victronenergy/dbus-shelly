@@ -80,7 +80,7 @@ class EnergyMeter(object):
 									p = {1:'a', 2:'b', 3:'c'}.get(l)
 									s[em_prefix + 'Voltage'] = status_json[f"{p}_voltage"]
 									s[em_prefix + 'Current'] = status_json[f"{p}_current"]
-									s[em_prefix + 'Power'] = status_json[f"{p}_aprt_power"]
+									s[em_prefix + 'Power'] = status_json[f"{p}_act_power"]
 									s[em_prefix + 'PowerFactor'] = status_json[f"{p}_pf"]
 					if self._has_switch or self._has_dimming:
 						em_prefix = "/Ac/L1/"
