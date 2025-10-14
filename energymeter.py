@@ -35,11 +35,11 @@ class EnergyMeter(object):
 
 		if self._num_phases == 1:
 			await self.settings.add_settings(
-				Setting(self._settings_base + '%s/' % self._channel_id + 'Phase', 1, 1, 3, alias="phase_{}_{}".format(self._serial, self._channel_id))
+				Setting(self._settings_base + '%s/' % self._channel_id + 'PhaseSetting', 1, 1, 3, alias="phasesetting_{}_{}".format(self._serial, self._channel_id))
 			)
 
-			self._phase = self.settings.get_value(self.settings.alias("phase_{}_{}".format(self._serial, self._channel_id)))
-			self.service.add_item(IntegerItem('/Phase', self._phase, writeable=True, onchange=self.value_changed))
+			self._phase = self.settings.get_value(self.settings.alias("phasesetting_{}_{}".format(self._serial, self._channel_id)))
+			self.service.add_item(IntegerItem('/PhaseSetting', self._phase, writeable=True, onchange=self.value_changed))
 
 		# Indicate when we're masquerading for another device
 		if self._em_role != "grid":
@@ -138,7 +138,7 @@ class EnergyMeter(object):
 			return False
 
 		self._phase = value
-		await self.settings.set_value(self.settings.alias("phase_{}_{}".format(self._serial, self._channel_id)), value)
+		await self.settings.set_value(self.settings.alias("phasesetting_{}_{}".format(self._serial, self._channel_id)), value)
 
 		# Clear values of other phases
 		for i in range (1, 4):
