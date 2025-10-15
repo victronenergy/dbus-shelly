@@ -253,22 +253,22 @@ class ShellyDiscovery(object):
 			logger.info("Shelly event monitor for %s cancelled", serial)
 		return
 
-	async def _get_device_info(self, server):
+	async def _get_device_info(self, server, serial=None):
 		ip = None
 		info = None
 		num_channels = 0
 		# Only server info is needed for obtaining device info
 		shelly = ShellyDevice(
-			server=server
+			server=server,
+			serial=serial
 		)
 
 		try:
 			if not await shelly.connect():
 				raise Exception()
 
-			if not (shelly.has_em or shelly.has_switch or shelly.has_dimming):
-				logger.warning("Shelly device %s does not have an energy meter, switch or dimmer.", server)
-				await shelly.stop()
+			if len (shelly.get_capabilities()) == 0:
+				logger.warning("Unsupported shelly device: %s", server)
 				raise Exception()
 
 			if not shelly._shelly_device or not shelly._shelly_device.connected:
