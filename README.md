@@ -21,6 +21,13 @@ The following shelly devices have been verified to work correctly:
 - Shelly Mini 1PM Gen4 (SW + EM)
 - Shelly Mini 1 Gen4 (SW only)
 - Shelly Dimmer Gen3
+- Shelly Plus RGBW PM
+
+# Shelly settings
+This driver will only control runtime values like the on/off state and brightness. The settings of the shelly device will not be touched. There are some settings that may affect the behavior of your shelly device when controlled through the GX device:
+
+- Night time settings (dimming devices only): When this setting is enabled, the max brightness and/or color will be set to a default level when the light is enabled.
+- Transition duration (dimming devices only): When set to a nonzero value, the desired brightness / color change is not instantaneous.
 
 # Legacy driver
 The legacy shelly driver in which the shelly connects to the GX is still supported. This will likely be removed in a future version.

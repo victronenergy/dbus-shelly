@@ -59,6 +59,8 @@ class ShellyChannel(SwitchDevice, EnergyMeter, object):
 		self._rpc_device_type = rpc_device_type
 		self._has_dimming = rpc_device_type == 'Light'
 		self._has_switch = rpc_device_type == 'Switch'
+		self._has_rgb = rpc_device_type == 'RGB'
+		self._has_rgbw = rpc_device_type == 'RGBW'
 		self._has_em = has_em
 		self._rpc_call = rpc_callback
 		self.productName = productName
@@ -249,6 +251,14 @@ class ShellyDevice(object):
 		return self._rpc_device_type == 'Light'
 
 	@property
+	def has_rgb(self):
+		return self._rpc_device_type == 'RGB'
+
+	@property
+	def has_rgbw(self):
+		return self._rpc_device_type == 'RGBW'
+
+	@property
 	def has_em(self):
 		return self._has_em
 
@@ -296,6 +306,10 @@ class ShellyDevice(object):
 				self._rpc_device_type = 'Switch'
 			elif 'Light.GetStatus' in methods:
 				self._rpc_device_type = 'Light'
+			elif 'RGB.GetStatus' in methods:
+				self._rpc_device_type = 'RGB'
+			elif 'RGBW.GetStatus' in methods:
+				self._rpc_device_type = 'RGBW'
 
 			if self.has_switch or self.has_dimming:
 				channels = await self.get_channels()
@@ -324,8 +338,8 @@ class ShellyDevice(object):
 
 			self._num_channels = len(channels) if self.has_switch or self.has_dimming else 1
 
-			logger.info("Shelly device %s has %d channels, supports switching: %s, energy metering: %s, dimming: %s",
-				self._serial, self._num_channels, self.has_switch, self.has_em, self.has_dimming)
+			logger.info("Shelly device %s has %d channels, supports switching: %s, energy metering: %s, dimming: %s, RGB: %s, RGBW: %s",
+				self._serial, self._num_channels, self.has_switch, self.has_em, self.has_dimming, self.has_rgb, self.has_rgbw)
 
 			return True
 		except Exception:
@@ -420,22 +434,43 @@ class ShellyDevice(object):
 			await ch.init()
 			if self.has_em:
 				await ch.setup_em()
-			if self.has_switch or self.has_dimming:
-				type = OutputType.DIMMABLE if self.has_dimming \
-					else OutputType.TOGGLE
+			if self.has_switch or self.has_dimming or self.has_rgb or self.has_rgbw:
+				if self.has_dimming:
+					type = OutputType.DIMMABLE
+				elif self.has_rgb:
+					type = OutputType.RGB
+				elif self.has_rgbw:
+					type = OutputType.RGBW
+				else:
+					type = OutputType.TOGGLE
 				await ch.add_output(
 					output_type=type,
 					valid_functions=(1 << OutputFunction.MANUAL),
 					name=f'Channel {channel + 1}'
 				)
+				# Determine service name.
+				if self.has_em:
+					phases = await self.get_num_phases()
+					await ch.init_em(phases, self.allowed_em_roles)
+				await ch.init()
+				if self.has_em:
+					await ch.setup_em()
+				if self.has_switch or self.has_dimming:
+					type = OutputType.DIMMABLE if self.has_dimming \
+						else OutputType.TOGGLE
+					await ch.add_output(
+						output_type=type,
+						valid_functions=(1 << OutputFunction.MANUAL),
+						name=f'Channel {channel + 1}'
+					)
 
-			self._channels[channel] = ch
-			status = await self.request_channel_status(channel)
-			if status is not None:
-				self.parse_status(channel, status)
-				await self._channels[channel].start()
+				self._channels[channel] = ch
+				status = await self.request_channel_status(channel)
+				if status is not None:
+					self.parse_status(channel, status)
+					await self._channels[channel].start()
 
-			return True
+				return True
 
 	async def restart_channel(self, channel):
 		await self.stop_channel(channel)
