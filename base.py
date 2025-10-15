@@ -46,6 +46,8 @@ class ShellyChannel(SwitchDevice, EnergyMeter, object):
 		self._rpc_device_type = rpc_device_type
 		self._has_dimming = rpc_device_type == 'Light'
 		self._has_switch = rpc_device_type == 'Switch'
+		self._has_rgb = rpc_device_type == 'RGB'
+		self._has_rgbw = rpc_device_type == 'RGBW'
 		self._has_em = has_em
 		self._rpc_call = rpc_callback
 		self.productName = productName
