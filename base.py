@@ -206,6 +206,12 @@ class ShellyChannel(SwitchDevice, EnergyMeter, object):
 # Handles the websocket connection to the Shelly device and provides methods to control it.
 # Creates an instance of ShellyChannel for each enabled channel.
 class ShellyDevice(object):
+	rpc_to_output_type = {
+		'Switch': OutputType.TOGGLE,
+		'Light': OutputType.DIMMABLE,
+		'RGB': OutputType.RGB,
+		'RGBW': OutputType.RGBW
+		}
 
 	def __init__(self, bus_type=None, serial=None, server=None, event=None):
 		self._bus_type= bus_type
@@ -220,10 +226,10 @@ class ShellyDevice(object):
 		self._device_lock = asyncio.Lock() # Protects device operations, enabling/disabling channels etc.
 		self._rpc_device_type = None
 		self._has_em = False
-		self._has_dimming = False
 		self._reconnecting = False
 		self._channels = {}
 		self._num_channels = 0
+		self._capabilities = []
 
 	@property
 	def event(self):
@@ -272,6 +278,20 @@ class ShellyDevice(object):
 			if ch in self._channels.keys():
 				self._channels[ch].stop()
 				del self._channels[ch]
+
+	def get_capabilities(self):
+		cap = []
+		if self.has_switch:
+			cap.append('switch')
+		if self.has_dimming:
+			cap.append('dimming')
+		if self.has_rgb:
+			cap.append('rgb')
+		if self.has_rgbw:
+			cap.append('rgbw')
+		if self.has_em:
+			cap.append('EM')
+		return cap
 
 	async def connect(self):
 		options = ConnectionOptions(self._server, "", "")
@@ -328,7 +348,7 @@ class ShellyDevice(object):
 				# Using a shelly as grid meter is not supported because the update frequency is too low.
 				self.allowed_em_roles = ['acload', 'pvinverter', 'genset']
 
-		# No switching capabilities, check for energy metering capabilities.
+			# No switching capabilities, check for energy metering capabilities.
 			elif 'EM.GetStatus' in methods:
 				# Energy metering capabilities -> acload service
 				self._has_em = True
@@ -337,9 +357,12 @@ class ShellyDevice(object):
 				self.allowed_em_roles = ['acload', 'pvinverter', 'genset']
 
 			self._num_channels = len(channels) if self.has_switch or self.has_dimming else 1
+			self._capabilities = self.get_capabilities()
+			if len(self._capabilities) == 0:
+				logger.warning("Unsupported shelly device %s", self._serial)
+				raise ShellyConnectionError()
 
-			logger.info("Shelly device %s has %d channels, supports switching: %s, energy metering: %s, dimming: %s, RGB: %s, RGBW: %s",
-				self._serial, self._num_channels, self.has_switch, self.has_em, self.has_dimming, self.has_rgb, self.has_rgbw)
+			logger.info("Shelly device %s has %d channels, capabilities: %s", self._serial, self._num_channels, self._capabilities)
 
 			return True
 		except Exception:
@@ -427,50 +450,34 @@ class ShellyDevice(object):
 				productid=PRODUCT_ID_SHELLY_SWITCH if self.has_switch or self.has_dimming else PRODUCT_ID_SHELLY_EM,
 				productName="Shelly switch" if self.has_switch else "Shelly dimmer" if self.has_dimming else "Shelly EM",
 			)
-			# Determine service name.
+			# The order of initialization is important here.
+			# First initialize the em (if present) to make sure the role is determined, which is used in the service name
+			# Then initialize the service, followed by setting up the em which adds paths to the service.
+			# Finally add the output (if present) which also adds paths to the service.
 			if self.has_em:
 				phases = await self.get_num_phases()
 				await ch.init_em(phases, self.allowed_em_roles)
+
 			await ch.init()
+
 			if self.has_em:
 				await ch.setup_em()
-			if self.has_switch or self.has_dimming or self.has_rgb or self.has_rgbw:
-				if self.has_dimming:
-					type = OutputType.DIMMABLE
-				elif self.has_rgb:
-					type = OutputType.RGB
-				elif self.has_rgbw:
-					type = OutputType.RGBW
-				else:
-					type = OutputType.TOGGLE
+
+			output_type = self.rpc_to_output_type.get(self._rpc_device_type, None)
+			if output_type is not None:
 				await ch.add_output(
-					output_type=type,
+					output_type=output_type,
 					valid_functions=(1 << OutputFunction.MANUAL),
 					name=f'Channel {channel + 1}'
 				)
-				# Determine service name.
-				if self.has_em:
-					phases = await self.get_num_phases()
-					await ch.init_em(phases, self.allowed_em_roles)
-				await ch.init()
-				if self.has_em:
-					await ch.setup_em()
-				if self.has_switch or self.has_dimming:
-					type = OutputType.DIMMABLE if self.has_dimming \
-						else OutputType.TOGGLE
-					await ch.add_output(
-						output_type=type,
-						valid_functions=(1 << OutputFunction.MANUAL),
-						name=f'Channel {channel + 1}'
-					)
 
-				self._channels[channel] = ch
-				status = await self.request_channel_status(channel)
-				if status is not None:
-					self.parse_status(channel, status)
-					await self._channels[channel].start()
+			self._channels[channel] = ch
+			status = await self.request_channel_status(channel)
+			if status is not None:
+				self.parse_status(channel, status)
+				await self._channels[channel].start()
 
-				return True
+			return True
 
 	async def restart_channel(self, channel):
 		await self.stop_channel(channel)

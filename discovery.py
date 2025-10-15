@@ -189,17 +189,18 @@ class ShellyDiscovery(object):
 			logger.info("Shelly event monitor for %s cancelled", serial)
 		return
 
-	async def _get_device_info(self, server):
+	async def _get_device_info(self, server, serial):
 		# Only server info is needed for obtaining device info
 		shelly = ShellyDevice(
-			server=server
+			server=server,
+			serial=serial
 		)
 
 		if not await shelly.connect():
 			return None, 0
 
-		if not (shelly.has_em or shelly.has_switch or shelly.has_dimming or shelly.has_rgb or shelly.has_rgbw):
-			logger.warning("Shelly device %s does not have an energy meter, switch or dimmer.", server)
+		if len (shelly.get_capabilities()) == 0:
+			logger.warning("Unsupported shelly device: %s", server)
 			await shelly.stop()
 			return None, 0
 
@@ -236,7 +237,7 @@ class ShellyDiscovery(object):
 
 			if (state_change == ServiceStateChange.Added or state_change == ServiceStateChange.Updated) and serial not in self.discovered_devices:
 				logger.info("Found shelly device: %s", serial)
-				device_info, num_channels = await self._get_device_info(info.server)
+				device_info, num_channels = await self._get_device_info(info.server, serial)
 				if device_info is None:
 					logger.error("Failed to get device info for %s", serial)
 					return
