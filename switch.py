@@ -51,10 +51,10 @@ class SwitchDevice(object):
 		self.service.add_item(TextItem(path_base + 'Name', name, writeable=False))
 		valid_functions |= (1 << OutputFunction.MANUAL) # Always allow manual function
 		if output_type == OutputType.DIMMABLE:
-			self.service.add_item(IntegerItem(path_base + 'Dimming', 0, writeable=True, onchange=self.set_dimming_value, text=lambda y: str(y) + '%'))
+			self.service.add_item(IntegerItem(path_base + 'Dimming', 0, writeable=True, onchange=partial(self.throttled_updater, self._set_dimming_value), text=lambda y: str(y) + '%'))
 		elif output_type == OutputType.RGB or output_type == OutputType.RGBW:
 			self.service.add_item(DoubleArrayItem(path_base + 'LightControls',value=[0.0, 0.0, 0.0, 0.0, 0.0], writeable=True,
-										  onchange=self.set_light_controls, text=self._light_controls_text_callback))
+										  onchange=partial(self.throttled_updater, self._set_light_controls), text=self._light_controls_text_callback))
 
 		initial_customname = await self._get_channel_customname()
 		self.service.add_item(TextItem(path_base + 'Settings/Group', "", writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/Group')))
@@ -262,7 +262,7 @@ class SwitchDevice(object):
 			item = self.service.get_item(f'/SwitchableOutput/{self._channel_id}/LightControls')
 			v = item.value
 			v[3] = 0.0
-			task = asyncio.create_task(self.set_light_controls(item, v, force_white=True))
+			task = asyncio.create_task(self._set_light_controls(item, v, force_white=True))
 			background_tasks.add(task)
 			task.add_done_callback(background_tasks.discard)
 
@@ -284,36 +284,67 @@ class SwitchDevice(object):
 
 		item.set_local_value(value)
 
-	async def set_dimming_value(self, item, value):
-		async with self._dimming_lock:
-			self._desired_dimming_value = value
-			if self._dimming_task is not None:
-				# Cancel the existing dimming task
-				self._dimming_task.cancel()
-			self._dimming_task = asyncio.create_task(self._set_dimming_value(item, value))
+	# Throttling mechanism to avoid a queue build-up on the device when the user is dragging a slider in the UI.
+	# Used for dimming tasks. The dispatched task should exit quietly
+	# if the value it is passed is not the desired value anymore by the time the runner wakes up.
+	async def throttled_updater(self, update_task, item, value):
+		async with self._throttling_lock:
+			self._desired_value = value
+			task = asyncio.create_task(self._throttled_updater_runner(update_task, item, value))
+			background_tasks.add(task)
+			task.add_done_callback(background_tasks.discard)
+
+	async def _throttled_updater_runner(self, update_task, item, value):
+		# Only start one updater at a time
+		async with self._throttling_runner_lock:
+			# If a new dimming setpoint has been set by the time this thread wakes up, then exit this one.
+			async with self._throttling_lock:
+				if value != self._desired_value:
+					return
+			await update_task(item, value)
 
 	async def _set_dimming_value(self, item, value):
-		try:
-			if value < 0 or value > 100:
-				return
-
-			async with self._dimming_lock:
-				# If a new dimming setpoint has been set by the time this thread wakes up, then exit.
-				if value != self._desired_dimming_value:
-					return
-
-			item.set_local_value(value) # Set the value here already to make the UI more responsive
-
-			await self._rpc_call(
-				"Light.Set",
-				{
-					"id": self._channel_id,
-					"brightness": value,
-				}
-			)
-		except asyncio.CancelledError:
-			# Task was cancelled, just exit
+		if value < 0 or value > 100:
 			return
+
+		item.set_local_value(value) # Set the value here already to make the UI more responsive
+
+		await self._rpc_call(
+			"Light.Set",
+			{
+				"id": self._channel_id,
+				"brightness": value,
+			}
+		)
+
+	async def _set_light_controls(self, item, value, force_white=False):
+		if not (self._has_rgb or self._has_rgbw) or not isinstance(value, list) or len(value) != 5:
+			return
+
+		item.set_local_value(value) # Set the value here already to make the UI more responsive
+		rgb = self._hsv2rgb(value, normalise=True)
+
+		params = {
+					"id": self._channel_id,
+					"rgb": rgb,
+					"brightness": int(value[2])
+				}
+		if force_white or (self._has_rgbw and self._type == OutputType.RGBW):
+			params["white"] = int(value[3] * 2.55)
+
+		await self._rpc_call(
+			f"{self._rpc_device_type}.Set",
+			params
+		)
+
+	def _rgb2hsv(self, rgb):
+		if rgb[0] == 0 and rgb[1] == 0 and rgb[2] == 0:
+			return 0.0, 0.0, 0.0
+		rf = rgb[0] / 255.0
+		gf = rgb[1] / 255.0
+		bf = rgb[2] / 255.0
+		h, s, v = colorsys.rgb_to_hsv(rf, gf, bf)
+		return h * 360.0, s * 100.0, v * 100.0
 
 	def _hsv2rgb(self, hsv, normalise=False):
 		h = hsv[0]
@@ -331,39 +362,6 @@ class SwitchDevice(object):
 			g = int(gf * 255)
 			b = int(bf * 255)
 		return [r, g, b]
-
-	async def set_light_controls(self, item, value, force_white=False):
-		print(value)
-		if not (self._has_rgb or self._has_rgbw) or not isinstance(value, list) or len(value) != 5:
-			return
-
-		rgb = self._hsv2rgb(value, normalise=True)
-
-		params = {
-					"id": self._channel_id,
-					"rgb": rgb,
-					"brightness": int(value[2])
-				}
-		if force_white or (self._has_rgbw and self._type == OutputType.RGBW):
-			params["white"] = int(value[3] * 2.55)
-
-		print(f"{self._rpc_device_type}.Set", params)
-
-		await self._rpc_call(
-			f"{self._rpc_device_type}.Set",
-			params
-		)
-
-		item.set_local_value(value)
-
-	def _rgb2hsv(self, rgb):
-		if rgb[0] == 0 and rgb[1] == 0 and rgb[2] == 0:
-			return 0.0, 0.0, 0.0
-		rf = rgb[0] / 255.0
-		gf = rgb[1] / 255.0
-		bf = rgb[2] / 255.0
-		h, s, v = colorsys.rgb_to_hsv(rf, gf, bf)
-		return h * 360.0, s * 100.0, v * 100.0
 
 	def update(self, status_json):
 		if not (self._has_switch or self._has_dimming or self._has_rgb or self._has_rgbw) or status_json is None:
