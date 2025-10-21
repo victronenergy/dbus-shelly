@@ -37,6 +37,7 @@ class ShellyDevice(object):
 		self._server = server
 		self._rpc_lock = asyncio.Lock()
 		self._reconnect_lock = asyncio.Lock()
+		self._device_lock = asyncio.Lock() # Protects device operations, enabling/disabling channels etc.
 		self._rpc_device_type = None
 		self._has_em = False
 		self._has_dimming = False
@@ -77,10 +78,12 @@ class ShellyDevice(object):
 	def active_channels(self):
 		return list(self._channels.keys())
 
-	def stop_channel(self, ch):
-		if ch in self._channels.keys():
-			self._channels[ch].stop()
-			del self._channels[ch]
+	async def stop_channel(self, ch):
+		async with self._device_lock:
+			logger.warning("Stopping channel %d for shelly device %s", ch, self._serial)
+			if ch in self._channels.keys():
+				self._channels[ch].stop()
+				del self._channels[ch]
 
 	async def connect(self):
 		options = ConnectionOptions(self._server, "", "")
@@ -199,84 +202,82 @@ class ShellyDevice(object):
 		return True
 
 	async def start(self):
-		if not (await self.ping_shelly()):
-			if not await self.connect():
+		async with self._device_lock:
+			if not (await self.ping_shelly()):
+				if not await self.connect():
+					return False
+
+			logger.info(f"Starting shelly device {self._serial}")
+
+			if not (self.has_em or self.has_switch or self.has_dimming):
+				logger.error("Shelly device %s does not support switching or energy metering", self._serial)
 				return False
 
-		logger.info(f"Starting shelly device {self._serial}")
-
-		if not (self.has_em or self.has_switch or self.has_dimming):
-			logger.error("Shelly device %s does not support switching or energy metering", self._serial)
-			return False
-
-		self._shelly_device.subscribe_updates(self.device_updated)
-		return True
+			self._shelly_device.subscribe_updates(self.device_updated)
+			return True
 
 	async def start_channel(self, channel):
-		if channel < 0 or channel >= self._num_channels:
-			logger.error("Invalid channel number %d for shelly device %s", channel, self._serial)
-			return
+		async with self._device_lock:
+			logger.warning("Starting channel %d for shelly device %s", channel, self._serial)
+			if channel < 0 or channel >= self._num_channels:
+				logger.error("Invalid channel number %d for shelly device %s", channel, self._serial)
+				return False
 
-		ch = await ShellyChannel.create(
-			bus_type=self._bus_type,
-			serial=self._serial,
-			channel_id=channel,
-			rpc_device_type=self._rpc_device_type,
-			has_em=self._has_em,
-			server=self._shelly_device.ip_address or self._server,
-			restart=partial(self.restart_channel, channel),
-			rpc_callback=self.rpc_call,
-			productid=PRODUCT_ID_SHELLY_SWITCH if self.has_switch or self.has_dimming else PRODUCT_ID_SHELLY_EM,
-			productName="Shelly switch" if self.has_switch else "Shelly dimmer" if self.has_dimming else "Shelly EM",
-		)
-		# Determine service name.
-		if self.has_em:
-			phases = await self.get_num_phases()
-			await ch.init_em(phases, self.allowed_em_roles)
-		await ch.init()
-		if self.has_em:
-			await ch.setup_em()
-		if self.has_switch or self.has_dimming:
-			type = OutputType.DIMMABLE if self.has_dimming \
-				else OutputType.TOGGLE
-			await ch.add_output(
-				output_type=type,
-				valid_functions=(1 << OutputFunction.MANUAL),
-				name=f'Channel {channel + 1}'
+			ch = await ShellyChannel.create(
+				bus_type=self._bus_type,
+				serial=self._serial,
+				channel_id=channel,
+				rpc_device_type=self._rpc_device_type,
+				has_em=self._has_em,
+				server=self._shelly_device.ip_address or self._server,
+				restart=partial(self.restart_channel, channel),
+				rpc_callback=self.rpc_call,
+				productid=PRODUCT_ID_SHELLY_SWITCH if self.has_switch or self.has_dimming else PRODUCT_ID_SHELLY_EM,
+				productName="Shelly switch" if self.has_switch else "Shelly dimmer" if self.has_dimming else "Shelly EM",
 			)
+			# Determine service name.
+			if self.has_em:
+				phases = await self.get_num_phases()
+				await ch.init_em(phases, self.allowed_em_roles)
+			await ch.init()
+			if self.has_em:
+				await ch.setup_em()
+			if self.has_switch or self.has_dimming:
+				type = OutputType.DIMMABLE if self.has_dimming \
+					else OutputType.TOGGLE
+				await ch.add_output(
+					output_type=type,
+					valid_functions=(1 << OutputFunction.MANUAL),
+					name=f'Channel {channel + 1}'
+				)
 
-		self._channels[channel] = ch
-		status = await self.request_channel_status(channel)
-		if status is not None:
-			self._channels[channel].update(status)
-			await self._channels[channel].start()
+			self._channels[channel] = ch
+			status = await self.request_channel_status(channel)
+			if status is not None:
+				self.parse_status(channel, status)
+				await self._channels[channel].start()
 
-			# poll power every 2 seconds
-			# asyncio.create_task(self.request_update(channel))
-
-	async def request_update(self, channel):
-		while True:
-			await asyncio.sleep(2)
-			resp = await self.request_channel_status(channel)
+			return True
 
 	async def restart_channel(self, channel):
-		self.stop_channel(channel)
+		await self.stop_channel(channel)
 		await self.start_channel(channel)
 
 	async def stop(self):
-		for ch in self._channels.keys():
-			self._channels[ch].stop()
-		self._channels.clear()
+		async with self._device_lock:
+			for ch in self._channels.keys():
+				self._channels[ch].stop()
+			self._channels.clear()
 
-		if self._shelly_device:
-			await self._shelly_device.shutdown()
-		if self._aiohttp_session:
-			await self._aiohttp_session.close()
+			if self._shelly_device:
+				await self._shelly_device.shutdown()
+			if self._aiohttp_session:
+				await self._aiohttp_session.close()
 
-		self._ws_context = None
-		self._shelly_device = None
-		self._aiohttp_session = None
-		self.set_event("stopped")
+			self._ws_context = None
+			self._shelly_device = None
+			self._aiohttp_session = None
+			self.set_event("stopped")
 
 	async def ping_shelly(self):
 		if not self.is_connected:
@@ -340,26 +341,26 @@ class ShellyDevice(object):
 		return resp['methods'] if resp and 'methods' in resp else []
 
 	def device_updated(self, cb_device, update_type):
-		#logger.info("DeviceUpdated: cb_device: {} -> {}".format(cb_device.status, update_type))
-		try:
-			if update_type == RpcUpdateType.STATUS:
-				for channel in self._channels.keys():
-					if f'emdata:{channel}' in cb_device.status and self._has_em:
-						self._channels[channel].update_energies(cb_device.status[f'emdata:{channel}'])
-					# Get the switch status for this channel
-					id="{}:{}".format('switch' if self.has_switch else 'em', channel)
-					# Check if the channel is present in the status
-					if id in cb_device.status:
-						self._channels[channel].update(cb_device.status[id])
+		if update_type == RpcUpdateType.STATUS:
+			for channel in self._channels.keys():
+				if f'emdata:{channel}' in cb_device.status and self.has_em:
+					self._channels[channel].update_energies(cb_device.status[f'emdata:{channel}'])
+				# Get the switch status for this channel
+				id=f'{self._rpc_device_type.lower()}:{channel}'
+				# Check if the channel is present in the status
+				if id in cb_device.status:
+					self.parse_status(channel, cb_device.status[id])
+		elif update_type == RpcUpdateType.DISCONNECTED:
+			if self._shelly_device:
+				logger.warning("Shelly device %s disconnected", self._serial)
+				self.do_reconnect()
 
-			elif update_type == RpcUpdateType.DISCONNECTED:
-				logger.warning("Shelly devices websocket %s disconnected. stopping service.", self._serial)
-				self.shelly_device = None
-				self.set_event("disconnected")
+		elif update_type == RpcUpdateType.EVENT:
+			for event in cb_device.event['events']:
+				if event['event'] == "config_changed":
+					for channel in self._channels.keys():
+						self._channels[channel].channel_config_changed()
+					return
 
-			elif update_type == RpcUpdateType.EVENT:
-				# TODO: Anything that needs to be handled?
-				pass
-		except Exception as ex:
-			logger.error("Exception in device_updated: ", exc_info=ex)
-			raise
+	def parse_status(self, channel, status_json):
+		self._channels[channel].update(status_json)
