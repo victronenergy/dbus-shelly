@@ -27,7 +27,7 @@ from zeroconf.asyncio import (
 
 from base import ShellyDevice
 from utils import logger, wait_for_settings
-lock = asyncio.Lock()
+
 background_tasks = set()
 
 class ShellyDiscovery(object):
@@ -39,6 +39,9 @@ class ShellyDiscovery(object):
 		self.bus_type = bus_type
 		self.aiobrowser = None
 		self.aiozc = None
+		self._mdns_lock = asyncio.Lock()
+		self._shelly_lock = asyncio.Lock()
+		self._enable_tasks = {}
 
 	async def start(self):
 		# Connect to dbus, localsettings
@@ -81,7 +84,7 @@ class ShellyDiscovery(object):
 				elif serial in self.shellies:
 					# Try reconnecting if enabled.
 					self.shellies[serial]['device'].do_reconnect()
-			async with lock:
+			async with self._mdns_lock:
 				if self.aiobrowser is not None:
 					await self.aiobrowser.async_cancel()
 				self.aiobrowser = AsyncServiceBrowser(
@@ -125,10 +128,14 @@ class ShellyDiscovery(object):
 
 	async def enable_shelly_channel(self, serial, channel, server):
 		""" Enable a shelly channel. """
-		if serial not in self.shellies:
-			await self.add_shelly_device(serial, server)
 
-		await self.shellies[serial]['device'].start_channel(channel)
+		# Sync device creation to prevent creating a device multiple times
+		# when enabling multiple channels at once.
+		async with self._shelly_lock:
+			if serial not in self.shellies:
+				await self.add_shelly_device(serial, server)
+
+		return await self.shellies[serial]['device'].start_channel(channel)
 
 	def delete_shelly_device(self, serial, fut=None):
 		if serial in self.shellies:
@@ -137,12 +144,13 @@ class ShellyDiscovery(object):
 	async def disable_shelly_channel(self, serial, channel):
 		""" Disable a shelly channel. """
 		if serial not in self.shellies:
-			return
-		self.shellies[serial]['device'].stop_channel(channel)
+			return False
+		await self.shellies[serial]['device'].stop_channel(channel)
 
 		if len(self.shellies[serial]['device'].active_channels) == 0:
 			logger.info("No active channels left for device %s, stopping device", serial)
 			await self.shellies[serial]['device'].stop()
+		return True
 
 	async def stop_shelly_device(self, serial):
 		if serial in self.shellies:
@@ -219,7 +227,7 @@ class ShellyDiscovery(object):
 			background_tasks.add(task)
 
 	async def _on_service_state_change_async(self, zeroconf, service_type, name, state_change):
-		async with lock:
+		async with self._mdns_lock:
 			info = AsyncServiceInfo(service_type, name)
 			await info.async_request(zeroconf, 3000)
 			if not info or not info.server:
@@ -275,12 +283,23 @@ class ShellyDiscovery(object):
 		if value not in (0, 1) or item.service is None:
 			return
 
-		# Set the value before first so it feels responsive to the user
-		item.set_local_value(value)
-		server = self.service['/Devices/{}/Server'.format(serial)]
 		if value == 1:
-			await self.enable_shelly_channel(serial, channel, server)
+			server = self.service['/Devices/{}/Server'.format(serial)]
+			# Start enabling a channel as a task, so multiple channels can be enabled simultaneously.
+			task = asyncio.create_task(self.enable_shelly_channel(serial, channel, server))
+			# Keep track of enabling tasks per device, so we can wait for them to finish when disabling channels.
+			if serial not in self._enable_tasks:
+				self._enable_tasks[serial] = set()
+			self._enable_tasks[serial].add(task)
+			task.add_done_callback(self._enable_tasks[serial].discard)
+			ret = True
 		else:
-			await self.disable_shelly_channel(serial, channel)
+			if serial in self._enable_tasks:
+				# Wait for any ongoing enable task on this device to finish before disabling
+				await asyncio.gather(*self._enable_tasks[serial])
+				self._enable_tasks[serial].clear()
+			ret = await self.disable_shelly_channel(serial, channel)
 
-		await self.settings.set_value(self.settings.alias('enabled_{}_{}'.format(serial, channel)), value)
+		if ret:
+			item.set_local_value(value)
+			await self.settings.set_value(self.settings.alias('enabled_{}_{}'.format(serial, channel)), value)
