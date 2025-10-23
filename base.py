@@ -233,6 +233,12 @@ class ShellyDevice(object):
 			self._event_obj.set()
 
 	@property
+	def server(self):
+		if self._shelly_device:
+			return self._shelly_device.ip_address or self._server
+		return None
+
+	@property
 	def is_connected(self):
 		return self._shelly_device and self._shelly_device.connected
 

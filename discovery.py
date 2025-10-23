@@ -33,6 +33,7 @@ background_tasks = set()
 class ShellyDiscovery(object):
 	def __init__(self, bus_type):
 		self.discovered_devices = []
+		self.saved_devices = []
 		self.shellies = {}
 		self.service = None
 		self.settings = None
@@ -52,8 +53,13 @@ class ShellyDiscovery(object):
 
 		# Set up the service
 		self.service = Service(self.bus, "com.victronenergy.shelly")
+		await self.settings.add_settings(Setting('/Settings/Shelly/IpAddresses', "", alias="ipaddresses"))
+
+		ip_addresses = self.settings.get_value(self.settings.alias('ipaddresses'))
+
 		self.service.add_item(IntegerItem('/Refresh', 0, writeable=True,
 			onchange=self.refresh))
+		self.service.add_item(TextItem('/IpAddresses', ip_addresses, writeable=True, onchange=self._on_ip_addresses_changed))
 		await self.service.register()
 
 		self.aiozc = AsyncZeroconf()
@@ -61,12 +67,62 @@ class ShellyDiscovery(object):
 			self.aiozc.zeroconf, ["_shelly._tcp.local."], handlers=[self.on_service_state_change]
 		)
 
+		self._start_add_by_ip_address_task(ip_addresses)
+
 		await self.bus.wait_for_disconnect()
+
+	def _start_add_by_ip_address_task(self, ip_addresses):
+		task = asyncio.create_task(self._add_devices_by_ip(ip_addresses.split(',')))
+		background_tasks.add(task)
+		task.add_done_callback(background_tasks.discard)
+
+	async def _on_ip_addresses_changed(self, item, value):
+		if value == "":
+			if self.settings.get_value(self.settings.alias('ipaddresses')) != "":
+				await self.settings.set_value(self.settings.alias('ipaddresses'), value)
+			item.set_local_value(value)
+			return
+
+		for ip in value.split(','):
+			# Validate IP address format
+			rgx = re.compile(
+				r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$"
+			)
+			if not rgx.match(ip):
+				logger.error("Invalid IP address format: %s", ip)
+				return
+		if value != self.settings.get_value(self.settings.alias('ipaddresses')):
+			await self.settings.set_value(self.settings.alias('ipaddresses'), value)
+		item.set_local_value(value)
+
+		self._start_add_by_ip_address_task(value)
+
+	async def _add_devices_by_ip(self, ipaddresses):
+		for serial in self.saved_devices:
+			device_ip = self.service.get_item('/Devices/{}/Ip'.format(serial))
+
+			# Remove manually added devices that are no longer in the list, but only if they are not currently enabled.
+			if device_ip is not None and device_ip.value not in ipaddresses and serial not in self.shellies:
+				await self.stop_shelly_device(serial)
+				self.remove_discovered_device(serial)
+
+		for ip in set(ipaddresses): # Use set to avoid duplicates
+			ip_found = False
+			# Check if we already have this device
+			for serial in self.discovered_devices + self.saved_devices:
+				device_ip = self.service.get_item('/Devices/{}/Ip'.format(serial))
+				if device_ip is not None and device_ip.value == ip:
+					logger.info("Device with IP %s already found, SN: %s", ip, serial)
+					ip_found = True
+					break
+
+			if not ip_found:
+				await self._add_device(ip, serial=None, manual=True)
 
 	async def refresh(self, item, value):
 		if value == 1:
 			# Delete discovered devices that are currently disabled.
-			for serial in self.discovered_devices[:]:
+			for serial in self.discovered_devices + self.saved_devices:
 				delete = True
 				i = 0
 				while (True):
@@ -90,20 +146,28 @@ class ShellyDiscovery(object):
 				self.aiobrowser = AsyncServiceBrowser(
 					self.aiozc.zeroconf, ["_shelly._tcp.local."], handlers=[self.on_service_state_change]
 				)
+
+			# Retry adding the manually added IP addresses
+			self._start_add_by_ip_address_task(self.settings.get_value(self.settings.alias('ipaddresses')))
 		item.set_local_value(0)
 
 	def remove_discovered_device(self, serial):
 		if serial in self.discovered_devices:
 			self.discovered_devices.remove(serial)
-			with self.service as s:
-				s['/Devices/{}/Server'.format(serial)] = None
-				s['/Devices/{}/Mac'.format(serial)] = None
-				s['/Devices/{}/Model'.format(serial)] = None
-				s['/Devices/{}/Name'.format(serial)] = None
-				i = 0
-				while self.service.get_item(key := f'/Devices/{serial}/{i}/Enabled') is not None:
-					s[key] = None
-					i += 1
+		elif serial in self.saved_devices:
+			self.saved_devices.remove(serial)
+		else:
+			return
+		with self.service as s:
+			s['/Devices/{}/Ip'.format(serial)] = None
+			s['/Devices/{}/Mac'.format(serial)] = None
+			s['/Devices/{}/Model'.format(serial)] = None
+			s['/Devices/{}/Name'.format(serial)] = None
+			s['/Devices/{}/DiscoveryType'.format(serial)] = None
+			i = 0
+			while self.service.get_item(key := f'/Devices/{serial}/{i}/Enabled') is not None:
+				s[key] = None
+				i += 1
 
 	async def add_shelly_device(self, serial, server):
 		event = asyncio.Event()
@@ -190,31 +254,39 @@ class ShellyDiscovery(object):
 		return
 
 	async def _get_device_info(self, server):
+		ip = None
+		info = None
+		num_channels = 0
 		# Only server info is needed for obtaining device info
 		shelly = ShellyDevice(
 			server=server
 		)
 
-		if not await shelly.connect():
-			return None, 0
+		try:
+			if not await shelly.connect():
+				raise Exception()
 
-		if not (shelly.has_em or shelly.has_switch or shelly.has_dimming):
-			logger.warning("Shelly device %s does not have an energy meter, switch or dimmer.", server)
+			if not (shelly.has_em or shelly.has_switch or shelly.has_dimming):
+				logger.warning("Shelly device %s does not have an energy meter, switch or dimmer.", server)
+				await shelly.stop()
+				raise Exception()
+
+			if not shelly._shelly_device or not shelly._shelly_device.connected:
+				logger.error("Failed to connect to shelly device %s", server)
+				raise Exception()
+
+			info = await shelly.get_device_info()
+			ip = shelly.server
+
+			# Report shelly energy meter as device with one channel, so it shows up once in the UI
+			num_channels = len(await shelly.get_channels()) if shelly.has_switch else 1
+
+		except:
+			pass
+		finally:
 			await shelly.stop()
-			return None, 0
-
-		if not shelly._shelly_device or not shelly._shelly_device.connected:
-			logger.error("Failed to connect to shelly device %s", server)
-			return None, 0
-
-		info = await shelly.get_device_info()
-
-		# Report shelly energy meter as device with one channel, so it shows up once in the UI
-		num_channels = len(await shelly.get_channels()) if shelly.has_switch else 1
-
-		await shelly.stop()
-		del shelly
-		return info, num_channels
+			del shelly
+		return ip, info, num_channels
 
 	def on_service_state_change(self, zeroconf, service_type, name, state_change):
 		rgx = re.compile(
@@ -226,6 +298,52 @@ class ShellyDiscovery(object):
 			task.add_done_callback(background_tasks.discard)
 			background_tasks.add(task)
 
+	async def _add_device(self, server, serial=None, manual=False):
+		ip, device_info, num_channels = await self._get_device_info(server)
+		if device_info is None:
+			logger.error("Failed to get device info for %s", server)
+			return
+
+		if serial is None:
+			serial = device_info.get('mac', 'unknown').replace(":", "")
+
+		if manual:
+			self.saved_devices.append(serial)
+		else:
+			self.discovered_devices.append(serial)
+
+		# Shelly plus plug S example: 'app': 'PlusPlugS', 'model': 'SNPL-00112EU'
+		model_name = device_info.get('app', device_info.get('model', 'Unknown'))
+		# Custom name of the shelly device, if available
+		name = device_info.get('name', None)
+
+		for p in ['Ip', 'Mac', 'Model', 'Name', 'DiscoveryType']:
+			if self.service.get_item('/Devices/{}/{}'.format(serial, p)) is None:
+				self.service.add_item(TextItem('/Devices/{}/{}'.format(serial, p), writeable=False))
+
+		with self.service as s:
+			s['/Devices/{}/Ip'.format(serial)] = ip
+			s['/Devices/{}/Mac'.format(serial)] = serial
+			s['/Devices/{}/Model'.format(serial)] = model_name
+			s['/Devices/{}/Name'.format(serial)] = name
+			s['/Devices/{}/DiscoveryType'.format(serial)] = 'Manual' if manual else 'mDNS'
+
+		for i in range(num_channels):
+			await self.settings.add_settings(Setting('/Settings/Devices/shelly_{}/{}/Enabled'.format(serial, i), 0, alias="enabled_{}_{}".format(serial, i)))
+			enabled = self.settings.get_value(self.settings.alias('enabled_{}_{}'.format(serial, i)))
+
+			if self.service.get_item('/Devices/{}/{}/Enabled'.format(serial, i)) is None:
+				enabled_item = IntegerItem('/Devices/{}/{}/Enabled'.format(serial, i), writeable=True, onchange=partial(self._on_enabled_changed, serial, i))
+				self.service.add_item(enabled_item)
+			else:
+				enabled_item = self.service.get_item('/Devices/{}/{}/Enabled'.format(serial, i))
+
+			with self.service as s:
+				s['/Devices/{}/{}/Enabled'.format(serial, i)] = enabled
+
+			if enabled:
+				await self._on_enabled_changed(serial, i, enabled_item, enabled)
+
 	async def _on_service_state_change_async(self, zeroconf, service_type, name, state_change):
 		async with self._mdns_lock:
 			info = AsyncServiceInfo(service_type, name)
@@ -234,45 +352,9 @@ class ShellyDiscovery(object):
 				return
 			serial = info.server.split(".")[0].split("-")[-1]
 
-			if (state_change == ServiceStateChange.Added or state_change == ServiceStateChange.Updated) and serial not in self.discovered_devices:
+			if (state_change == ServiceStateChange.Added or state_change == ServiceStateChange.Updated) and serial not in self.discovered_devices + self.saved_devices:
 				logger.info("Found shelly device: %s", serial)
-				device_info, num_channels = await self._get_device_info(info.server)
-				if device_info is None:
-					logger.error("Failed to get device info for %s", serial)
-					return
-
-				# Shelly plus plug S example: 'app': 'PlusPlugS', 'model': 'SNPL-00112EU'
-				model_name = device_info.get('app', device_info.get('model', 'Unknown'))
-				# Custom name of the shelly device, if available
-				name = device_info.get('name', None)
-
-				for p in ['Server', 'Mac', 'Model', 'Name']:
-					if self.service.get_item('/Devices/{}/{}'.format(serial, p)) is None:
-						self.service.add_item(TextItem('/Devices/{}/{}'.format(serial, p), writeable=False))
-
-				with self.service as s:
-					s['/Devices/{}/Server'.format(serial)] = info.server[:-1]
-					s['/Devices/{}/Mac'.format(serial)] = serial
-					s['/Devices/{}/Model'.format(serial)] = model_name
-					s['/Devices/{}/Name'.format(serial)] = name
-
-				for i in range(num_channels):
-					await self.settings.add_settings(Setting('/Settings/Devices/shelly_{}/{}/Enabled'.format(serial, i), 0, alias="enabled_{}_{}".format(serial, i)))
-					enabled = self.settings.get_value(self.settings.alias('enabled_{}_{}'.format(serial, i)))
-
-					if self.service.get_item('/Devices/{}/{}/Enabled'.format(serial, i)) is None:
-						enabled_item = IntegerItem('/Devices/{}/{}/Enabled'.format(serial, i), writeable=True, onchange=partial(self._on_enabled_changed, serial, i))
-						self.service.add_item(enabled_item)
-					else:
-						enabled_item = self.service.get_item('/Devices/{}/{}/Enabled'.format(serial, i))
-
-					with self.service as s:
-						s['/Devices/{}/{}/Enabled'.format(serial, i)] = enabled
-
-					if enabled:
-						await self._on_enabled_changed(serial, i, enabled_item, enabled)
-
-				self.discovered_devices.append(serial)
+				await self._add_device(info.server[:-1], serial)
 
 			elif state_change == ServiceStateChange.Removed and serial in self.discovered_devices:
 				logger.warning("Shelly device: %s disappeared", serial)
@@ -284,7 +366,7 @@ class ShellyDiscovery(object):
 			return
 
 		if value == 1:
-			server = self.service['/Devices/{}/Server'.format(serial)]
+			server = self.service['/Devices/{}/Ip'.format(serial)]
 			# Start enabling a channel as a task, so multiple channels can be enabled simultaneously.
 			task = asyncio.create_task(self.enable_shelly_channel(serial, channel, server))
 			# Keep track of enabling tasks per device, so we can wait for them to finish when disabling channels.
