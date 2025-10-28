@@ -25,7 +25,7 @@ from zeroconf.asyncio import (
 	AsyncZeroconf
 )
 
-from base import ShellyDevice
+from shelly_device import ShellyDevice
 from utils import logger, wait_for_settings
 
 background_tasks = set()
