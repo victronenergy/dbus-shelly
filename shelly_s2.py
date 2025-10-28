@@ -73,27 +73,27 @@ class ShellyChannelWithRm(base.ShellyChannel):
 
 	@property
 	def on_hysteresis(self):
-		return self.service.get_item(f'/Devices/{self._channel_id}/S2/OnHysteresis').value or 0
+		return self.service.get_item(f'/S2/0/RmSettings/OnHysteresis').value or 0
 
 	@property
 	def off_hysteresis(self):
-		return self.service.get_item(f'/Devices/{self._channel_id}/S2/OffHysteresis').value or 0
+		return self.service.get_item(f'/S2/0/RmSettings/OffHysteresis').value or 0
 
 	@property
 	def power_setting(self):
-		return self.service.get_item(f'/Devices/{self._channel_id}/S2/PowerSetting').value or 0
+		return self.service.get_item(f'/S2/0/RmSettings/PowerSetting').value or 0
 
 	@property
 	def s2_active(self):
-		return self.service.get_item(f'/Devices/{self._channel_id}/S2/Active').value or 0
+		return self.service.get_item(f'/S2/0/Active').value or 0
 
 	@s2_active.setter
 	def s2_active(self, value):
-		self.service.get_item(f'/Devices/{self._channel_id}/S2/Active').set_local_value(value)
+		self.service.get_item(f'/S2/0/Active').set_local_value(value)
 
 	@property
 	def has_rm(self):
-		return self.service.get_item("/Devices/{}/S2".format(self._channel_id)) is not None
+		return self.service.get_item("/S2/0/Rm") is not None
 
 	def __init__(self, *args, **kwargs):
 		super().__init__(*args, **kwargs)
@@ -180,8 +180,8 @@ class ShellyChannelWithRm(base.ShellyChannel):
 
 	async def _s2_value_changed(self, path, item, value):
 		split = path.split('/')
-		if len(split) > 3 and split[3] == 'S2':
-			setting = f'{split[-1]}_{self._serial}_{split[-3]}'
+		if len(split) > 2 and split[1] == 'S2':
+			setting = f'{split[-1]}_{self._serial}_{self._channel_id}'
 			try:
 				await self.settings.set_value(self.settings.alias(setting), value)
 			except:
@@ -206,24 +206,22 @@ class ShellyChannelWithRm(base.ShellyChannel):
 		settings_base = self._settings_base + f'{channel}/S2/'
 		await self.settings.add_settings(
 			Setting(settings_base + 'PowerSetting', 1000, alias=f'PowerSetting_{self._serial}_{channel}'),
-			Setting(settings_base + 'ConsumerType', 0, alias=f'ConsumerType_{self._serial}_{channel}'),
 			Setting(settings_base + 'Priority', 0, alias=f'Priority_{self._serial}_{channel}'),
 			Setting(settings_base + 'Phase', 1, _min=0, _max=3, alias=f'Phase_{self._serial}_{channel}'), #Phase 0 will map to a 3 phased symmetric load.
 			Setting(settings_base + 'OnHysteresis', 30, _min=0, _max=999999, alias=f'OnHysteresis_{self._serial}_{channel}'),
 			Setting(settings_base + 'OffHysteresis', 30, _min=0, _max=999999, alias=f'OffHysteresis_{self._serial}_{channel}')
 		)
 
-		power_setting = self.settings.get_value(self.settings.alias(f'PowerSetting_{self._serial}_{channel}'))
-		consumertype_setting = self.settings.get_value(self.settings.alias(f'ConsumerType_{self._serial}_{channel}'))
 		priority_setting = self.settings.get_value(self.settings.alias(f'Priority_{self._serial}_{channel}'))
+		power_setting = self.settings.get_value(self.settings.alias(f'PowerSetting_{self._serial}_{channel}'))
 		on_hysteresis = self.settings.get_value(self.settings.alias(f'OnHysteresis_{self._serial}_{channel}'))
 		off_hysteresis = self.settings.get_value(self.settings.alias(f'OffHysteresis_{self._serial}_{channel}'))
 		
-		path_base = "/Devices/{}/S2/".format(channel)
+		path_base = "/S2/0/"
 		self.service.add_item(IntegerItem(path_base + 'Active', 0))
-		self.service.add_item(IntegerItem(path_base + 'PowerSetting', power_setting, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'PowerSetting'), text=fmt['watt']))
-		self.service.add_item(IntegerItem(path_base + 'ConsumerType', consumertype_setting, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'ConsumerType')))
 		self.service.add_item(IntegerItem(path_base + 'Priority', priority_setting, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'Priority')))
+		path_base = "/S2/0/RmSettings/"
+		self.service.add_item(IntegerItem(path_base + 'PowerSetting', power_setting, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'PowerSetting'), text=fmt['watt']))
 		self.service.add_item(IntegerItem(path_base + 'OnHysteresis', on_hysteresis, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'OnHysteresis')))
 		self.service.add_item(IntegerItem(path_base + 'OffHysteresis', off_hysteresis, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'OffHysteresis')))
 
@@ -248,7 +246,7 @@ class ShellyChannelWithRm(base.ShellyChannel):
 		self._control_type_ombc = ShellyOMBC(self)
 		self._control_type_noctrl = ShellyNOCTRL(self)
 		self.rm_item = S2ResourceManagerItem(
-			'/Devices/{}/S2'.format(self._channel_id),
+			'/S2/0/Rm',
 			control_types=[self._control_type_noctrl, self._control_type_ombc],
 			asset_details=self._rm_details
 		)
