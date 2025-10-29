@@ -88,7 +88,7 @@ class ShellyDevice(object):
 		async with self._device_lock:
 			logger.warning("Stopping channel %d for shelly device %s", ch, self._serial)
 			if ch in self._channels.keys():
-				self._channels[ch].stop()
+				await self._channels[ch].stop()
 				del self._channels[ch]
 
 	async def connect(self):
@@ -272,7 +272,7 @@ class ShellyDevice(object):
 	async def stop(self):
 		async with self._device_lock:
 			for ch in self._channels.keys():
-				self._channels[ch].stop()
+				await self._channels[ch].stop()
 			self._channels.clear()
 
 			if self._shelly_device:
