@@ -97,9 +97,9 @@ class ShellyChannel(SwitchDevice, EnergyMeter, object):
 			with self.service as s:
 				s['/SwitchableOutput/%s/Status' % self._channel_id] = 0x20 # Disabled
 
-	def stop(self):
+	async def stop(self):
 		if self.service is not None:
-			self.service.__del__()
+			await self.service.close()
 		else:
 			logger.warning("ShellyChannel service is None, cannot stop")
 
