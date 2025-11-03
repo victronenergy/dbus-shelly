@@ -173,14 +173,6 @@ class ShellyDevice(object):
 				# Using a shelly as grid meter is not supported because the update frequency is too low.
 				self.allowed_em_roles = ['acload', 'pvinverter', 'genset']
 
-			# No switching capabilities, check for energy metering capabilities.
-			elif 'EM.GetStatus' in methods:
-				# Energy metering capabilities -> acload service
-				self._has_em = True
-				self._rpc_device_type = 'EM'
-				# Using a shelly as grid meter is not supported because the update frequency is too low.
-				self.allowed_em_roles = ['acload', 'pvinverter', 'genset']
-
 			self._num_channels = len(channels) if self.has_switch or self.has_dimming else 1
 			self._capabilities = self.get_capabilities()
 			if len(self._capabilities) == 0:
