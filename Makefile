@@ -5,6 +5,7 @@ FILES =					\
 	energymeter.py		\
 	discovery.py		\
 	base.py				\
+	shelly_device.py	\
 	utils.py
 
 LIB =					\
