@@ -299,7 +299,7 @@ class ShellyDiscovery(object):
 			background_tasks.add(task)
 
 	async def _add_device(self, server, serial=None, manual=False):
-		ip, device_info, num_channels = await self._get_device_info(server)
+		ip, device_info, num_channels = await self._get_device_info(server, serial)
 		if device_info is None:
 			logger.error("Failed to get device info for %s", server)
 			return

@@ -60,6 +60,12 @@ class ShellyDevice(object):
 			self._event_obj.set()
 
 	@property
+	def server(self):
+		if self._shelly_device:
+			return self._shelly_device.ip_address or self._server
+		return None
+
+	@property
 	def is_connected(self):
 		return self._shelly_device and self._shelly_device.connected
 
@@ -95,7 +101,7 @@ class ShellyDevice(object):
 		async with self._device_lock:
 			logger.warning("Stopping channel %d for shelly device %s", ch, self._serial)
 			if ch in self._channels.keys():
-				self._channels[ch].stop()
+				await self._channels[ch].stop()
 				del self._channels[ch]
 
 	def get_capabilities(self):
@@ -125,7 +131,7 @@ class ShellyDevice(object):
 				raise ShellyConnectionError()
 
 			try:
-				async with async_timeout.timeout(2):
+				async with async_timeout.timeout(5):
 					await self._shelly_device.initialize()
 			except Exception:
 				logger.warning("Failed to initialize shelly device %s", self._serial)
@@ -243,7 +249,7 @@ class ShellyDevice(object):
 
 			logger.info(f"Starting shelly device {self._serial}")
 
-			if not (self.has_em or self.has_switch or self.has_dimming):
+			if len(self.get_capabilities()) == 0:
 				logger.error("Shelly device %s does not support switching or energy metering", self._serial)
 				return False
 
@@ -252,7 +258,7 @@ class ShellyDevice(object):
 
 	async def start_channel(self, channel):
 		async with self._device_lock:
-			logger.warning("Starting channel %d for shelly device %s", channel, self._serial)
+			logger.info("Starting channel %d for shelly device %s", channel, self._serial)
 			if channel < 0 or channel >= self._num_channels:
 				logger.error("Invalid channel number %d for shelly device %s", channel, self._serial)
 				return False
@@ -305,7 +311,7 @@ class ShellyDevice(object):
 	async def stop(self):
 		async with self._device_lock:
 			for ch in self._channels.keys():
-				self._channels[ch].stop()
+				await self._channels[ch].stop()
 			self._channels.clear()
 
 			if self._shelly_device:

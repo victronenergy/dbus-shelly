@@ -260,8 +260,9 @@ class SwitchDevice(object):
 		if value == OutputType.RGB:
 			# Set white channel to 0 when switching to RGB
 			item = self.service.get_item(f'/SwitchableOutput/{self._channel_id}/LightControls')
-			v = item.value
+			v = list(item.value)
 			v[3] = 0.0
+			self._desired_value = v
 			task = asyncio.create_task(self._set_light_controls(item, v, force_white=True))
 			background_tasks.add(task)
 			task.add_done_callback(background_tasks.discard)
@@ -338,13 +339,17 @@ class SwitchDevice(object):
 		)
 
 	def _rgb2hsv(self, rgb):
-		if rgb[0] == 0 and rgb[1] == 0 and rgb[2] == 0:
-			return 0.0, 0.0, 0.0
-		rf = rgb[0] / 255.0
-		gf = rgb[1] / 255.0
-		bf = rgb[2] / 255.0
-		h, s, v = colorsys.rgb_to_hsv(rf, gf, bf)
-		return h * 360.0, s * 100.0, v * 100.0
+		h, s, v = colorsys.rgb_to_hsv(rgb[0] / 255.0, rgb[1] / 255.0, rgb[2] / 255.0)
+		h = h * 360.0
+		s = s * 100.0
+		v = v * 100.0
+		# If value or saturation is zero, restore previous hue/saturation
+		if v == 0.0:
+			h = self._desired_value[0]
+			s = self._desired_value[1]
+		elif s == 0.0:
+			h = self._desired_value[0]
+		return h, s, v
 
 	def _hsv2rgb(self, hsv, normalise=False):
 		h = hsv[0]
