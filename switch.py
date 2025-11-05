@@ -115,6 +115,9 @@ class SwitchDevice(object):
 			elif split[-1] == 'Function':
 				if not self._set_channel_function(split[-3], value):
 					return
+			elif split[-1] == 'ShowUIControl':
+				if value > 6 or value < 0:
+					return
 			setting = split[-1] + '_' + self._serial + '_' + split[-3]
 			try:
 				await self.settings.set_value(self.settings.alias(setting), value)
