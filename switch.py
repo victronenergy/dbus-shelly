@@ -73,7 +73,7 @@ class SwitchDevice(object):
 		base = self._settings_base + '%s/' % self._channel_id
 		await self.settings.add_settings(
 			Setting(base + 'Group', "", alias=f'Group_{self._serial}_{self._channel_id}'),
-			Setting(base + 'ShowUIControl', 1, _min=0, _max=1, alias=f'ShowUIControl_{self._serial}_{self._channel_id}'),
+			Setting(base + 'ShowUIControl', 1, _min=0, _max=6, alias=f'ShowUIControl_{self._serial}_{self._channel_id}'),
 			Setting(base + 'Function', int(OutputFunction.MANUAL), _min=0, _max=6, alias=f'Function_{self._serial}_{self._channel_id}'),
 			Setting(base + 'Type', output_type, _min=0, _max=OutputType.TYPE_MAX, alias=f'Type_{self._serial}_{self._channel_id}'),
 		)
