@@ -124,7 +124,7 @@ class ShellyDiscovery(object):
 			# Delete discovered devices that are currently disabled.
 			for serial in self.discovered_devices + self.saved_devices:
 				delete = True
-				i = 0
+				i = 1
 				while (True):
 					enabled_item = self.service.get_item(f'/Devices/{serial}/{i}/Enabled')
 					if enabled_item is None:
@@ -164,7 +164,7 @@ class ShellyDiscovery(object):
 			s['/Devices/{}/Model'.format(serial)] = None
 			s['/Devices/{}/Name'.format(serial)] = None
 			s['/Devices/{}/DiscoveryType'.format(serial)] = None
-			i = 0
+			i = 1
 			while self.service.get_item(key := f'/Devices/{serial}/{i}/Enabled') is not None:
 				s[key] = None
 				i += 1
@@ -329,17 +329,17 @@ class ShellyDiscovery(object):
 			s['/Devices/{}/DiscoveryType'.format(serial)] = 'Manual' if manual else 'mDNS'
 
 		for i in range(num_channels):
-			await self.settings.add_settings(Setting('/Settings/Devices/shelly_{}/{}/Enabled'.format(serial, i), 0, alias="enabled_{}_{}".format(serial, i)))
+			await self.settings.add_settings(Setting('/Settings/Devices/shelly_{}/{}/Enabled'.format(serial, i + 1), 0, alias="enabled_{}_{}".format(serial, i)))
 			enabled = self.settings.get_value(self.settings.alias('enabled_{}_{}'.format(serial, i)))
 
-			if self.service.get_item('/Devices/{}/{}/Enabled'.format(serial, i)) is None:
-				enabled_item = IntegerItem('/Devices/{}/{}/Enabled'.format(serial, i), writeable=True, onchange=partial(self._on_enabled_changed, serial, i))
+			if self.service.get_item('/Devices/{}/{}/Enabled'.format(serial, i + 1)) is None:
+				enabled_item = IntegerItem('/Devices/{}/{}/Enabled'.format(serial, i + 1), writeable=True, onchange=partial(self._on_enabled_changed, serial, i))
 				self.service.add_item(enabled_item)
 			else:
-				enabled_item = self.service.get_item('/Devices/{}/{}/Enabled'.format(serial, i))
+				enabled_item = self.service.get_item('/Devices/{}/{}/Enabled'.format(serial, i + 1))
 
 			with self.service as s:
-				s['/Devices/{}/{}/Enabled'.format(serial, i)] = enabled
+				s['/Devices/{}/{}/Enabled'.format(serial, i + 1)] = enabled
 
 			if enabled:
 				await self._on_enabled_changed(serial, i, enabled_item, enabled)
