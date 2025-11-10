@@ -9,7 +9,7 @@ import asyncio
 import colorsys
 # aiovelib
 sys.path.insert(1, os.path.join(os.path.dirname(__file__), 'ext', 'aiovelib'))
-from aiovelib.service import IntegerItem, TextItem, DoubleArrayItem
+from aiovelib.service import IntegerItem, TextItem, IntegerArrayItem
 from aiovelib.localsettings import Setting
 
 from utils import logger, STATUS_OFF, STATUS_ON
@@ -53,7 +53,7 @@ class SwitchDevice(object):
 		if output_type == OutputType.DIMMABLE:
 			self.service.add_item(IntegerItem(path_base + 'Dimming', 0, writeable=True, onchange=partial(self.throttled_updater, self._set_dimming_value), text=lambda y: str(y) + '%'))
 		elif output_type == OutputType.RGB or output_type == OutputType.RGBW:
-			self.service.add_item(DoubleArrayItem(path_base + 'LightControls',value=[0.0, 0.0, 0.0, 0.0, 0.0], writeable=True,
+			self.service.add_item(IntegerArrayItem(path_base + 'LightControls',value=[0, 0, 0, 0, 0], writeable=True,
 										  onchange=partial(self.throttled_updater, self._set_light_controls), text=self._light_controls_text_callback))
 
 		initial_customname = await self._get_channel_customname()
@@ -264,7 +264,7 @@ class SwitchDevice(object):
 			# Set white channel to 0 when switching to RGB
 			item = self.service.get_item(f'/SwitchableOutput/{self._channel_id}/LightControls')
 			v = list(item.value)
-			v[3] = 0.0
+			v[3] = 0
 			self._desired_value = v
 			task = asyncio.create_task(self._set_light_controls(item, v, force_white=True))
 			background_tasks.add(task)
@@ -331,10 +331,10 @@ class SwitchDevice(object):
 		params = {
 					"id": self._channel_id,
 					"rgb": rgb,
-					"brightness": int(value[2])
+					"brightness": value[2]
 				}
 		if force_white or (self._has_rgbw and self._type == OutputType.RGBW):
-			params["white"] = int(value[3] * 2.55)
+			params["white"] = round(value[3] * 2.55)
 
 		await self._rpc_call(
 			f"{self._rpc_device_type}.Set",
@@ -366,9 +366,9 @@ class SwitchDevice(object):
 			r = g = b = int(brightness * 255)
 		else:
 			rf, gf, bf = colorsys.hsv_to_rgb(h / 360.0, s / 100.0, brightness)
-			r = int(rf * 255)
-			g = int(gf * 255)
-			b = int(bf * 255)
+			r = round(rf * 255)
+			g = round(gf * 255)
+			b = round(bf * 255)
 		return [r, g, b]
 
 	def update(self, status_json):
@@ -386,6 +386,6 @@ class SwitchDevice(object):
 					brightness = status_json.get("brightness", 0)
 					white = status_json.get("white", 0) / 2.55 if self._has_rgbw and self._type == OutputType.RGBW else 0.0
 					hue, sat, val = self._rgb2hsv(status_json.get("rgb", [0, 0, 0]))
-					s[switch_prefix + 'LightControls'] = [hue, sat, brightness, white, 0.0]
+					s[switch_prefix + 'LightControls'] = [round(hue), round(sat), round(brightness), round(white), 0]
 		except:
 			pass
