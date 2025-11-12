@@ -352,7 +352,9 @@ class SwitchDevice(object):
 		if v == 0.0:
 			h = self._desired_value[0]
 			s = self._desired_value[1]
-		elif s == 0.0:
+		# Ignore the calculated hue if the saturation is very low because the calculation will
+		# be very inaccurate, which will cause small jumps in hue when changing the saturation.
+		elif s <= 5.0:
 			h = self._desired_value[0]
 		return h, s, v
 
