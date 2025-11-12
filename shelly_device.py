@@ -47,8 +47,9 @@ class ShellyDevice(object):
 		self._has_em = False
 		self._reconnecting = False
 		self._channels = {}
-		self._num_channels = 0
-		self._capabilities = []
+		self._num_channels = None
+		self._capabilities = None
+		self._reconnect_task = None
 
 	@property
 	def event(self):
@@ -173,8 +174,17 @@ class ShellyDevice(object):
 				# Using a shelly as grid meter is not supported because the update frequency is too low.
 				self.allowed_em_roles = ['acload', 'pvinverter', 'genset']
 
-			self._num_channels = len(channels) if self.has_switch or self.has_dimming else 1
-			self._capabilities = self.get_capabilities()
+			num_channels = len(channels) if self.has_switch or self.has_dimming else 1
+			caps = self.get_capabilities()
+			if (self._num_channels is not None and self._capabilities is not None) and \
+				 (self._num_channels != num_channels or self._capabilities != caps):
+				logger.warning("Shelly device capabilities or number of channels changed, need rediscovery")
+				self.set_event("disconnected")
+				raise ShellyConnectionError()
+
+			self._num_channels = num_channels
+			self._capabilities = caps
+
 			if len(self._capabilities) == 0:
 				logger.warning("Unsupported shelly device %s", self._serial)
 				raise ShellyConnectionError()
@@ -194,12 +204,12 @@ class ShellyDevice(object):
 		if self._reconnecting:
 			return False
 		self._reconnecting = True
-		task = asyncio.create_task(self._reconnect())
-		background_tasks.add(task)
-		task.add_done_callback(background_tasks.discard)
+		self._reconnect_task = asyncio.create_task(self._reconnect())
+		background_tasks.add(self._reconnect_task)
+		self._reconnect_task.add_done_callback(background_tasks.discard)
 		def clear_reconnecting(fut):
 			self._reconnecting = False
-		task.add_done_callback(clear_reconnecting)
+		self._reconnect_task.add_done_callback(clear_reconnecting)
 
 	async def _reconnect(self):
 		logger.info("Reconnecting to shelly device %s", self._serial)
@@ -302,6 +312,9 @@ class ShellyDevice(object):
 
 	async def stop(self):
 		async with self._device_lock:
+			if self._reconnecting and self._reconnect_task and not self._reconnect_task.done():
+				self._reconnect_task.cancel()
+				self._reconnecting = False
 			for ch in self._channels.keys():
 				await self._channels[ch].stop()
 			self._channels.clear()

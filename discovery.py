@@ -279,7 +279,11 @@ class ShellyDiscovery(object):
 			ip = shelly.server
 
 			# Report shelly energy meter as device with one channel, so it shows up once in the UI
-			num_channels = len(await shelly.get_channels()) if shelly.has_switch else 1
+			cap = shelly.get_capabilities()
+			if len(cap) == 1 and 'EM' in cap:
+				num_channels = 1
+			else:
+				num_channels = len(await shelly.get_channels())
 
 		except:
 			pass
