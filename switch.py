@@ -126,6 +126,8 @@ class SwitchDevice(object):
 			item.set_local_value(value)
 
 	def _set_channel_type(self, channel, value):
+		if value < 0 or value > OutputType.TYPE_MAX:
+			return False
 		ret = (1 << value) & self.service.get_item("/SwitchableOutput/%s/Settings/ValidTypes" % channel).value
 		if ret:
 			self.on_channel_type_changed(channel, value)
