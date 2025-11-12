@@ -384,6 +384,9 @@ class SwitchDevice(object):
 			with self.service as s:
 				s[switch_prefix + 'State'] = 1 if status == STATUS_ON else 0
 				s[switch_prefix + 'Status'] = status
+				if self._throttling_runner_lock.locked():
+					# A throttled update is in progress, don't override Dimming/LightControls path
+					return
 				if self._has_dimming:
 					s[switch_prefix + 'Dimming'] = status_json.get("brightness", 0)
 				if self._has_rgb or self._has_rgbw:
