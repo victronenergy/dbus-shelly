@@ -15,7 +15,7 @@ from aiovelib.localsettings import Setting
 
 from s2 import S2ResourceManagerItem
 from s2python.s2_control_type import NoControlControlType, OMBCControlType
-from s2python.s2_connection import AssetDetails
+from s2python.s2_asset_details import AssetDetails
 from s2python.generated.gen_s2 import CommodityQuantity, RoleType
 from s2python.common.power_range import PowerRange
 from s2python.common.transition import Transition
@@ -62,7 +62,7 @@ def phase_setting_to_commodity(phase:int)-> CommodityQuantity:
 	if phase == 2: return CommodityQuantity.ELECTRIC_POWER_L2
 	if phase == 3: return CommodityQuantity.ELECTRIC_POWER_L3
 
-	#invalid? Default to 0. That's the smallest error on every phase. 
+	#invalid? Default to 0. That's the smallest error on every phase.
 	return CommodityQuantity.ELECTRIC_POWER_3_PHASE_SYMMETRIC
 
 class ShellyChannelWithRm(base.ShellyChannel):
@@ -125,7 +125,7 @@ class ShellyChannelWithRm(base.ShellyChannel):
 		try:
 			await self.rm_item.send_resource_manager_details(control_types=[self._control_type_noctrl], asset_details=self._rm_details)
 
-			#make sure to send a 0 power measurement to EMS as well. 
+			#make sure to send a 0 power measurement to EMS as well.
 			await self.rm_item.send_msg_and_await_reception_status(
 				PowerMeasurement(
 					message_id=uuid.uuid4(),
@@ -216,7 +216,7 @@ class ShellyChannelWithRm(base.ShellyChannel):
 		power_setting = self.settings.get_value(self.settings.alias(f'PowerSetting_{self._serial}_{channel}'))
 		on_hysteresis = self.settings.get_value(self.settings.alias(f'OnHysteresis_{self._serial}_{channel}'))
 		off_hysteresis = self.settings.get_value(self.settings.alias(f'OffHysteresis_{self._serial}_{channel}'))
-		
+
 		path_base = "/S2/0/"
 		self.service.add_item(IntegerItem(path_base + 'Active', 0))
 		self.service.add_item(IntegerItem(path_base + 'Priority', priority_setting, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'Priority')))
@@ -250,7 +250,7 @@ class ShellyChannelWithRm(base.ShellyChannel):
 			control_types=[self._control_type_noctrl, self._control_type_ombc],
 			asset_details=self._rm_details
 		)
-		
+
 		self.service.add_item(self.rm_item)
 
 		#FIXME: When the S2 paths are added after the service was already registered, itemschanged will not be sent automatically.
@@ -299,7 +299,7 @@ class ShellyOMBC(OMBCControlType):
 
 		# User can configure desired On/Off Hysteresis to avoid certain consumers turning on/off to frequently
 		# and eventually cause damage. These limits will be obeyed by the EMS, eventually not in offgrid cases,
-		# when an overload situation happens. 
+		# when an overload situation happens.
 		self.on_timer = Timer(id=uuid.uuid4(), diagnostic_label="On Hysteresis", duration=(self._switch_item.on_hysteresis or 0) * 1000)
 		self.off_timer = Timer(id=uuid.uuid4(), diagnostic_label="Off Hysteresis", duration=(self._switch_item.off_hysteresis or 0) * 1000)
 
@@ -335,7 +335,7 @@ class ShellyOMBC(OMBCControlType):
 		#Ensure a 0 power package is transfered, even if the device isn't active anymore.
 		if not self._active and self._previous_power == 0:
 			return
-		
+
 		if 'Status' in values and self._status != values['Status']:
 			# Status has changed, update the HEMS
 			self._status = values['Status']

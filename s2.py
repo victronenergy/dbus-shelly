@@ -29,7 +29,8 @@ from s2python.message import S2Message
 from s2python.version import S2_VERSION
 
 
-from s2python.s2_connection import MessageHandlers, AssetDetails
+from s2python.s2_message_handlers import MessageHandlers
+from s2python.s2_asset_details import AssetDetails
 
 
 logger = logging.getLogger(__name__)
