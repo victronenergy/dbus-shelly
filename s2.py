@@ -135,13 +135,13 @@ class S2ResourceManagerItem(S2ServerItem):
             json_msg = json.loads(message)
             message_id = json_msg.get("message_id")
             if message_id:
-                await self.respond_with_reception_status(
+                await self._respond_with_reception_status(
                     subject_message_id=message_id,
                     status=ReceptionStatusValues.INVALID_MESSAGE,
                     diagnostic_label=str(e),
                 )
             else:
-                await self.respond_with_reception_status(
+                await self._respond_with_reception_status(
                     subject_message_id=uuid.UUID("00000000-0000-0000-0000-000000000000"),
                     status=ReceptionStatusValues.INVALID_DATA,
                     diagnostic_label="Message appears valid json but could not find a message_id field.",
@@ -267,7 +267,7 @@ class S2ResourceManagerItem(S2ServerItem):
             logger.exception("Unable to send message %s due to %s", s2_msg, str(e))
             self._restart_connection_event.set()
 
-    async def respond_with_reception_status(
+    async def _respond_with_reception_status(
         self, subject_message_id: uuid.UUID, status: ReceptionStatusValues, diagnostic_label: str
     ) -> None:
         logger.debug(
@@ -285,7 +285,7 @@ class S2ResourceManagerItem(S2ServerItem):
         self, subject_message_id: uuid.UUID, status: ReceptionStatusValues, diagnostic_label: str
     ) -> None:
         asyncio.run_coroutine_threadsafe(
-            self.respond_with_reception_status(
+            self._respond_with_reception_status(
                 subject_message_id, status, diagnostic_label
             ),
             self._runningloop,
