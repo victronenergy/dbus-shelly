@@ -6,10 +6,19 @@ from aioshelly.rpc_device import RpcDevice, RpcUpdateType, WsServer
 from aioshelly.exceptions import DeviceConnectionError
 import asyncio
 import async_timeout
-from switch import OutputFunction, OutputType
-from base import ShellyChannel
+try:
+	from dbus_fast.aio import MessageBus
+except ImportError:
+	from dbus_next.aio import MessageBus
+
+from aiovelib.localsettings import Setting
+from aiovelib.service import Service, IntegerItem, TextItem
+from utils import logger, wait_for_settings, formatters as fmt
+
+import shelly_handlers
 
 from utils import logger
+from __main__ import VERSION, __file__ as processName
 
 PRODUCT_ID_SHELLY_EM = 0xB034
 PRODUCT_ID_SHELLY_SWITCH = 0xB075
@@ -19,18 +28,61 @@ background_tasks = set()
 class ShellyConnectionError(Exception):
 	pass
 
+class ShellyChannel(object):
+	@classmethod
+	async def create(cls, bus_type, serial, channel_id, server, productid=0x0000, productName=None):
+		bus = await MessageBus(bus_type=bus_type).connect()
+		c = cls(bus, productid, serial, channel_id, server, productName)
+		c.service = Service(bus, None)
+		c.settings = await wait_for_settings(bus)
+
+		settings_base = f'/Settings/Devices/shelly_{serial}_{channel_id}/'
+		await c.settings.add_settings(
+			Setting(settings_base + 'ClassAndVrmInstance', 'switch:50', alias=f'instance_{c._serial}_{c._channel_id}')
+		)
+
+		await c.ainit()
+		return c
+
+	def __init__(self, bus, productid, serial, channel_id, connection, productName):
+		self.service = None
+		self.settings = None
+		self.channel_custom_name = ""
+		self._productId = productid
+		self._serial = serial
+		self._channel_id = channel_id
+		self.bus = bus
+		self.connection = connection
+		self.productName = productName
+
+	async def ainit(self):
+		instance = int(self.settings.get_value(self.settings.alias('instance_{}_{}'.format(self._serial, self._channel_id))).split(':')[-1])
+
+		self.service.add_item(TextItem('/Mgmt/ProcessName', processName))
+		self.service.add_item(TextItem('/Mgmt/ProcessVersion', VERSION))
+		self.service.add_item(TextItem('/Mgmt/Connection', self.connection))
+		self.service.add_item(IntegerItem('/DeviceInstance', instance))
+		self.service.add_item(IntegerItem('/ProductId', self._productId, text=fmt['productid']))
+		self.service.add_item(TextItem('/ProductName', self.productName))
+		self.service.add_item(IntegerItem('/Connected', 1))
+		self.service.add_item(TextItem('/Serial', self._serial))
+		self.service.add_item(IntegerItem('/State', 0x100)) # Connected
+
+	async def start_service(self):
+		if self.service.name is None:
+			logger.error("No service name set for shelly device %s channel %d", self._serial, self._channel_id)
+			return
+		await self.service.register()
+
+	async def stop_service(self):
+		await self.service.close()
 
 
 # Represents a Shelly device, which can be a switch or an energy meter.
 # Handles the websocket connection to the Shelly device and provides methods to control it.
 # Creates an instance of ShellyChannel for each enabled channel.
 class ShellyDevice(object):
-	rpc_to_output_type = {
-		'Switch': OutputType.TOGGLE,
-		'Light': OutputType.DIMMABLE,
-		'RGB': OutputType.RGB,
-		'RGBW': OutputType.RGBW
-		}
+	SWITCHING_CAPABILITIES = ['Switch', 'Light', 'RGB', 'RGBW']
 
 	def __init__(self, bus_type=None, serial=None, server=None, event=None):
 		self._bus_type= bus_type
@@ -41,14 +93,12 @@ class ShellyDevice(object):
 		self._aiohttp_session = None
 		self._server = server
 		self._rpc_lock = asyncio.Lock()
-		self._reconnect_lock = asyncio.Lock()
 		self._device_lock = asyncio.Lock() # Protects device operations, enabling/disabling channels etc.
-		self._rpc_device_type = None
-		self._has_em = False
 		self._reconnecting = False
 		self._channels = {}
 		self._num_channels = 0
 		self._capabilities = []
+		self._event = None
 
 	@property
 	def event(self):
@@ -72,51 +122,38 @@ class ShellyDevice(object):
 	@property
 	def serial(self):
 		return self._serial
-
+	
 	@property
-	def has_switch(self):
-		return self._rpc_device_type == 'Switch'
-
-	@property
-	def has_dimming(self):
-		return self._rpc_device_type == 'Light'
-
-	@property
-	def has_rgb(self):
-		return self._rpc_device_type == 'RGB'
-
-	@property
-	def has_rgbw(self):
-		return self._rpc_device_type == 'RGBW'
-
-	@property
-	def has_em(self):
-		return self._has_em
+	def num_channels(self):
+		return self._num_channels
 
 	@property
 	def active_channels(self):
 		return list(self._channels.keys())
+	
+	def is_supported(self):
+		return shelly_handlers.has_functional_handler(self._capabilities)
+
+	def get_product_name_and_id(self):
+		# Get product ID from the capabilities
+		if any(cap in self._capabilities for cap in self.SWITCHING_CAPABILITIES):
+			return "Shelly switch", PRODUCT_ID_SHELLY_SWITCH
+		elif 'EM' in self._capabilities:
+			return "Shelly EM", PRODUCT_ID_SHELLY_EM
+		return "Unknown", 0x0000
 
 	async def stop_channel(self, ch):
 		async with self._device_lock:
 			logger.warning("Stopping channel %d for shelly device %s", ch, self._serial)
-			if ch in self._channels.keys():
-				await self._channels[ch].stop()
+			if ch in self._channels:
+				entry = self._channels[ch]
+				channel_obj = entry.get("channel")
+				if channel_obj is not None:
+					if hasattr(channel_obj, "stop"):
+						await channel_obj.stop()
+					elif hasattr(channel_obj, "service") and channel_obj.service is not None:
+						await channel_obj.service.close()
 				del self._channels[ch]
-
-	def get_capabilities(self):
-		cap = []
-		if self.has_switch:
-			cap.append('switch')
-		if self.has_dimming:
-			cap.append('dimming')
-		if self.has_rgb:
-			cap.append('rgb')
-		if self.has_rgbw:
-			cap.append('rgbw')
-		if self.has_em:
-			cap.append('EM')
-		return cap
 
 	async def connect(self):
 		options = ConnectionOptions(self._server, "", "")
@@ -147,39 +184,18 @@ class ShellyDevice(object):
 				logger.warning("Failed to list shelly methods")
 				raise ShellyConnectionError()
 
-			if 'Switch.GetStatus' in methods:
-				self._rpc_device_type = 'Switch'
-			elif 'Light.GetStatus' in methods:
-				self._rpc_device_type = 'Light'
-			elif 'RGB.GetStatus' in methods:
-				self._rpc_device_type = 'RGB'
-			elif 'RGBW.GetStatus' in methods:
-				self._rpc_device_type = 'RGBW'
-
-			if self.has_switch or self.has_dimming:
-				channels = await self.get_channels()
-
-				if 'aenergy' in channels[0]:
-					# Energy metering capabilities -> acload service
-					self._has_em = True
-					# Switchable AC load with EM capability can only have the acload role.
-					self.allowed_em_roles = ['acload']
-
-			# No switching capabilities, check for energy metering capabilities.
-			elif 'EM.GetStatus' in methods:
-				# Energy metering capabilities -> acload service
-				self._has_em = True
-				self._rpc_device_type = 'EM'
-				# Using a shelly as grid meter is not supported because the update frequency is too low.
-				self.allowed_em_roles = ['acload', 'pvinverter', 'genset']
-
-			self._num_channels = len(channels) if self.has_switch or self.has_dimming else 1
-			self._capabilities = self.get_capabilities()
-			if len(self._capabilities) == 0:
-				logger.warning("Unsupported shelly device %s", self._serial)
+			# Will be a list of capabilities, e.g. ['Switch', 'EM', 'Sys']
+			reported_capabilities = list(set([m.split('.')[0] for m in methods]))
+			if not shelly_handlers.has_functional_handler(reported_capabilities):
+				logger.warning(
+					"Shelly device %s with capabilities: %s is not supported",
+					self._serial,
+					reported_capabilities,
+				)
 				raise ShellyConnectionError()
+			self._capabilities = reported_capabilities
 
-			logger.info("Shelly device %s has %d channels, capabilities: %s", self._serial, self._num_channels, self._capabilities)
+			self._num_channels = await self._get_num_channels()
 
 			return True
 		except Exception:
@@ -206,7 +222,9 @@ class ShellyDevice(object):
 		if self._shelly_device:
 			try:
 				for ch in self._channels.keys():
-					self._channels[ch].disable()
+					channel_obj = self._channels[ch].get("channel")
+					if channel_obj is not None and hasattr(channel_obj, "disable"):
+						channel_obj.disable()
 				async with async_timeout.timeout(2):
 					await self._shelly_device.shutdown()
 					await self._aiohttp_session.close()
@@ -230,8 +248,23 @@ class ShellyDevice(object):
 			return False
 		# Reinit all channels
 		for ch in self._channels.keys():
-			await self._channels[ch].reinit(self.rpc_call, partial(self.restart_channel, ch))
+			channel_obj = self._channels[ch].get("channel")
+			if channel_obj is not None and hasattr(channel_obj, "reinit"):
+				await channel_obj.reinit(self.rpc_call, partial(self.restart_channel, ch))
 		return True
+
+	async def _get_num_channels(self):
+		switch_capability = next((cap for cap in self.SWITCHING_CAPABILITIES if cap in self._capabilities), None)
+		if switch_capability:
+			ch = 0
+			while True:
+				resp = await self.rpc_call(f'{switch_capability}.GetStatus' , {"id": ch})
+				if resp is not None:
+					ch += 1
+				else:
+					return ch
+		else:
+			return 1
 
 	async def start(self):
 		async with self._device_lock:
@@ -241,8 +274,8 @@ class ShellyDevice(object):
 
 			logger.info(f"Starting shelly device {self._serial}")
 
-			if len(self.get_capabilities()) == 0:
-				logger.error("Shelly device %s does not support switching or energy metering", self._serial)
+			if not shelly_handlers.has_functional_handler(self._capabilities):
+				logger.error("Unsupported Shelly device %s", self._serial)
 				return False
 
 			self._shelly_device.subscribe_updates(self.device_updated)
@@ -255,45 +288,35 @@ class ShellyDevice(object):
 				logger.error("Invalid channel number %d for shelly device %s", channel, self._serial)
 				return False
 
+			name, id = self.get_product_name_and_id()
+
+			# Create channel object. The dbus service lives here.
 			ch = await ShellyChannel.create(
 				bus_type=self._bus_type,
 				serial=self._serial,
 				channel_id=channel,
-				rpc_device_type=self._rpc_device_type,
-				has_em=self._has_em,
-				server=self._shelly_device.ip_address or self._server,
-				restart=partial(self.restart_channel, channel),
-				rpc_callback=self.rpc_call,
-				productid=PRODUCT_ID_SHELLY_SWITCH if self.has_switch or self.has_dimming else PRODUCT_ID_SHELLY_EM,
-				productName="Shelly switch" if self.has_switch else "Shelly dimmer" if self.has_dimming else "Shelly EM",
+				productid=id,
+				productName=name,
+				server=self._shelly_device.ip_address or self._server
 			)
-			# The order of initialization is important here.
-			# First initialize the em (if present) to make sure the role is determined, which is used in the service name
-			# Then initialize the service, followed by setting up the em which adds paths to the service.
-			# Finally add the output (if present) which also adds paths to the service.
-			if self.has_em:
-				phases = await self.get_num_phases()
-				await ch.init_em(phases, self.allowed_em_roles)
 
-			await ch.init()
+			# Create handlers for all capabilities
+			handlers = {}
+			for cap in self._capabilities:
+				if shelly_handlers.get_handler_class(cap) is None:
+					#logger.debug("No handler registered for capability %s on device %s (skipping)", cap, self._serial)
+					continue
+				handlers[cap] = await shelly_handlers.ShellyHandler.create(
+					cap,
+					channel_id=channel,
+					rpc_callback=self.rpc_call,
+					restart_callback=partial(self.restart_channel, channel),
+					shelly_channel=ch
+					)
+				
+			await ch.start_service()
 
-			if self.has_em:
-				await ch.setup_em()
-
-			output_type = self.rpc_to_output_type.get(self._rpc_device_type, None)
-			if output_type is not None:
-				await ch.add_output(
-					output_type=output_type,
-					valid_functions=(1 << OutputFunction.MANUAL),
-					name=f'Channel {channel + 1}'
-				)
-
-			self._channels[channel] = ch
-			status = await self.request_channel_status(channel)
-			if status is not None:
-				self.parse_status(channel, status)
-				await self._channels[channel].start()
-
+			self._channels[channel] = {"channel": ch, "handlers": handlers}
 			return True
 
 	async def restart_channel(self, channel):
@@ -303,7 +326,12 @@ class ShellyDevice(object):
 	async def stop(self):
 		async with self._device_lock:
 			for ch in self._channels.keys():
-				await self._channels[ch].stop()
+				channel_obj = self._channels[ch].get("channel")
+				if channel_obj is not None:
+					if hasattr(channel_obj, "stop"):
+						await channel_obj.stop()
+					elif hasattr(channel_obj, "service") and channel_obj.service is not None:
+						await channel_obj.service.close()
 			self._channels.clear()
 
 			if self._shelly_device:
@@ -350,29 +378,6 @@ class ShellyDevice(object):
 	async def get_device_info(self):
 		return await self.rpc_call("Shelly.GetDeviceInfo")
 
-	async def get_num_phases(self):
-		status = await self.request_channel_status(0)
-		if status is not None:
-			if (self.has_dimming or self.has_switch) and self.has_em:
-				return 1
-			elif self.has_em:
-				return sum([f'{i}_voltage' in status for i in ['a','b','c']])
-		return 0
-
-	async def get_channels(self):
-		channels = []
-		ch = 0
-		while True:
-			resp = await self.request_channel_status(ch)
-			if resp is not None:
-				channels.append(resp)
-				ch += 1
-			else:
-				return channels
-
-	async def request_channel_status(self, channel):
-		return await self.rpc_call(f'{self._rpc_device_type if self._rpc_device_type else "EM"}.GetStatus' , {"id": channel})
-
 	async def list_methods(self):
 		resp = await self.rpc_call("Shelly.ListMethods")
 		return resp['methods'] if resp and 'methods' in resp else []
@@ -380,13 +385,13 @@ class ShellyDevice(object):
 	def device_updated(self, cb_device, update_type):
 		if update_type == RpcUpdateType.STATUS:
 			for channel in self._channels.keys():
-				if f'emdata:{channel}' in cb_device.status and self.has_em:
-					self._channels[channel].update_energies(cb_device.status[f'emdata:{channel}'])
-				# Get the switch status for this channel
-				id=f'{self._rpc_device_type.lower()}:{channel}'
-				# Check if the channel is present in the status
-				if id in cb_device.status:
-					self.parse_status(channel, cb_device.status[id])
+				entry = self._channels[channel]
+				handlers = entry.get("handlers", {})
+				for handler in handlers.values():
+					key = f'{handler.capability}:{channel}'
+					if key in cb_device.status:
+						handler.update(cb_device.status[key])
+
 		elif update_type == RpcUpdateType.DISCONNECTED:
 			if self._shelly_device:
 				logger.warning("Shelly device %s disconnected", self._serial)
@@ -394,10 +399,9 @@ class ShellyDevice(object):
 
 		elif update_type == RpcUpdateType.EVENT:
 			for event in cb_device.event['events']:
-				if event['event'] == "config_changed":
-					for channel in self._channels.keys():
-						self._channels[channel].channel_config_changed()
-					return
-
-	def parse_status(self, channel, status_json):
-		self._channels[channel].update(status_json)
+				for channel in self._channels.keys():
+					entry = self._channels[channel]
+					handlers = entry.get("handlers", {})
+					for handler in handlers.values():
+						if hasattr(handler, "on_event"):
+							handler.on_event(event)

@@ -267,7 +267,7 @@ class ShellyDiscovery(object):
 			if not await shelly.connect():
 				raise Exception()
 
-			if len (shelly.get_capabilities()) == 0:
+			if not shelly.is_supported():
 				logger.warning("Unsupported shelly device: %s", server)
 				raise Exception()
 
@@ -278,8 +278,7 @@ class ShellyDiscovery(object):
 			info = await shelly.get_device_info()
 			ip = shelly.server
 
-			# Report shelly energy meter as device with one channel, so it shows up once in the UI
-			num_channels = len(await shelly.get_channels()) if shelly.has_switch else 1
+			num_channels = shelly.num_channels
 
 		except:
 			pass
