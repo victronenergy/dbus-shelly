@@ -5,6 +5,7 @@ from utils import logger, formatters as fmt, STATUS_OFF, STATUS_ON
 from functools import partial
 from enum import IntEnum
 import asyncio
+import colorsys
 
 class OutputType(IntEnum):
 	MOMENTARY = 0
@@ -351,13 +352,13 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base, ShellySinglePhase
 
 	async def ainit(self):
 		base = self._settings_base + '%s/' % self._channel_id
-		self.output_type = self._default_output_type
+		self._type = self._default_output_type
 		self._has_em = False
 		await self.settings.add_settings(
 			Setting(base + 'Group', "", alias=f'Group_{self._serial}_{self._channel_id}'),
 			Setting(base + 'ShowUIControl', 1, _min=0, _max=6, alias=f'ShowUIControl_{self._serial}_{self._channel_id}'),
 			Setting(base + 'Function', int(OutputFunction.MANUAL), _min=0, _max=6, alias=f'Function_{self._serial}_{self._channel_id}'),
-			Setting(base + 'Type', self.output_type, _min=0, _max=OutputType.TYPE_MAX, alias=f'Type_{self._serial}_{self._channel_id}'),
+			Setting(base + 'Type', self._type, _min=0, _max=OutputType.TYPE_MAX, alias=f'Type_{self._serial}_{self._channel_id}'),
 		)
 
 		initial_custom_name = await self._get_channel_customname()
@@ -370,7 +371,7 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base, ShellySinglePhase
 		self.service.add_item(TextItem(path_base + 'Settings/Group', "", writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/Group')))
 		self.service.add_item(TextItem(path_base + 'Settings/CustomName', initial_custom_name, writeable=True, onchange=self.set_channel_name))
 		self.service.add_item(IntegerItem(path_base + 'Settings/ShowUIControl', 1, writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/ShowUIControl')))
-		self.service.add_item(IntegerItem(path_base + 'Settings/Type', self.output_type, writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/Type'),
+		self.service.add_item(IntegerItem(path_base + 'Settings/Type', self._type, writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/Type'),
 							text=self._type_text_callback))
 		self.service.add_item(IntegerItem(path_base + 'Settings/Function', int(OutputFunction.MANUAL), writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/Function'),
 							text=self._function_text_callback))
@@ -423,7 +424,6 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base, ShellySinglePhase
 
 	def _restore_settings(self, channel):
 		try:
-			self._type = self.service.get_item("/SwitchableOutput/%s/Settings/Type" % channel).value
 			with self.service as s:
 				s['/SwitchableOutput/%s/Settings/Group' % channel] = self.settings.get_value(self.settings.alias(f'Group_{self._serial}_{channel}'))
 				s['/SwitchableOutput/%s/Settings/ShowUIControl' % channel] = self.settings.get_value(self.settings.alias(f'ShowUIControl_{self._serial}_{channel}'))
@@ -620,11 +620,12 @@ class ShellyHandler_light(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 	_valid_types_mask = int(1 << OutputType.DIMMABLE.value)
 
 	async def ainit(self):
+		await super().ainit()
 		self._desired_value = 0
 		self._throttling_lock = asyncio.Lock()
 		self._throttling_runner_lock = asyncio.Lock()
 
-	async def _ainit_extras(self, path_base):
+		path_base  = '/SwitchableOutput/%s/' % self._channel_id
 		self.service.add_item(IntegerItem(path_base + 'Dimming', 0, writeable=True,
 			onchange=partial(self.throttled_updater, self._set_dimming_value),
 			text=lambda y: str(y) + '%'))
@@ -635,9 +636,8 @@ class ShellyHandler_light(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 			# A throttled update is in progress, don't override Dimming path
 			return
 		try:
-			switch_prefix = f'/SwitchableOutput/{self._channel_id}/'
 			with self.service as s:
-				s[switch_prefix + 'Dimming'] = status_json.get("brightness", 0)
+				s[f'/SwitchableOutput/{self._channel_id}/Dimming'] = status_json.get("brightness", 0)
 		except:
 			pass
 
@@ -655,3 +655,126 @@ class ShellyHandler_light(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 			}
 		)
 		item.set_local_value(value)
+
+
+@register_handler('RGBW')
+class ShellyHandler_RGBW(ShellyHandler_switch_base, ThrottledUpdaterMixin):
+	_rpc_device_type = "RGBW"
+	_default_output_type = OutputType.RGBW
+	_valid_types_mask = int(1 << OutputType.RGB.value) | int(1 << OutputType.RGBW.value)
+
+	async def ainit(self):
+		self._desired_value = 0
+		self._throttling_lock = asyncio.Lock()
+		self._throttling_runner_lock = asyncio.Lock()
+
+		path_base  = '/SwitchableOutput/%s/' % self._channel_id
+		self.service.add_item(IntegerItem(path_base + 'LightControls', 0, writeable=True,
+			onchange=partial(self.throttled_updater, self._set_light_controls),
+			text=self._light_controls_text_callback))
+
+	def _light_controls_text_callback(self, v):
+		if self._type == OutputType.RGBW:
+			return "H: %.1f, S: %.1f, B: %.1f, W: %.1f" % (v[0], v[1], v[2], v[3])
+		return "H: %.1f, S: %.1f, B: %.1f" % (v[0], v[1], v[2])
+
+	def update(self, status_json):
+		super().update(status_json)
+		if self._throttling_runner_lock.locked():
+			# A throttled update is in progress, don't override LightControls path
+			return
+		try:
+			switch_prefix = f'/SwitchableOutput/{self._channel_id}/'
+			with self.service as s:
+				brightness = status_json.get("brightness", 0)
+				hue, sat, val = self._rgb2hsv(status_json.get("rgb", [0, 0, 0]))
+				white = status_json.get("white", 0) / 2.55 if self._type == OutputType.RGBW else 0.0
+				hue, sat, val = self._rgb2hsv(status_json.get("rgb", [0, 0, 0]))
+				s[switch_prefix + 'LightControls'] = [round(hue), round(sat), round(brightness), round(white), 0]
+		except:
+			pass
+
+	def on_channel_type_changed(self, channel, value):
+		if value == OutputType.RGB:
+			# Set white channel to 0 when switching to RGB
+			item = self.service.get_item(f'/SwitchableOutput/{self._channel_id}/LightControls')
+			v = list(item.value)
+			v[3] = 0
+			self._desired_value = v
+			task = asyncio.create_task(self._set_light_controls(item, v, force_white=True))
+			background_tasks.add(task)
+			task.add_done_callback(background_tasks.discard)
+
+	async def _set_light_controls(self, item, value, force_white=False):
+		if not self._sanity_check_values(value):
+			return
+
+		item.set_local_value(value) # Set the value here already to make the UI more responsive
+		rgb = self._hsv2rgb(value, normalise=True)
+
+		params = {
+					"id": self._channel_id,
+					"rgb": rgb,
+					"brightness": value[2]
+				}
+		if force_white or self._type == OutputType.RGBW:
+			params["white"] = round(value[3] * 2.55)
+
+		await self._rpc_call(
+			f"{self._rpc_device_type}.Set",
+			params
+		)
+
+	def _sanity_check_values(self, l):
+		if not isinstance(l, list) or len(l) != 5:
+			return False
+		if l[0] < 0.0 or l[0] >= 360.0:		# Hue
+			return False
+		if l[1] < 0.0 or l[1] > 100.0:		# Saturation
+			return False
+		if l[2] < 0 or l[2] > 100:			# Brightness
+			return False
+		if l[3] < 0 or l[3] > 100:			# White brightness
+			return False
+		if l[4] < 0 or l[4] > 6500:			# Color temperature
+			return False
+		return True
+
+	def _rgb2hsv(self, rgb):
+		h, s, v = colorsys.rgb_to_hsv(rgb[0] / 255.0, rgb[1] / 255.0, rgb[2] / 255.0)
+		h = h * 360.0
+		s = s * 100.0
+		v = v * 100.0
+		# If value or saturation is zero, restore previous hue/saturation
+		if v == 0.0:
+			h = self._desired_value[0]
+			s = self._desired_value[1]
+		# Ignore the calculated hue if the saturation is very low because the calculation will
+		# be very inaccurate, which will cause small jumps in hue when changing the saturation.
+		elif s <= 5.0:
+			h = self._desired_value[0]
+		return h, s, v
+
+	def _hsv2rgb(self, hsv, normalise=False):
+		h = hsv[0]
+		s = hsv[1]
+		v = hsv[2]
+		if v == 0.0:
+			return [0, 0, 0]
+		brightness = 1.0 if normalise else v / 100.0
+		if s == 0.0:
+			# Achromatic (grey)
+			r = g = b = int(brightness * 255)
+		else:
+			rf, gf, bf = colorsys.hsv_to_rgb(h / 360.0, s / 100.0, brightness)
+			r = round(rf * 255)
+			g = round(gf * 255)
+			b = round(bf * 255)
+		return [r, g, b]
+
+
+@register_handler('RGB')
+class ShellyHandler_RGB(ShellyHandler_RGBW):
+	_rpc_device_type = "RGB"
+	_default_output_type = OutputType.RGB
+	_valid_types_mask = int(1 << OutputType.RGB.value)
