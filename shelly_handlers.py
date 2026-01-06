@@ -591,3 +591,67 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base, ShellySinglePhase
 @register_handler('Switch')
 class ShellyHandler_switch(ShellyHandler_switch_base):
 	_rpc_device_type = "Switch"
+
+
+class ThrottledUpdaterMixin:
+	# Throttling mechanism to avoid a queue build-up on the device when the user is dragging a slider in the UI.
+	# Used for dimming tasks. The dispatched task should exit quietly
+	# if the value it is passed is not the desired value anymore by the time the runner wakes up.
+	async def throttled_updater(self, update_task, item, value):
+		async with self._throttling_lock:
+			self._desired_value = value
+			task = asyncio.create_task(self._throttled_updater_runner(update_task, item, value))
+			background_tasks.add(task)
+			task.add_done_callback(background_tasks.discard)
+
+	async def _throttled_updater_runner(self, update_task, item, value):
+		# Only start one updater at a time
+		async with self._throttling_runner_lock:
+			# If a new dimming setpoint has been set by the time this thread wakes up, then exit this one.
+			async with self._throttling_lock:
+				if value != self._desired_value:
+					return
+			await update_task(item, value)
+
+@register_handler('Light')
+class ShellyHandler_light(ShellyHandler_switch_base, ThrottledUpdaterMixin):
+	_rpc_device_type = "Light"
+	_default_output_type = OutputType.DIMMABLE
+	_valid_types_mask = int(1 << OutputType.DIMMABLE.value)
+
+	async def ainit(self):
+		self._desired_value = 0
+		self._throttling_lock = asyncio.Lock()
+		self._throttling_runner_lock = asyncio.Lock()
+
+	async def _ainit_extras(self, path_base):
+		self.service.add_item(IntegerItem(path_base + 'Dimming', 0, writeable=True,
+			onchange=partial(self.throttled_updater, self._set_dimming_value),
+			text=lambda y: str(y) + '%'))
+
+	def update(self, status_json):
+		super().update(status_json)
+		if self._throttling_runner_lock.locked():
+			# A throttled update is in progress, don't override Dimming path
+			return
+		try:
+			switch_prefix = f'/SwitchableOutput/{self._channel_id}/'
+			with self.service as s:
+				s[switch_prefix + 'Dimming'] = status_json.get("brightness", 0)
+		except:
+			pass
+
+	async def _set_dimming_value(self, item, value):
+		if value is None or value < 0 or value > 100:
+			return
+
+		value = int(value)
+		await self.rpc_call(
+			f'{self._rpc_device_type}.Set',
+			{
+				"id": self._channel_id,
+				"on": value > 0,
+				"brightness": value,
+			}
+		)
+		item.set_local_value(value)
