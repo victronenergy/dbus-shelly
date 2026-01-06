@@ -55,6 +55,8 @@ def has_functional_handler(capabilities):
 # The shelly handler base class implements basic functionality common to all shelly capability handlers.
 # These methods apply to channels of all devices
 class ShellyHandler(object):
+	_rpc_device_type = ""
+
 	@classmethod
 	async def create(cls, cap, channel_id=0, rpc_callback=None, restart_callback=None, shelly_channel=None):
 		handler_cls = get_handler_class(cap)
@@ -146,22 +148,33 @@ class ShellyHandler_sys(ShellyHandler):
 			background_tasks.add(task)
 			task.add_done_callback(background_tasks.discard)
 
+
+class ShellyHandler_EM_paths_mixin():
+	# Adds common energy metering paths to the service
+	async def add_em_paths(self, num_phases):
+		for channel in range(1, num_phases + 1):
+			prefix = '/Ac/L{}/'.format(channel)
+			self.service.add_item(DoubleItem(prefix + 'Voltage', None, text=fmt['volt']))
+			self.service.add_item(DoubleItem(prefix + 'Current', None, text=fmt['amp']))
+			self.service.add_item(DoubleItem(prefix + 'Power', None, text=fmt['watt']))
+			self.service.add_item(DoubleItem(prefix + 'PowerFactor', None))
+			self.service.add_item(DoubleItem(prefix + 'Energy/Forward', None, text=fmt['kwh']))
+			self.service.add_item(DoubleItem(prefix + 'Energy/Reverse', None, text=fmt['kwh']))
+
+		self.service.add_item(DoubleItem('/Ac/Power', None, text= fmt['watt']))
+		self.service.add_item(DoubleItem('/Ac/Energy/Forward', None, text=fmt['kwh']))
+		self.service.add_item(DoubleItem('/Ac/Energy/Reverse', None, text=fmt['kwh']))
+
+
 # EMData handler, puts energy metering data on dbus.
 # The EMData component is available on three-phase shelly energy meters.
 @register_handler('EMData', kind=HANDLER_KIND_GENERIC)
-class ShellyHandler_emdata(ShellyHandler):
+class ShellyHandler_emdata(ShellyHandler, ShellyHandler_EM_paths_mixin):
 	_rpc_device_type = "EMData"
 
 	async def ainit(self):
 		self._num_phases = 3
-
-		self.service.add_item(DoubleItem('/Ac/Energy/Forward', None, text=fmt['kwh']))
-		self.service.add_item(DoubleItem('/Ac/Energy/Reverse', None, text=fmt['kwh']))
-
-		for channel in range(1, self._num_phases + 1):
-			prefix = '/Ac/L{}/'.format(channel)
-			self.service.add_item(DoubleItem(prefix + 'Energy/Forward', None, text=fmt['kwh']))
-			self.service.add_item(DoubleItem(prefix + 'Energy/Reverse', None, text=fmt['kwh']))
+		await self.add_em_paths(self._num_phases)
 
 	def update(self, emdata):
 		try:
@@ -178,7 +191,7 @@ class ShellyHandler_emdata(ShellyHandler):
 			pass
 
 # Contains common code for shelly handlers that have energy metering capabilities (single or multi-phase)
-class Shelly_EM_base(object):
+class Shelly_EM_base(ShellyHandler_EM_paths_mixin):
 	async def init_em(self, num_phases, allowed_roles):
 		# Determine role and instance
 		_em_role, instance = self.role_instance(
@@ -210,18 +223,11 @@ class Shelly_EM_base(object):
 
 		# Indicate when we're masquerading for another device
 		self.service.add_item(IntegerItem('/IsGenericEnergyMeter', 1))
-		# Meter paths
-		self.service.add_item(DoubleItem('/Ac/Power', None, text= fmt['watt']))
 
 		# a shelly with a switch may only be single-phased, but it could be mapped to any of these. 
 		# thus, we need to create all 3 phase-paths, but only make use of the values (in update) the shelly
 		# is actually mapped to.
-		for channel in range(1, 4):
-			prefix = '/Ac/L{}/'.format(channel)
-			self.service.add_item(DoubleItem(prefix + 'Voltage', None, text=fmt['volt']))
-			self.service.add_item(DoubleItem(prefix + 'Current', None, text=fmt['amp']))
-			self.service.add_item(DoubleItem(prefix + 'Power', None, text=fmt['watt']))
-			self.service.add_item(DoubleItem(prefix + 'PowerFactor', None))
+		await self.add_em_paths(3)
 
 		return _em_role
 
@@ -313,42 +319,14 @@ class ShellyHandler_em(ShellyHandler, Shelly_EM_base):
 			logger.error("KeyError in update: %s", e)
 			pass
 
-# Mixin class for single-phase shelly devices with energy metering capabilities
-# In these devices, the energy metering data is reported in the same RPC method as the switch status, which can be 'Switch, 'Light', etc.
-class ShellySinglePhaseEmMixin:
-	def update_em(self, status_json, phase):
-		try:
-			with self.service as s:
-				#a shelly with a switch is single phased. But it may be connected to either phase. 
-				#so, report values on the proper phase.
-				em_prefix = "/Ac/L{}/".format(phase)
-				s[em_prefix + 'Voltage'] = status_json["voltage"]
-				s[em_prefix + 'Current'] = status_json["current"]
-				s[em_prefix + 'Power'] = status_json["apower"]
-				s[em_prefix + 'PowerFactor'] = status_json["pf"] if 'pf' in status_json else None
-				# Shelly reports energy in Wh, so convert to kWh
-				eforward = status_json["aenergy"]["total"] / 1000 if 'aenergy' in status_json else None
-				ereverse = status_json["ret_aenergy"]["total"] / 1000 if 'ret_aenergy' in status_json else None
-				s[em_prefix + 'Energy/Forward'] = eforward
-				s[em_prefix + 'Energy/Reverse'] = ereverse
 
-				s['/Ac/Energy/Forward'] = eforward
-				s['/Ac/Energy/Reverse'] = ereverse
-				s['/Ac/Power'] = status_json["apower"]
-
-		except KeyError as e:
-			logger.error("KeyError in update: %s", e)
-			pass
-
-class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base, ShellySinglePhaseEmMixin):
+class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
 	_default_output_type = OutputType.TOGGLE
 	_valid_types_mask = int((1 << OutputType.TOGGLE.value) | (1 << OutputType.MOMENTARY.value))
 	_valid_functions_mask = int(1 << OutputFunction.MANUAL)
 
 	_service_type_no_em = "switch"
 	_service_type_with_em = "acload"
-
-	_rpc_device_type = "Switch"
 
 	async def ainit(self):
 		base = self._settings_base + '%s/' % self._channel_id
@@ -383,7 +361,7 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base, ShellySinglePhase
 
 		self._restore_settings(self._channel_id)
 
-		status = await self.request_channel_status(self._channel_id)
+		status = await self.request_channel_status()
 		if status is not None and 'aenergy' in status:
 			# Add energy metering paths
 			await self.init_em(1, ['acload'])
@@ -402,10 +380,31 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base, ShellySinglePhase
 			pass
 
 		if self._has_em:
-			self.update_em(status_json, self._phase or 1)
+			try:
+				with self.service as s:
+					#a shelly with a switch is single phased. But it may be connected to either phase. 
+					#so, report values on the proper phase.
+					em_prefix = "/Ac/L{}/".format(self._phase or 1)
+					s[em_prefix + 'Voltage'] = status_json["voltage"]
+					s[em_prefix + 'Current'] = status_json["current"]
+					s[em_prefix + 'Power'] = status_json["apower"]
+					s[em_prefix + 'PowerFactor'] = status_json["pf"] if 'pf' in status_json else None
+					# Shelly reports energy in Wh, so convert to kWh
+					eforward = status_json["aenergy"]["total"] / 1000 if 'aenergy' in status_json else None
+					ereverse = status_json["ret_aenergy"]["total"] / 1000 if 'ret_aenergy' in status_json else None
+					s[em_prefix + 'Energy/Forward'] = eforward
+					s[em_prefix + 'Energy/Reverse'] = ereverse
+
+					s['/Ac/Energy/Forward'] = eforward
+					s['/Ac/Energy/Reverse'] = ereverse
+					s['/Ac/Power'] = status_json["apower"]
+
+			except KeyError as e:
+				logger.error("KeyError in update: %s", e)
+				pass
 
 	async def _get_channel_customname(self):
-		config = await self.request_channel_config(self._channel_id)
+		config = await self.request_channel_config()
 		if config is not None and 'name' in config and config['name']:
 			return config['name']
 		return f'Channel {self._channel_id + 1}'
@@ -416,11 +415,11 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base, ShellySinglePhase
 			await self.rpc_call(f"{self._rpc_device_type}.SetConfig", {"id": self._channel_id, "config": {"name": value}})
 			item.set_local_value(value)
 
-	async def request_channel_status(self, channel):
-		return await self.rpc_call(f'{self._rpc_device_type}.GetStatus' , {"id": channel})
+	async def request_channel_status(self):
+		return await self.rpc_call(f'{self._rpc_device_type}.GetStatus' , {"id": self._channel_id})
 
-	async def request_channel_config(self, channel):
-		return await self.rpc_call(f"{self._rpc_device_type}.GetConfig", {"id": channel})
+	async def request_channel_config(self):
+		return await self.rpc_call(f"{self._rpc_device_type}.GetConfig", {"id": self._channel_id})
 
 	def _restore_settings(self, channel):
 		try:
@@ -467,105 +466,68 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base, ShellySinglePhase
 		return ret
 
 	def _status_text_callback(self, value):
-		if value == 0x00:
-			return "Off"
-		if value == 0x09:
-			return "On"
-		if value == 0x02:
-			return "Tripped"
-		if value == 0x04:
-			return "Over temperature"
-		if value == 0x01:
-			return "Powered"
-		if value == 0x08:
-			return "Output fault"
-		if value == 0x10:
-			return "Short fault"
-		if value == 0x20:
-			return "Disabled"
-		return "Unknown"
+		status_map = {
+			0x00: "Off",
+			0x09: "On",
+			0x02: "Tripped",
+			0x04: "Over temperature",
+			0x01: "Powered",
+			0x08: "Output fault",
+			0x10: "Short fault",
+			0x20: "Disabled",
+		}
+		return status_map.get(value, "Unknown")
 
 	def _type_text_callback(self, value):
-		if value == OutputType.MOMENTARY:
-			return "Momentary"
-		if value == OutputType.TOGGLE:
-			return "Toggle"
-		if value == OutputType.DIMMABLE:
-			return "Dimmable"
-		if value == OutputType.RGB:
-			return "RGB"
-		if value == OutputType.RGBW:
-			return "RGBW"
-		return "Unknown"
+		type_map = {
+			OutputType.MOMENTARY: "Momentary",
+			OutputType.TOGGLE: "Toggle",
+			OutputType.DIMMABLE: "Dimmable",
+			OutputType.RGB: "RGB",
+			OutputType.RGBW: "RGBW",
+		}
+		return type_map.get(value, "Unknown")
 
 	def _function_text_callback(self, value):
-		if value == OutputFunction.ALARM:
-			return "Alarm"
-		if value == OutputFunction.GENSET_START_STOP:
-			return "Genset start stop"
-		if value == OutputFunction.MANUAL:
-			return "Manual"
-		if value == OutputFunction.TANK_PUMP:
-			return "Tank pump"
-		if value == OutputFunction.TEMPERATURE:
-			return "Temperature"
-		if value == OutputFunction.CONNECTED_GENSET_HELPER_RELAY:
-			return "Connected genset helper relay"
-		if value == OutputFunction.S2_RM:
-			return "S2 resource manager"
-		return "Unknown"
+		function_map = {
+			OutputFunction.ALARM: "Alarm",
+			OutputFunction.GENSET_START_STOP: "Genset start stop",
+			OutputFunction.MANUAL: "Manual",
+			OutputFunction.TANK_PUMP: "Tank pump",
+			OutputFunction.TEMPERATURE: "Temperature",
+			OutputFunction.CONNECTED_GENSET_HELPER_RELAY: "Connected genset helper relay",
+			OutputFunction.S2_RM: "S2 resource manager",
+		}
+		return function_map.get(value, "Unknown")
 
-	def _valid_types_text_callback(self, value):
-		str = ""
-		if value & (1 << OutputType.DIMMABLE):
-			str += "Dimmable"
-		if value & (1 << OutputType.TOGGLE):
-			if str:
-				str += ", "
-			str += "Toggle"
-		if value & (1 << OutputType.MOMENTARY):
-			if str:
-				str += ", "
-			str += "Momentary"
-		if value & (1 << OutputType.RGB):
-			if str:
-				str += ", "
-			str += "RGB"
-		if value & (1 << OutputType.RGBW):
-			if str:
-				str += ", "
-			str += "RGBW"
-		return str
+	def _bitmask_text(self, value, entries):
+		parts = []
+		for flag, label in entries:
+			if value & (1 << flag):
+				parts.append(label)
+		return ", ".join(parts)
 
 	def _valid_functions_text_callback(self, value):
-		str = ""
-		if value & (1 << OutputFunction.ALARM):
-			str += "Alarm"
-		if value & (1 << OutputFunction.GENSET_START_STOP):
-			if str:
-				str += ", "
-			str += "Genset start stop"
-		if value & (1 << OutputFunction.MANUAL):
-			if str:
-				str += ", "
-			str += "Manual"
-		if value & (1 << OutputFunction.TANK_PUMP):
-			if str:
-				str += ", "
-			str += "Tank pump"
-		if value & (1 << OutputFunction.TEMPERATURE):
-			if str:
-				str += ", "
-			str += "Temperature"
-		if value & (1 << OutputFunction.CONNECTED_GENSET_HELPER_RELAY):
-			if str:
-				str += ", "
-			str += "Connected genset helper relay"
-		if value & (1 << OutputFunction.S2_RM):
-			if str:
-				str += ", "
-			str += "S2 resource manager"
-		return str
+		entries = [
+			(OutputFunction.ALARM, "Alarm"),
+			(OutputFunction.GENSET_START_STOP, "Genset start stop"),
+			(OutputFunction.MANUAL, "Manual"),
+			(OutputFunction.TANK_PUMP, "Tank pump"),
+			(OutputFunction.TEMPERATURE, "Temperature"),
+			(OutputFunction.CONNECTED_GENSET_HELPER_RELAY, "Connected genset helper relay"),
+			(OutputFunction.S2_RM, "S2 resource manager"),
+		]
+		return self._bitmask_text(value, entries)
+
+	def _valid_types_text_callback(self, value):
+		entries = [
+			(OutputType.DIMMABLE, "Dimmable"),
+			(OutputType.TOGGLE, "Toggle"),
+			(OutputType.MOMENTARY, "Momentary"),
+			(OutputType.RGB, "RGB"),
+			(OutputType.RGBW, "RGBW"),
+		]
+		return self._bitmask_text(value, entries)
 
 	def on_channel_type_changed(self, channel, value):
 		pass
@@ -656,7 +618,7 @@ class ShellyHandler_light(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 		)
 		item.set_local_value(value)
 
-
+# We support both the RGB and RGBW type on RGBW devices.
 @register_handler('RGBW')
 class ShellyHandler_RGBW(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 	_rpc_device_type = "RGBW"
@@ -687,7 +649,6 @@ class ShellyHandler_RGBW(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 			switch_prefix = f'/SwitchableOutput/{self._channel_id}/'
 			with self.service as s:
 				brightness = status_json.get("brightness", 0)
-				hue, sat, val = self._rgb2hsv(status_json.get("rgb", [0, 0, 0]))
 				white = status_json.get("white", 0) / 2.55 if self._type == OutputType.RGBW else 0.0
 				hue, sat, val = self._rgb2hsv(status_json.get("rgb", [0, 0, 0]))
 				s[switch_prefix + 'LightControls'] = [round(hue), round(sat), round(brightness), round(white), 0]
@@ -773,6 +734,7 @@ class ShellyHandler_RGBW(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 		return [r, g, b]
 
 
+# RGB handler is the same as RGBW but without the white channel
 @register_handler('RGB')
 class ShellyHandler_RGB(ShellyHandler_RGBW):
 	_rpc_device_type = "RGB"

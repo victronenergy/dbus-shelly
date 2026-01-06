@@ -304,7 +304,6 @@ class ShellyDevice(object):
 			handlers = {}
 			for cap in self._capabilities:
 				if shelly_handlers.get_handler_class(cap) is None:
-					#logger.debug("No handler registered for capability %s on device %s (skipping)", cap, self._serial)
 					continue
 				handlers[cap] = await shelly_handlers.ShellyHandler.create(
 					cap,
