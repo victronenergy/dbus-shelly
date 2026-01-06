@@ -30,13 +30,13 @@ class ShellyConnectionError(Exception):
 
 class ShellyChannel(object):
 	@classmethod
-	async def create(cls, bus_type, serial, channel_id, server, productid=0x0000, productName=None):
+	async def create(cls, bus_type, serial, channel_type_id, server, productid=0x0000, productName=None):
 		bus = await MessageBus(bus_type=bus_type).connect()
-		c = cls(bus, productid, serial, channel_id, server, productName)
+		c = cls(bus, productid, serial, channel_type_id, server, productName)
 		c.service = Service(bus, None)
 		c.settings = await wait_for_settings(bus)
 
-		settings_base = f'/Settings/Devices/shelly_{serial}_{channel_id}/'
+		settings_base = f'/Settings/Devices/shelly_{serial}_{c._channel_id}/'
 		await c.settings.add_settings(
 			Setting(settings_base + 'ClassAndVrmInstance', 'switch:50', alias=f'instance_{c._serial}_{c._channel_id}')
 		)
@@ -44,13 +44,13 @@ class ShellyChannel(object):
 		await c.ainit()
 		return c
 
-	def __init__(self, bus, productid, serial, channel_id, connection, productName):
+	def __init__(self, bus, productid, serial, channel_type_id, connection, productName):
 		self.service = None
 		self.settings = None
 		self.channel_custom_name = ""
 		self._productId = productid
 		self._serial = serial
-		self._channel_id = channel_id
+		self._channel_id = int(channel_type_id.split('_')[1])
 		self.bus = bus
 		self.connection = connection
 		self.productName = productName
@@ -83,6 +83,7 @@ class ShellyChannel(object):
 # Creates an instance of ShellyChannel for each enabled channel.
 class ShellyDevice(object):
 	SWITCHING_CAPABILITIES = ['Switch', 'Light', 'RGB', 'RGBW']
+	EM_CAPABILITIES = ['EM', 'EM1']
 
 	def __init__(self, bus_type=None, serial=None, server=None, event=None):
 		self._bus_type= bus_type
@@ -96,7 +97,7 @@ class ShellyDevice(object):
 		self._device_lock = asyncio.Lock() # Protects device operations, enabling/disabling channels etc.
 		self._reconnecting = False
 		self._channels = {}
-		self._num_channels = 0
+		self._channel_info = []
 		self._capabilities = []
 		self._event = None
 
@@ -124,8 +125,8 @@ class ShellyDevice(object):
 		return self._serial
 	
 	@property
-	def num_channels(self):
-		return self._num_channels
+	def channel_info(self):
+		return self._channel_info
 
 	@property
 	def active_channels(self):
@@ -144,7 +145,7 @@ class ShellyDevice(object):
 
 	async def stop_channel(self, ch):
 		async with self._device_lock:
-			logger.warning("Stopping channel %d for shelly device %s", ch, self._serial)
+			logger.warning(f"Stopping channel {ch} for shelly device {self._serial}")
 			if ch in self._channels:
 				entry = self._channels[ch]
 				channel_obj = entry.get("channel")
@@ -195,7 +196,7 @@ class ShellyDevice(object):
 				raise ShellyConnectionError()
 			self._capabilities = reported_capabilities
 
-			self._num_channels = await self._get_num_channels()
+			self._channel_info = await self._get_channels_info()
 
 			return True
 		except Exception:
@@ -253,18 +254,24 @@ class ShellyDevice(object):
 				await channel_obj.reinit(self.rpc_call, partial(self.restart_channel, ch))
 		return True
 
-	async def _get_num_channels(self):
-		switch_capability = next((cap for cap in self.SWITCHING_CAPABILITIES if cap in self._capabilities), None)
-		if switch_capability:
-			ch = 0
-			while True:
-				resp = await self.rpc_call(f'{switch_capability}.GetStatus' , {"id": ch})
-				if resp is not None:
+	# Get the number of switching and/or metering channels.
+	async def _get_channels_info(self):
+		channels = []
+
+		async def add_channels(capabilities, ch_type):
+			for cap in (c for c in capabilities if c in self._capabilities):
+				ch = 0
+				while True:
+					resp = await self.rpc_call(f"{cap}.GetStatus", {"id": ch})
+					if resp is None:
+						break
+					channels.append(f"{ch_type}_{ch}")
 					ch += 1
-				else:
-					return ch
-		else:
-			return 1
+
+		await add_channels(self.SWITCHING_CAPABILITIES, "switch")
+		await add_channels(self.EM_CAPABILITIES, "em")
+
+		return channels
 
 	async def start(self):
 		async with self._device_lock:
@@ -283,9 +290,9 @@ class ShellyDevice(object):
 
 	async def start_channel(self, channel):
 		async with self._device_lock:
-			logger.info("Starting channel %d for shelly device %s", channel, self._serial)
-			if channel < 0 or channel >= self._num_channels:
-				logger.error("Invalid channel number %d for shelly device %s", channel, self._serial)
+			logger.info(f"Starting channel {channel} for shelly device {self._serial}")
+			if channel not in self._channel_info:
+				logger.error(f"Invalid channel {channel} for shelly device {self._serial}")
 				return False
 
 			name, id = self.get_product_name_and_id()
@@ -294,20 +301,19 @@ class ShellyDevice(object):
 			ch = await ShellyChannel.create(
 				bus_type=self._bus_type,
 				serial=self._serial,
-				channel_id=channel,
+				channel_type_id=channel,
 				productid=id,
 				productName=name,
 				server=self._shelly_device.ip_address or self._server
 			)
 
-			# Create handlers for all capabilities
+			# Create handlers for the generic + switching OR EM capabilities
 			handlers = {}
 			for cap in self._capabilities:
-				if shelly_handlers.get_handler_class(cap) is None:
+				if shelly_handlers.get_handler_class(cap, channel.split('_')[0]) is None:
 					continue
 				handlers[cap] = await shelly_handlers.ShellyHandler.create(
 					cap,
-					channel_id=channel,
 					rpc_callback=self.rpc_call,
 					restart_callback=partial(self.restart_channel, channel),
 					shelly_channel=ch

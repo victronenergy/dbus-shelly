@@ -164,10 +164,11 @@ class ShellyDiscovery(object):
 			s['/Devices/{}/Model'.format(serial)] = None
 			s['/Devices/{}/Name'.format(serial)] = None
 			s['/Devices/{}/DiscoveryType'.format(serial)] = None
-			i = 1
-			while self.service.get_item(key := f'/Devices/{serial}/{i}/Enabled') is not None:
-				s[key] = None
-				i += 1
+			for _type in ['switch', 'em']:
+				i = 1
+				while self.service.get_item(key := f'/Devices/{serial}/{_type}/{i}/Enabled') is not None:
+					s[key] = None
+					i += 1
 
 	async def add_shelly_device(self, serial, server):
 		event = asyncio.Event()
@@ -256,7 +257,7 @@ class ShellyDiscovery(object):
 	async def _get_device_info(self, server, serial=None):
 		ip = None
 		info = None
-		num_channels = 0
+		channel_info = []
 		# Only server info is needed for obtaining device info
 		shelly = ShellyDevice(
 			server=server,
@@ -278,14 +279,14 @@ class ShellyDiscovery(object):
 			info = await shelly.get_device_info()
 			ip = shelly.server
 
-			num_channels = shelly.num_channels
+			channel_info = shelly.channel_info
 
 		except:
 			pass
 		finally:
 			await shelly.stop()
 			del shelly
-		return ip, info, num_channels
+		return ip, info, channel_info
 
 	def on_service_state_change(self, zeroconf, service_type, name, state_change):
 		rgx = re.compile(
@@ -298,7 +299,7 @@ class ShellyDiscovery(object):
 			background_tasks.add(task)
 
 	async def _add_device(self, server, serial=None, manual=False):
-		ip, device_info, num_channels = await self._get_device_info(server, serial)
+		ip, device_info, channel_info = await self._get_device_info(server, serial)
 		if device_info is None:
 			logger.error("Failed to get device info for %s", server)
 			return
@@ -327,21 +328,22 @@ class ShellyDiscovery(object):
 			s['/Devices/{}/Name'.format(serial)] = name
 			s['/Devices/{}/DiscoveryType'.format(serial)] = 'Manual' if manual else 'mDNS'
 
-		for i in range(num_channels):
-			await self.settings.add_settings(Setting('/Settings/Devices/shelly_{}/{}/Enabled'.format(serial, i + 1), 0, alias="enabled_{}_{}".format(serial, i)))
-			enabled = self.settings.get_value(self.settings.alias('enabled_{}_{}'.format(serial, i)))
+		for ch in channel_info:
+			ch_type = ch.split('_')[0] # 'switch', 'em'
+			ch_num = int(ch.split('_')[1]) + 1
+			await self.settings.add_settings(Setting(f'/Settings/Devices/shelly_{serial}/{ch_type}/{ch_num}/Enabled', 0, alias=f"enabled_{serial}_{ch}"))
+			enabled = self.settings.get_value(self.settings.alias(f"enabled_{serial}_{ch}"))
 
-			if self.service.get_item('/Devices/{}/{}/Enabled'.format(serial, i + 1)) is None:
-				enabled_item = IntegerItem('/Devices/{}/{}/Enabled'.format(serial, i + 1), writeable=True, onchange=partial(self._on_enabled_changed, serial, i))
+			if self.service.get_item(f'/Devices/{serial}/{ch_type}/{ch_num}/Enabled') is None:
+				enabled_item = IntegerItem(f'/Devices/{serial}/{ch_type}/{ch_num}/Enabled', writeable=True, onchange=partial(self._on_enabled_changed, serial, ch))
 				self.service.add_item(enabled_item)
 			else:
-				enabled_item = self.service.get_item('/Devices/{}/{}/Enabled'.format(serial, i + 1))
-
+				enabled_item = self.service.get_item(f'/Devices/{serial}/{ch_type}/{ch_num}/Enabled')
 			with self.service as s:
-				s['/Devices/{}/{}/Enabled'.format(serial, i + 1)] = enabled
+				s[f'/Devices/{serial}/{ch_type}/{ch_num}/Enabled'] = enabled
 
 			if enabled:
-				await self._on_enabled_changed(serial, i, enabled_item, enabled)
+				await self._on_enabled_changed(serial, ch, enabled_item, enabled)
 
 	async def _on_service_state_change_async(self, zeroconf, service_type, name, state_change):
 		async with self._mdns_lock:
@@ -383,4 +385,4 @@ class ShellyDiscovery(object):
 
 		if ret:
 			item.set_local_value(value)
-			await self.settings.set_value(self.settings.alias('enabled_{}_{}'.format(serial, channel)), value)
+			await self.settings.set_value(self.settings.alias(f'enabled_{serial}_{channel}'), value)

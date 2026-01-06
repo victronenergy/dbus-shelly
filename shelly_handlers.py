@@ -26,21 +26,22 @@ class OutputFunction(IntEnum):
 background_tasks = set()
 
 # Capability -> handler class registry
-HANDLER_KIND_FUNCTIONAL = "functional"
+HANDLER_KIND_SWITCH = "switch"
+HANDLER_KIND_EM = "em"
 HANDLER_KIND_GENERIC = "generic"
 
 _HANDLER_REGISTRY = {}
 
-def register_handler(*capabilities, kind=HANDLER_KIND_FUNCTIONAL):
+def register_handler(*capabilities, kind):
 	def _decorator(handler_cls):
 		for cap in capabilities:
 			_HANDLER_REGISTRY[cap] = {"cls": handler_cls, "kind": kind}
 		return handler_cls
 	return _decorator
 
-def get_handler_class(capability):
+def get_handler_class(capability, kind=None):
 	info = _HANDLER_REGISTRY.get(capability)
-	return info["cls"] if info else None
+	return info["cls"] if info and (kind is None or info["kind"] == kind or info["kind"] == HANDLER_KIND_GENERIC) else None
 
 def get_handler_kind(capability):
 	info = _HANDLER_REGISTRY.get(capability)
@@ -48,7 +49,7 @@ def get_handler_kind(capability):
 
 def has_functional_handler(capabilities):
 	for cap in capabilities:
-		if get_handler_kind(cap) == HANDLER_KIND_FUNCTIONAL:
+		if get_handler_kind(cap) == HANDLER_KIND_SWITCH or get_handler_kind(cap) == HANDLER_KIND_EM:
 			return True
 	return False
 
@@ -58,13 +59,13 @@ class ShellyHandler(object):
 	_rpc_device_type = ""
 
 	@classmethod
-	async def create(cls, cap, channel_id=0, rpc_callback=None, restart_callback=None, shelly_channel=None):
+	async def create(cls, cap, rpc_callback=None, restart_callback=None, shelly_channel=None):
 		handler_cls = get_handler_class(cap)
 		if handler_cls is None:
 			return None
 
 		c = handler_cls()
-		c._channel_id = channel_id
+		c._channel_id = getattr(shelly_channel, "_channel_id", 0)
 		c.rpc_call = rpc_callback
 		c.restart = restart_callback
 		c.sc = shelly_channel
@@ -168,7 +169,7 @@ class ShellyHandler_EM_paths_mixin():
 
 # EMData handler, puts energy metering data on dbus.
 # The EMData component is available on three-phase shelly energy meters.
-@register_handler('EMData', kind=HANDLER_KIND_GENERIC)
+@register_handler('EMData', kind=HANDLER_KIND_EM)
 class ShellyHandler_emdata(ShellyHandler, ShellyHandler_EM_paths_mixin):
 	_rpc_device_type = "EMData"
 
@@ -286,7 +287,7 @@ class Shelly_EM_base(ShellyHandler_EM_paths_mixin):
 		return True
 
 # EM handler, puts voltage, current, power measurements on dbus.
-@register_handler('EM', kind=HANDLER_KIND_FUNCTIONAL)
+@register_handler('EM', kind=HANDLER_KIND_EM)
 class ShellyHandler_em(ShellyHandler, Shelly_EM_base):
 	_rpc_device_type = "EM"
 
@@ -550,7 +551,7 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
 
 		item.set_local_value(value)
 
-@register_handler('Switch')
+@register_handler('Switch', kind=HANDLER_KIND_SWITCH)
 class ShellyHandler_switch(ShellyHandler_switch_base):
 	_rpc_device_type = "Switch"
 
@@ -575,7 +576,7 @@ class ThrottledUpdaterMixin:
 					return
 			await update_task(item, value)
 
-@register_handler('Light')
+@register_handler('Light', kind=HANDLER_KIND_SWITCH)
 class ShellyHandler_light(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 	_rpc_device_type = "Light"
 	_default_output_type = OutputType.DIMMABLE
@@ -619,7 +620,7 @@ class ShellyHandler_light(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 		item.set_local_value(value)
 
 # We support both the RGB and RGBW type on RGBW devices.
-@register_handler('RGBW')
+@register_handler('RGBW', kind=HANDLER_KIND_SWITCH)
 class ShellyHandler_RGBW(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 	_rpc_device_type = "RGBW"
 	_default_output_type = OutputType.RGBW
@@ -735,7 +736,7 @@ class ShellyHandler_RGBW(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 
 
 # RGB handler is the same as RGBW but without the white channel
-@register_handler('RGB')
+@register_handler('RGB', kind=HANDLER_KIND_SWITCH)
 class ShellyHandler_RGB(ShellyHandler_RGBW):
 	_rpc_device_type = "RGB"
 	_default_output_type = OutputType.RGB
