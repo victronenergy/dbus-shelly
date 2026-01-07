@@ -1,11 +1,9 @@
 FILES =					\
 	dbus_shelly.py		\
 	meter.py			\
-	switch.py			\
-	energymeter.py		\
 	discovery.py		\
-	base.py				\
 	shelly_device.py	\
+	shelly_handlers.py	\
 	utils.py
 
 LIB =					\
