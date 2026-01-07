@@ -1,5 +1,5 @@
 from aiovelib.localsettings import Setting
-from aiovelib.service import IntegerItem, TextItem, DoubleItem, TextArrayItem
+from aiovelib.service import IntegerItem, TextItem, DoubleItem, IntegerArrayItem, TextArrayItem
 from utils import logger, formatters as fmt, STATUS_OFF, STATUS_ON
 
 from functools import partial
@@ -36,6 +36,7 @@ def register_handler(*capabilities, kind):
 	def _decorator(handler_cls):
 		for cap in capabilities:
 			_HANDLER_REGISTRY[cap] = {"cls": handler_cls, "kind": kind}
+		handler_cls._rpc_device_type = list(capabilities) if len(capabilities) > 1 else capabilities[0]
 		return handler_cls
 	return _decorator
 
@@ -66,7 +67,7 @@ class ShellyHandler(object):
 
 		c = handler_cls()
 		c._channel_id = getattr(shelly_channel, "_channel_id", 0)
-		c.rpc_call = rpc_callback
+		c._rpc_call = rpc_callback
 		c.restart = restart_callback
 		c.sc = shelly_channel
 		c.service = getattr(shelly_channel, "service", None)
@@ -77,13 +78,9 @@ class ShellyHandler(object):
 
 		return c
 
-	@property
-	def capability(self):
-		return self._rpc_device_type.lower()
-
 	def __init__(self):
 		self._channel_id = 0
-		self.rpc_call = None
+		self._rpc_call = None
 		self.restart = None
 		self.sc = None
 		self.service = None
@@ -96,21 +93,30 @@ class ShellyHandler(object):
 
 	def set_service_name(self, type):
 		self.service.name = f"com.victronenergy.{type}.shelly_{self._serial}_{self._channel_id}"
+
+	async def rpc_call(self, method, params, fun=None):
+		is_single = isinstance(self._rpc_device_type, str)
+		rpc_types = [self._rpc_device_type] if is_single else self._rpc_device_type
+		results = {}
+		for rpc in rpc_types:
+			resp = await self._rpc_call(f"{rpc}.{method}", params)
+			if fun:
+				fun(resp, cap=rpc.lower())
+			results[rpc] = resp
+		return results[rpc_types[0]] if is_single else results
 	
 	# Override this in the handlers
-	def update(self, status_json):
+	def update(self, status_json, cap=None):
 		pass
 
 # Temperature handler, puts temperature readings on dbus.
 @register_handler('Temperature', kind=HANDLER_KIND_GENERIC)
 class ShellyHandler_temperature(ShellyHandler):
-	_rpc_device_type = "Temperature"
-
 	async def ainit(self):
 		# Temperature path must be updated.
 		self.service.add_item(DoubleItem(f'/Temperature', None, text=fmt['celsius']))
 
-	def update(self, status_json):
+	def update(self, status_json, cap=None):
 		try:
 			with self.service as s:
 				s[f'/Temperature'] = status_json["tC"]
@@ -120,8 +126,6 @@ class ShellyHandler_temperature(ShellyHandler):
 # System handler, handles device custom name setting and getting.
 @register_handler('Sys', kind=HANDLER_KIND_GENERIC)
 class ShellyHandler_sys(ShellyHandler):
-	_rpc_device_type = "Sys"
-
 	async def ainit(self):
 		self.service.add_item(TextItem('/CustomName', "", writeable=True, onchange=self.set_custom_name))
 		await self._set_device_customname()
@@ -130,7 +134,7 @@ class ShellyHandler_sys(ShellyHandler):
 		if value is not None:
 			logger.debug("Setting device name for shelly device %s to: %s", self._serial, value)
 			item.set_local_value(value)
-			await self.rpc_call(f"{self._rpc_device_type}.SetConfig", {"config": {"device": {"name": value}}})
+			await self.rpc_call("SetConfig", {"config": {"device": {"name": value}}})
 
 	async def _set_device_customname(self):
 		name = await self._get_device_customname()
@@ -138,7 +142,7 @@ class ShellyHandler_sys(ShellyHandler):
 			s['/CustomName'] = name
 
 	async def _get_device_customname(self):
-		config = await self.rpc_call(f"{self._rpc_device_type}.GetConfig", {})
+		config = await self.rpc_call("GetConfig", {})
 		if config is not None and 'device' in config and 'name' in config['device'] and config['device']['name']:
 			return config['device']['name']
 		return f'Shelly {self._serial}'
@@ -166,30 +170,6 @@ class ShellyHandler_EM_paths_mixin():
 		self.service.add_item(DoubleItem('/Ac/Energy/Forward', None, text=fmt['kwh']))
 		self.service.add_item(DoubleItem('/Ac/Energy/Reverse', None, text=fmt['kwh']))
 
-
-# EMData handler, puts energy metering data on dbus.
-# The EMData component is available on three-phase shelly energy meters.
-@register_handler('EMData', kind=HANDLER_KIND_EM)
-class ShellyHandler_emdata(ShellyHandler, ShellyHandler_EM_paths_mixin):
-	_rpc_device_type = "EMData"
-
-	async def ainit(self):
-		self._num_phases = 3
-		await self.add_em_paths(self._num_phases)
-
-	def update(self, emdata):
-		try:
-			for l in range(1, self._num_phases + 1):
-				with self.service as s:
-					em_prefix = f'/Ac/L{l}/'
-					p = {1:'a', 2:'b', 3:'c'}.get(l)
-					s[em_prefix + 'Energy/Forward'] = emdata[f'{p}_total_act_energy'] / 1000
-					s[em_prefix + 'Energy/Reverse'] = emdata[f'{p}_total_act_ret_energy'] / 1000
-			with self.service as s:
-				s['/Ac/Energy/Forward'] = emdata['total_act_energy'] / 1000
-				s['/Ac/Energy/Reverse'] = emdata['total_act_ret'] / 1000
-		except:
-			pass
 
 # Contains common code for shelly handlers that have energy metering capabilities (single or multi-phase)
 class Shelly_EM_base(ShellyHandler_EM_paths_mixin):
@@ -257,9 +237,7 @@ class Shelly_EM_base(ShellyHandler_EM_paths_mixin):
 		return True
 
 	async def force_update(self):
-		status = await self.rpc_call(f'{self._rpc_device_type}.GetStatus', {"id": self._channel_id})
-		if status is not None:
-			self.update(status)
+		await self.rpc_call('GetStatus', {"id": self._channel_id}, fun=self.update)
 
 	def role_instance(self, value):
 		val = value.split(':')
@@ -287,10 +265,8 @@ class Shelly_EM_base(ShellyHandler_EM_paths_mixin):
 		return True
 
 # EM handler, puts voltage, current, power measurements on dbus.
-@register_handler('EM', kind=HANDLER_KIND_EM)
-class ShellyHandler_em(ShellyHandler, Shelly_EM_base):
-	_rpc_device_type = "EM"
-
+@register_handler('EM', 'EMData', kind=HANDLER_KIND_EM)
+class ShellyHandler_em(Shelly_EM_base, ShellyHandler):
 	async def ainit(self):
 		self._num_phases = await self.get_num_phases()
 		role = await self.init_em(self._num_phases, ['acload', 'pvinverter', 'genset'])
@@ -298,24 +274,65 @@ class ShellyHandler_em(ShellyHandler, Shelly_EM_base):
 		await self.force_update()
 
 	async def get_num_phases(self):
-		status = await self.rpc_call(f"{self._rpc_device_type}.GetStatus" , {"id": self._channel_id})
-		if status is not None:
-			return sum([f'{i}_voltage' in status for i in ['a','b','c']])
+		status = await self.rpc_call('GetStatus', {"id": self._channel_id})
+		if status is not None and 'EM' in status:
+			return sum([f'{i}_voltage' in status['EM'] for i in ['a','b','c']])
 		return 0
 
-	def update(self, status_json):
+	def update(self, status_json, cap=None):
 		power = 0
 		try:
 			with self.service as s:
-				for l in range(1, self._num_phases + 1):
-					em_prefix = f"/Ac/L{l}/"
-					p = {1:'a', 2:'b', 3:'c'}.get(l)
-					s[em_prefix + 'Voltage'] = status_json[f"{p}_voltage"]
-					s[em_prefix + 'Current'] = status_json[f"{p}_current"]
-					power += status_json[f"{p}_act_power"]
-					s[em_prefix + 'Power'] = status_json[f"{p}_act_power"]
-					s[em_prefix + 'PowerFactor'] = status_json[f"{p}_pf"]
-				s['/Ac/Power'] = power
+				if cap == 'em':
+					for l in range(1, self._num_phases + 1):
+						em_prefix = f"/Ac/L{l}/"
+						p = {1:'a', 2:'b', 3:'c'}.get(l)
+						s[em_prefix + 'Voltage'] = status_json[f"{p}_voltage"]
+						s[em_prefix + 'Current'] = status_json[f"{p}_current"]
+						power += status_json[f"{p}_act_power"]
+						s[em_prefix + 'Power'] = status_json[f"{p}_act_power"]
+						s[em_prefix + 'PowerFactor'] = status_json[f"{p}_pf"]
+					s['/Ac/Power'] = power
+
+				if cap == 'emdata':
+					for l in range(1, self._num_phases + 1):
+						with self.service as s:
+							em_prefix = f'/Ac/L{l}/'
+							p = {1:'a', 2:'b', 3:'c'}.get(l)
+							s[em_prefix + 'Energy/Forward'] = status_json[f'{p}_total_act_energy'] / 1000
+							s[em_prefix + 'Energy/Reverse'] = status_json[f'{p}_total_act_ret_energy'] / 1000
+					with self.service as s:
+						s['/Ac/Energy/Forward'] = status_json['total_act'] / 1000
+						s['/Ac/Energy/Reverse'] = status_json['total_act_ret'] / 1000
+		except KeyError as e:
+			logger.error("KeyError in update: %s", e)
+			pass
+
+# EM1Data handler, puts energy metering data on dbus.
+# The EM1Data component is available on single-phase shelly energy meters.
+@register_handler('EM1', 'EM1Data', kind=HANDLER_KIND_EM)
+class ShellyHandler_em1(Shelly_EM_base, ShellyHandler):
+	async def ainit(self):
+		self._num_phases = 1
+		role = await self.init_em(self._num_phases, ['acload', 'pvinverter', 'genset'])
+		self.set_service_name(role)
+		await self.force_update()
+
+	def update(self, status_json, cap=None):
+		try:
+			with self.service as s:
+				if cap == 'em1':
+					em_prefix = "/Ac/L{}/".format(self._phase or 1)
+					s[em_prefix + 'Voltage'] = status_json["voltage"]
+					s[em_prefix + 'Current'] = status_json["current"]
+					s[em_prefix + 'Power'] = status_json["act_power"]
+					s[em_prefix + 'PowerFactor'] = status_json["pf"] if 'pf' in status_json else None
+					s['/Ac/Power'] = status_json["act_power"]
+				elif cap == 'em1data':
+					em_prefix = "/Ac/L{}/".format(self._phase or 1)
+					s['/Ac/Energy/Forward'] = s[em_prefix + 'Energy/Forward'] = status_json['total_act_energy'] / 1000
+					s['/Ac/Energy/Reverse'] = s[em_prefix + 'Energy/Reverse'] = status_json['total_act_ret_energy'] / 1000
+
 		except KeyError as e:
 			logger.error("KeyError in update: %s", e)
 			pass
@@ -329,7 +346,7 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
 	_service_type_no_em = "switch"
 	_service_type_with_em = "acload"
 
-	async def ainit(self):
+	async def ainit(self, allow_em=True):
 		base = self._settings_base + '%s/' % self._channel_id
 		self._type = self._default_output_type
 		self._has_em = False
@@ -362,15 +379,15 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
 
 		self._restore_settings(self._channel_id)
 
-		status = await self.request_channel_status()
-		if status is not None and 'aenergy' in status:
-			# Add energy metering paths
-			await self.init_em(1, ['acload'])
-			self._has_em = True
-
+		if allow_em:
+			status = await self.request_channel_status()
+			if status is not None and 'aenergy' in status:
+				# Add energy metering paths
+				await self.init_em(1, ['acload'])
+				self._has_em = True
 		self.set_service_name(self._service_type_with_em if self._has_em else self._service_type_no_em)
 
-	def update(self, status_json):
+	def update(self, status_json, cap=None):
 		try:
 			switch_prefix = f'/SwitchableOutput/{self._channel_id}/'
 			status = STATUS_ON if status_json["output"] else STATUS_OFF
@@ -385,7 +402,7 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
 				with self.service as s:
 					#a shelly with a switch is single phased. But it may be connected to either phase. 
 					#so, report values on the proper phase.
-					em_prefix = "/Ac/L{}/".format(self._phase or 1)
+					em_prefix = "/Ac/L{}/".format(self._phase)
 					s[em_prefix + 'Voltage'] = status_json["voltage"]
 					s[em_prefix + 'Current'] = status_json["current"]
 					s[em_prefix + 'Power'] = status_json["apower"]
@@ -395,7 +412,6 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
 					ereverse = status_json["ret_aenergy"]["total"] / 1000 if 'ret_aenergy' in status_json else None
 					s[em_prefix + 'Energy/Forward'] = eforward
 					s[em_prefix + 'Energy/Reverse'] = ereverse
-
 					s['/Ac/Energy/Forward'] = eforward
 					s['/Ac/Energy/Reverse'] = ereverse
 					s['/Ac/Power'] = status_json["apower"]
@@ -413,14 +429,13 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
 	async def set_channel_name(self, item, value):
 		if value is not None:
 			logger.debug("Setting channel name for shelly device %s channel %d to: %s", self._serial, self._channel_id, value)
-			await self.rpc_call(f"{self._rpc_device_type}.SetConfig", {"id": self._channel_id, "config": {"name": value}})
+			await self.rpc_call("SetConfig", {"id": self._channel_id, "config": {"name": value}})
 			item.set_local_value(value)
 
 	async def request_channel_status(self):
-		return await self.rpc_call(f'{self._rpc_device_type}.GetStatus' , {"id": self._channel_id})
-
+		return await self.rpc_call('GetStatus' , {"id": self._channel_id})
 	async def request_channel_config(self):
-		return await self.rpc_call(f"{self._rpc_device_type}.GetConfig", {"id": self._channel_id})
+		return await self.rpc_call('GetConfig', {"id": self._channel_id})
 
 	def _restore_settings(self, channel):
 		try:
@@ -541,7 +556,7 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
 			return
 
 		await self.rpc_call(
-			f'{self._rpc_device_type}.Set',
+			'Set',
 			{
 				# id is the switch channel, starting from 0
 				"id":self._channel_id,
@@ -553,7 +568,7 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
 
 @register_handler('Switch', kind=HANDLER_KIND_SWITCH)
 class ShellyHandler_switch(ShellyHandler_switch_base):
-	_rpc_device_type = "Switch"
+	pass
 
 
 class ThrottledUpdaterMixin:
@@ -578,7 +593,6 @@ class ThrottledUpdaterMixin:
 
 @register_handler('Light', kind=HANDLER_KIND_SWITCH)
 class ShellyHandler_light(ShellyHandler_switch_base, ThrottledUpdaterMixin):
-	_rpc_device_type = "Light"
 	_default_output_type = OutputType.DIMMABLE
 	_valid_types_mask = int(1 << OutputType.DIMMABLE.value)
 
@@ -593,8 +607,8 @@ class ShellyHandler_light(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 			onchange=partial(self.throttled_updater, self._set_dimming_value),
 			text=lambda y: str(y) + '%'))
 
-	def update(self, status_json):
-		super().update(status_json)
+	def update(self, status_json, cap=None):
+		super().update(status_json, cap)
 		if self._throttling_runner_lock.locked():
 			# A throttled update is in progress, don't override Dimming path
 			return
@@ -610,7 +624,7 @@ class ShellyHandler_light(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 
 		value = int(value)
 		await self.rpc_call(
-			f'{self._rpc_device_type}.Set',
+			'Set',
 			{
 				"id": self._channel_id,
 				"on": value > 0,
@@ -622,27 +636,26 @@ class ShellyHandler_light(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 # We support both the RGB and RGBW type on RGBW devices.
 @register_handler('RGBW', kind=HANDLER_KIND_SWITCH)
 class ShellyHandler_RGBW(ShellyHandler_switch_base, ThrottledUpdaterMixin):
-	_rpc_device_type = "RGBW"
 	_default_output_type = OutputType.RGBW
 	_valid_types_mask = int(1 << OutputType.RGB.value) | int(1 << OutputType.RGBW.value)
 
 	async def ainit(self):
+		await super().ainit(allow_em=False)
 		self._desired_value = 0
 		self._throttling_lock = asyncio.Lock()
 		self._throttling_runner_lock = asyncio.Lock()
 
 		path_base  = '/SwitchableOutput/%s/' % self._channel_id
-		self.service.add_item(IntegerItem(path_base + 'LightControls', 0, writeable=True,
-			onchange=partial(self.throttled_updater, self._set_light_controls),
-			text=self._light_controls_text_callback))
+		self.service.add_item(IntegerArrayItem(path_base + 'LightControls',value=[0, 0, 0, 0, 0], writeable=True,
+				onchange=partial(self.throttled_updater, self._set_light_controls), text=self._light_controls_text_callback))
 
 	def _light_controls_text_callback(self, v):
 		if self._type == OutputType.RGBW:
 			return "H: %.1f, S: %.1f, B: %.1f, W: %.1f" % (v[0], v[1], v[2], v[3])
 		return "H: %.1f, S: %.1f, B: %.1f" % (v[0], v[1], v[2])
 
-	def update(self, status_json):
-		super().update(status_json)
+	def update(self, status_json, cap=None):
+		super().update(status_json, cap)
 		if self._throttling_runner_lock.locked():
 			# A throttled update is in progress, don't override LightControls path
 			return
@@ -682,8 +695,8 @@ class ShellyHandler_RGBW(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 		if force_white or self._type == OutputType.RGBW:
 			params["white"] = round(value[3] * 2.55)
 
-		await self._rpc_call(
-			f"{self._rpc_device_type}.Set",
+		await self.rpc_call(
+			'Set',
 			params
 		)
 
@@ -738,6 +751,5 @@ class ShellyHandler_RGBW(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 # RGB handler is the same as RGBW but without the white channel
 @register_handler('RGB', kind=HANDLER_KIND_SWITCH)
 class ShellyHandler_RGB(ShellyHandler_RGBW):
-	_rpc_device_type = "RGB"
 	_default_output_type = OutputType.RGB
 	_valid_types_mask = int(1 << OutputType.RGB.value)

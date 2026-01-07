@@ -135,14 +135,6 @@ class ShellyDevice(object):
 	def is_supported(self):
 		return shelly_handlers.has_functional_handler(self._capabilities)
 
-	def get_product_name_and_id(self):
-		# Get product ID from the capabilities
-		if any(cap in self._capabilities for cap in self.SWITCHING_CAPABILITIES):
-			return "Shelly switch", PRODUCT_ID_SHELLY_SWITCH
-		elif 'EM' in self._capabilities:
-			return "Shelly EM", PRODUCT_ID_SHELLY_EM
-		return "Unknown", 0x0000
-
 	async def stop_channel(self, ch):
 		async with self._device_lock:
 			logger.warning(f"Stopping channel {ch} for shelly device {self._serial}")
@@ -248,6 +240,7 @@ class ShellyDevice(object):
 			self.set_event("disconnected")
 			return False
 		# Reinit all channels
+		#FIXME: Add reinit method, this should also check for changed capabilities (happens when switching profiles on the shelly)
 		for ch in self._channels.keys():
 			channel_obj = self._channels[ch].get("channel")
 			if channel_obj is not None and hasattr(channel_obj, "reinit"):
@@ -292,10 +285,12 @@ class ShellyDevice(object):
 		async with self._device_lock:
 			logger.info(f"Starting channel {channel} for shelly device {self._serial}")
 			if channel not in self._channel_info:
-				logger.error(f"Invalid channel {channel} for shelly device {self._serial}")
+				logger.error(f"Invalid channel {channel} for shelly device {self._serial}, which has channels: {self._channel_info}")
 				return False
 
-			name, id = self.get_product_name_and_id()
+			is_switch = 'switch' in channel
+			name = f"Shelly {"Switch" if is_switch else "EM"}"
+			id = PRODUCT_ID_SHELLY_SWITCH if is_switch else PRODUCT_ID_SHELLY_EM
 
 			# Create channel object. The dbus service lives here.
 			ch = await ShellyChannel.create(
@@ -310,12 +305,22 @@ class ShellyDevice(object):
 			# Create handlers for the generic + switching OR EM capabilities
 			handlers = {}
 			for cap in self._capabilities:
-				if shelly_handlers.get_handler_class(cap, channel.split('_')[0]) is None:
+				cls = shelly_handlers.get_handler_class(cap, channel.split('_')[0])
+				if cls is None:
 					continue
-				handlers[cap] = await shelly_handlers.ShellyHandler.create(
-					cap,
-					rpc_callback=self.rpc_call,
-					restart_callback=partial(self.restart_channel, channel),
+				create_new = True
+
+				# Reuse existing handler if the same handler class is used for more capabilities (e.g. EM1 and EM1Data)
+				for c in handlers.values():
+					if cls == type(c):
+						handlers[cap] = c
+						create_new = False
+						break
+				if create_new:
+					handlers[cap] = await shelly_handlers.ShellyHandler.create(
+						cap,
+						rpc_callback=self.rpc_call,
+						restart_callback=partial(self.restart_channel, channel),
 					shelly_channel=ch
 					)
 				
@@ -389,13 +394,15 @@ class ShellyDevice(object):
 
 	def device_updated(self, cb_device, update_type):
 		if update_type == RpcUpdateType.STATUS:
-			for channel in self._channels.keys():
-				entry = self._channels[channel]
+			for ch in self._channels.keys():
+				channel = ch.split('_')[1]
+				entry = self._channels[ch]
 				handlers = entry.get("handlers", {})
-				for handler in handlers.values():
-					key = f'{handler.capability}:{channel}'
+				for cap, handler in handlers.items():
+					cap = cap.lower()
+					key = f'{cap}:{channel}'
 					if key in cb_device.status:
-						handler.update(cb_device.status[key])
+						handler.update(cb_device.status[key], cap=cap)
 
 		elif update_type == RpcUpdateType.DISCONNECTED:
 			if self._shelly_device:
