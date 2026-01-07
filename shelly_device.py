@@ -77,6 +77,10 @@ class ShellyChannel(object):
 	async def stop_service(self):
 		await self.service.close()
 
+	# Reinitialize the callbacks without restarting the service.
+	async def reinit(self, rpc_callback, restart):
+		self._rpc_call = rpc_callback
+		self._restart = restart
 
 # Represents a Shelly device, which can be a switch or an energy meter.
 # Handles the websocket connection to the Shelly device and provides methods to control it.
@@ -240,12 +244,32 @@ class ShellyDevice(object):
 			self.set_event("disconnected")
 			return False
 		# Reinit all channels
-		#FIXME: Add reinit method, this should also check for changed capabilities (happens when switching profiles on the shelly)
-		for ch in self._channels.keys():
-			channel_obj = self._channels[ch].get("channel")
-			if channel_obj is not None and hasattr(channel_obj, "reinit"):
-				await channel_obj.reinit(self.rpc_call, partial(self.restart_channel, ch))
+		await asyncio.gather(*(self._reinit_channel_and_handlers(ch) for ch in self._channels))
 		return True
+
+	async def _reinit_channel_and_handlers(self, ch):
+		channel_obj = self._channels[ch].get("channel")
+		await channel_obj.reinit(self.rpc_call, partial(self.restart_channel, ch))
+		# Check if capabilities changed
+		restart = False
+		handlers = self._channels[ch].get("handlers", {})
+		# Capability removed
+		for cap in list(handlers.keys()):
+			if cap not in self._capabilities:
+				restart = True
+				break
+		# Capability added for which we have a handler
+		for cap in self._capabilities:
+			if cap not in handlers and shelly_handlers.get_handler_class(cap, ch.split('_')[0]) is not None:
+				restart = True
+				break
+		if restart:
+			# Sometimes the number of channels can also change.
+			# If a channel is removed, this will just stop it and not start it again.
+			#FIXME: Notify the discovery service that the number of channels has changed. Currently it may continue to list channels that no longer exist.
+			await self.restart_channel(ch)
+		else:
+			await asyncio.gather(*(handler.restart() for handler in handlers.values()))
 
 	# Get the number of switching and/or metering channels.
 	async def _get_channels_info(self):
