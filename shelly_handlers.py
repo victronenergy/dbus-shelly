@@ -91,6 +91,9 @@ class ShellyHandler(object):
 	async def ainit(self):
 		pass
 
+	async def restart(self):
+		pass
+
 	def set_service_name(self, type):
 		self.service.name = f"com.victronenergy.{type}.shelly_{self._serial}_{self._channel_id}"
 
@@ -152,6 +155,9 @@ class ShellyHandler_sys(ShellyHandler):
 			task = asyncio.get_event_loop().create_task(self._set_device_customname())
 			background_tasks.add(task)
 			task.add_done_callback(background_tasks.discard)
+
+	async def restart(self):
+		await self._set_device_customname()
 
 
 class ShellyHandler_EM_paths_mixin():
