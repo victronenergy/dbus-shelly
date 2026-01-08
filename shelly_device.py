@@ -12,7 +12,7 @@ from base import ShellyChannel
 from utils import logger
 
 PRODUCT_ID_SHELLY_EM = 0xB034
-PRODUCT_ID_SHELLY_SWITCH = 0xB074
+PRODUCT_ID_SHELLY_SWITCH = 0xB075
 CONNECTION_RETRIES = 10
 background_tasks = set()
 
