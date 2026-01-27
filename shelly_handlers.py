@@ -639,11 +639,11 @@ class ShellyHandler_light(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 		)
 		item.set_local_value(value)
 
-# We support both the RGB and RGBW type on RGBW devices.
+
 @register_handler('RGBW', kind=HANDLER_KIND_SWITCH)
 class ShellyHandler_RGBW(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 	_default_output_type = OutputType.RGBW
-	_valid_types_mask = int(1 << OutputType.RGB.value) | int(1 << OutputType.RGBW.value)
+	_valid_types_mask = int(1 << OutputType.RGBW.value)
 
 	async def ainit(self):
 		await super().ainit(allow_em=False)
