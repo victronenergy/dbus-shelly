@@ -32,7 +32,7 @@ class ShellyChannel(object):
 	@classmethod
 	async def create(cls, bus_type, serial, channel_type_id, server, productid=0x0000, productName=None):
 		bus = await MessageBus(bus_type=bus_type).connect()
-		c = cls(bus, productid, serial, channel_type_id, server, productName)
+		c = cls(bus_type, bus, productid, serial, channel_type_id, server, productName)
 		c.service = Service(bus, None)
 		c.settings = await wait_for_settings(bus)
 
@@ -44,13 +44,14 @@ class ShellyChannel(object):
 		await c.ainit()
 		return c
 
-	def __init__(self, bus, productid, serial, channel_type_id, connection, productName):
+	def __init__(self, bus_type, bus, productid, serial, channel_type_id, connection, productName):
 		self.service = None
 		self.settings = None
 		self.channel_custom_name = ""
 		self._productId = productid
 		self._serial = serial
 		self._channel_id = int(channel_type_id.split('_')[1])
+		self.bus_type = bus_type
 		self.bus = bus
 		self.connection = connection
 		self.productName = productName

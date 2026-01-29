@@ -1,27 +1,12 @@
 from aiovelib.localsettings import Setting
 from aiovelib.service import IntegerItem, TextItem, DoubleItem, IntegerArrayItem, TextArrayItem
-from utils import logger, formatters as fmt, STATUS_OFF, STATUS_ON
+from utils import logger, formatters as fmt, STATUS_OFF, STATUS_ON, OutputType, OutputFunction
 
 from functools import partial
-from enum import IntEnum
 import asyncio
 import colorsys
 
-class OutputType(IntEnum):
-	MOMENTARY = 0
-	TOGGLE = 1
-	DIMMABLE = 2
-	RGB = 11
-	TYPE_MAX = RGBW = 13
-
-class OutputFunction(IntEnum):
-	ALARM = 0
-	GENSET_START_STOP = 1
-	MANUAL = 2
-	TANK_PUMP = 3
-	TEMPERATURE = 4
-	CONNECTED_GENSET_HELPER_RELAY = 5
-	S2_RM = 6
+from shelly_s2 import ShellyHandlerS2Mixin
 
 background_tasks = set()
 
@@ -82,6 +67,8 @@ class ShellyHandler(object):
 		self._channel_id = 0
 		self._rpc_call = None
 		self.restart = None
+		self._type = None
+		self._function = None
 		self.sc = None
 		self.service = None
 		self.settings = None
@@ -352,9 +339,23 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
 	_service_type_no_em = "switch"
 	_service_type_with_em = "acload"
 
+	@property
+	def status(self):
+		return self.service.get_item(f'/SwitchableOutput/{self._channel_id}/Status').value
+
+	@property
+	def state(self):
+		return self.service.get_item(f'/SwitchableOutput/{self._channel_id}/State').value
+
+	@state.setter
+	def state(self, value):
+		""" Set the state of the switch. """
+		self.service.get_item(f'/SwitchableOutput/{self._channel_id}/State')._set_value(value)
+
 	async def ainit(self, allow_em=True):
 		base = self._settings_base + '%s/' % self._channel_id
 		self._type = self._default_output_type
+		self._function = OutputFunction.MANUAL
 		self._has_em = False
 		await self.settings.add_settings(
 			Setting(base + 'Group', "", alias=f'Group_{self._serial}_{self._channel_id}'),
@@ -362,6 +363,9 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
 			Setting(base + 'Function', int(OutputFunction.MANUAL), _min=0, _max=6, alias=f'Function_{self._serial}_{self._channel_id}'),
 			Setting(base + 'Type', self._type, _min=0, _max=OutputType.TYPE_MAX, alias=f'Type_{self._serial}_{self._channel_id}'),
 		)
+
+		self._type = self.settings.get_value(self.settings.alias(f'Type_{self._serial}_{self._channel_id}'))
+		self._function = self.settings.get_value(self.settings.alias(f'Function_{self._serial}_{self._channel_id}'))
 
 		initial_custom_name = await self._get_channel_customname()
 
@@ -375,7 +379,7 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
 		self.service.add_item(IntegerItem(path_base + 'Settings/ShowUIControl', 1, writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/ShowUIControl')))
 		self.service.add_item(IntegerItem(path_base + 'Settings/Type', self._type, writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/Type'),
 							text=self._type_text_callback))
-		self.service.add_item(IntegerItem(path_base + 'Settings/Function', int(OutputFunction.MANUAL), writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/Function'),
+		self.service.add_item(IntegerItem(path_base + 'Settings/Function', self._function, writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/Function'),
 							text=self._function_text_callback))
 
 		self.service.add_item(IntegerItem(path_base + 'Settings/ValidTypes', self._valid_types_mask,
@@ -392,6 +396,10 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
 				await self.init_em(1, ['acload'])
 				self._has_em = True
 		self.set_service_name(self._service_type_with_em if self._has_em else self._service_type_no_em)
+
+		# Initialize channel type and function
+		self._set_channel_type(str(self._channel_id), self._type)
+		self._set_channel_function(str(self._channel_id), self._function)
 
 	def update(self, status_json, cap=None):
 		try:
@@ -573,7 +581,7 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
 		item.set_local_value(value)
 
 @register_handler('Switch', kind=HANDLER_KIND_SWITCH)
-class ShellyHandler_switch(ShellyHandler_switch_base):
+class ShellyHandler_switch(ShellyHandlerS2Mixin, ShellyHandler_switch_base):
 	pass
 
 

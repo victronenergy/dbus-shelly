@@ -4,10 +4,8 @@ import json
 import logging
 from itertools import cycle
 from typing import Any, Dict
-from aiovelib.client import Monitor, ServiceHandler
-from aiovelib.service import Service, IntegerItem, DoubleItem, TextItem
-from aiovelib.service import TextArrayItem
-from aiovelib.client import Service as Client
+from enum import IntEnum
+from aiovelib.client import Monitor
 from aiovelib.localsettings import SettingsService as SettingsClient, SETTINGS_SERVICE
 
 logger = logging.getLogger(__name__)
@@ -15,6 +13,22 @@ logger.setLevel(logging.DEBUG)
 
 STATUS_OFF = 0x00
 STATUS_ON = 0x09
+
+class OutputType(IntEnum):
+	MOMENTARY = 0
+	TOGGLE = 1
+	DIMMABLE = 2
+	RGB = 11
+	TYPE_MAX = RGBW = 13
+
+class OutputFunction(IntEnum):
+	ALARM = 0
+	GENSET_START_STOP = 1
+	MANUAL = 2
+	TANK_PUMP = 3
+	TEMPERATURE = 4
+	CONNECTED_GENSET_HELPER_RELAY = 5
+	S2_RM = 6
 
 # Text formatters
 formatters = {
