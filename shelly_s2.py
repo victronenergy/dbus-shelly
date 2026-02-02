@@ -44,7 +44,7 @@ from s2python.ombc import (
 )
 
 from __main__ import VERSION
-from utils import STATUS_ON, formatters as fmt, OutputFunction
+from utils import STATUS_ON, formatters as fmt, OutputFunction, OutputType
 
 class OpportunityLoadsService(Client, ServiceHandler):
 	servicetype = "com.victronenergy.opportunityloads"
@@ -117,6 +117,10 @@ class ShellyHandlerS2Mixin():
 		return self.service.get_item(f'/S2/0/RmSettings/PowerSetting').value or 0
 
 	@property
+	def phase(self):
+		return self.service.get_item(f'/PhaseSetting').value or 0
+
+	@property
 	def s2_active(self):
 		return self.service.get_item(f'/S2/0/Active').value or 0
 
@@ -137,8 +141,6 @@ class ShellyHandlerS2Mixin():
 		# Indicates if the RM is enabled, i.e., the OMBC control type has been offered to HEMS.
 		# Whether the OMBC control type is actually activated by the HEMS is determined by self._control_type_ombc.active.
 		self._rm_enabled = False
-
-		print("Initializing S2 mixin for device", self._serial)
 
 		# Register ourselves as listener to the global service monitor
 		_service_monitor_listeners.add(self)
@@ -215,7 +217,44 @@ class ShellyHandlerS2Mixin():
 				await self.rm_item.send_resource_manager_details(control_types=[self._control_type_noctrl, self._control_type_ombc], asset_details=self._rm_details)
 			except:
 				pass
+
+		# Set switch type to Three-state switch (9)
+		await self._set_three_state_switch(True)
 		self._rm_enabled = True
+
+	async def _auto_changed(self, item, value):
+		# Store setting
+		setting = f'Auto_{self._serial}_{self._channel_id}'
+		try:
+			await self.settings.set_value(self.settings.alias(setting), value)
+		except:
+			return
+		item.set_local_value(value)
+
+	async def _set_three_state_switch(self, enabled):
+		if enabled:
+			if self.settings.alias(f'Auto_{self._serial}_{self._channel_id}') is None:
+				await self.settings.add_settings(Setting(f'{self._settings_base}{self._channel_id}/Auto', 0,
+											 _min=0, _max=1, alias=f"Auto_{self._serial}_{self._channel_id}"))
+			if self.service.get_item(f'/SwitchableOutput/{self._channel_id}/Auto') is None:
+				# Add Auto item
+				init_val = self.settings.get_value(self.settings.alias(f'Auto_{self._serial}_{self._channel_id}')) or 0
+				self.service.add_item(IntegerItem(f'/SwitchableOutput/{self._channel_id}/Auto', init_val, writeable=True, onchange=self._auto_changed))
+		else:
+			try:
+				with self.service as s:
+					s[f'/SwitchableOutput/{self._channel_id}/Auto'] = None
+			except KeyError:
+				# Item did not exist, ignore
+				pass
+
+		with self.service as s:
+			s[f'/SwitchableOutput/{self._channel_id}/Settings/ValidTypes'] = (1 << OutputType.THREE_STATE_SWITCH) if enabled else self._default_valid_types
+
+		# Set type and invoke the callback
+		item = self.service.get_item(f'/SwitchableOutput/{self._channel_id}/Settings/Type')
+		if item:
+			item.set_value(OutputType.THREE_STATE_SWITCH if enabled else self._default_type)
 
 	async def disable_rm(self, channel):
 		logger.info("Disabling S2 Resource Manager for device %s", self._serial)
@@ -241,6 +280,9 @@ class ShellyHandlerS2Mixin():
 			# Will throw when the HEMS is not connected, but will still update the available control types.
 			# So next time HEMS connects, it will only be offered the NoControl control type.
 			pass
+
+		# Set switch type back to the default type.
+		await self._set_three_state_switch(False)
 		self._rm_enabled = False
 
 	def update(self, status_json, cap=None):
