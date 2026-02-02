@@ -166,7 +166,7 @@ class ShellyHandlerS2Mixin():
 
 	def on_channel_function_changed(self, channel, value):
 		self._function = value
-		if value == OutputFunction.S2_RM:
+		if value == OutputFunction.OPPORTUNITY_LOAD:
 			# Enable S2 RM
 			asyncio.create_task(self.enable_rm(channel))
 		else:
@@ -181,9 +181,9 @@ class ShellyHandlerS2Mixin():
 			# Update the valid functions mask
 			current = self._valid_functions_mask
 			if value:
-				current |= (1 << OutputFunction.S2_RM)
+				current |= (1 << OutputFunction.OPPORTUNITY_LOAD)
 			else:
-				current &= ~(1 << OutputFunction.S2_RM)
+				current &= ~(1 << OutputFunction.OPPORTUNITY_LOAD)
 				# The UI is responsible for indicating that the S2 RM function is invalid, if it is currently selected.
 				# To be sure, turn off the output here.
 				self.state = 0
