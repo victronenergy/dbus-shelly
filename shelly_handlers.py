@@ -333,6 +333,7 @@ class ShellyHandler_em1(Shelly_EM_base, ShellyHandler):
 
 class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
 	_default_output_type = OutputType.TOGGLE
+	_default_function = OutputFunction.MANUAL
 	_valid_types_mask = int((1 << OutputType.TOGGLE.value) | (1 << OutputType.MOMENTARY.value))
 	_valid_functions_mask = int(1 << OutputFunction.MANUAL)
 
@@ -354,14 +355,13 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
 
 	async def ainit(self, allow_em=True):
 		base = self._settings_base + '%s/' % self._channel_id
-		self._type = self._default_output_type
 		self._function = OutputFunction.MANUAL
 		self._has_em = False
 		await self.settings.add_settings(
 			Setting(base + 'Group', "", alias=f'Group_{self._serial}_{self._channel_id}'),
 			Setting(base + 'ShowUIControl', 1, _min=0, _max=6, alias=f'ShowUIControl_{self._serial}_{self._channel_id}'),
 			Setting(base + 'Function', int(OutputFunction.MANUAL), _min=0, _max=6, alias=f'Function_{self._serial}_{self._channel_id}'),
-			Setting(base + 'Type', self._type, _min=0, _max=OutputType.TYPE_MAX, alias=f'Type_{self._serial}_{self._channel_id}'),
+			Setting(base + 'Type', self._default_output_type, _min=0, _max=OutputType.TYPE_MAX, alias=f'Type_{self._serial}_{self._channel_id}'),
 		)
 
 		self._type = self.settings.get_value(self.settings.alias(f'Type_{self._serial}_{self._channel_id}'))
@@ -374,9 +374,11 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
 		self.service.add_item(IntegerItem(path_base + 'Status', 0, writeable=False, text=self._status_text_callback))
 		self.service.add_item(TextItem(path_base + 'Name', f'Channel {self._channel_id}', writeable=False))
 
-		self.service.add_item(TextItem(path_base + 'Settings/Group', "", writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/Group')))
+		group = self.settings.get_value(self.settings.alias(f'Group_{self._serial}_{self._channel_id}'))
+		show_ui_control = self.settings.get_value(self.settings.alias(f'ShowUIControl_{self._serial}_{self._channel_id}'))
+		self.service.add_item(TextItem(path_base + 'Settings/Group', group, writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/Group')))
 		self.service.add_item(TextItem(path_base + 'Settings/CustomName', initial_custom_name, writeable=True, onchange=self.set_channel_name))
-		self.service.add_item(IntegerItem(path_base + 'Settings/ShowUIControl', 1, writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/ShowUIControl')))
+		self.service.add_item(IntegerItem(path_base + 'Settings/ShowUIControl', show_ui_control, writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/ShowUIControl')))
 		self.service.add_item(IntegerItem(path_base + 'Settings/Type', self._type, writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/Type'),
 							text=self._type_text_callback))
 		self.service.add_item(IntegerItem(path_base + 'Settings/Function', self._function, writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/Function'),
@@ -386,8 +388,6 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
 							writeable=False, text=self._valid_types_text_callback))
 		self.service.add_item(IntegerItem(path_base + 'Settings/ValidFunctions', int(self._valid_functions_mask), writeable=False,
 							text=self._valid_functions_text_callback))
-
-		self._restore_settings(self._channel_id)
 
 		if allow_em:
 			status = await self.request_channel_status()
@@ -451,16 +451,6 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
 	async def request_channel_config(self):
 		return await self.rpc_call('GetConfig', {"id": self._channel_id})
 
-	def _restore_settings(self, channel):
-		try:
-			with self.service as s:
-				s['/SwitchableOutput/%s/Settings/Group' % channel] = self.settings.get_value(self.settings.alias(f'Group_{self._serial}_{channel}'))
-				s['/SwitchableOutput/%s/Settings/ShowUIControl' % channel] = self.settings.get_value(self.settings.alias(f'ShowUIControl_{self._serial}_{channel}'))
-				s['/SwitchableOutput/%s/Settings/Function' % channel] = self.settings.get_value(self.settings.alias(f'Function_{self._serial}_{channel}'))
-				self._type = s['/SwitchableOutput/%s/Settings/Type' % channel] = self.settings.get_value(self.settings.alias(f'Type_{self._serial}_{channel}'))
-		except:
-			pass
-
 	async def _value_changed(self, path, item, value):
 		split = path.split('/')
 		if len(split) > 3 and split[3] == 'Settings':
@@ -493,6 +483,7 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
 		ret = (1 << value) & self.service.get_item("/SwitchableOutput/%s/Settings/ValidFunctions" % channel).value
 		if ret:
 			self.on_channel_function_changed(channel, value)
+			self._function = value
 		return ret
 
 	def _status_text_callback(self, value):
@@ -513,6 +504,7 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
 			OutputType.MOMENTARY: "Momentary",
 			OutputType.TOGGLE: "Toggle",
 			OutputType.DIMMABLE: "Dimmable",
+			OutputType.THREE_STATE_SWITCH: "Three-state switch",
 			OutputType.RGB: "RGB",
 			OutputType.RGBW: "RGBW",
 		}
@@ -554,6 +546,7 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
 			(OutputType.DIMMABLE, "Dimmable"),
 			(OutputType.TOGGLE, "Toggle"),
 			(OutputType.MOMENTARY, "Momentary"),
+			(OutputType.THREE_STATE_SWITCH, "Three-state switch"),
 			(OutputType.RGB, "RGB"),
 			(OutputType.RGBW, "RGBW"),
 		]

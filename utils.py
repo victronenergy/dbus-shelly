@@ -18,6 +18,7 @@ class OutputType(IntEnum):
 	MOMENTARY = 0
 	TOGGLE = 1
 	DIMMABLE = 2
+	THREE_STATE_SWITCH = 9
 	RGB = 11
 	TYPE_MAX = RGBW = 13
 
