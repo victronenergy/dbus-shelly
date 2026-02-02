@@ -518,7 +518,7 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
 			OutputFunction.TANK_PUMP: "Tank pump",
 			OutputFunction.TEMPERATURE: "Temperature",
 			OutputFunction.CONNECTED_GENSET_HELPER_RELAY: "Connected genset helper relay",
-			OutputFunction.S2_RM: "S2 resource manager",
+			OutputFunction.OPPORTUNITY_LOAD: "Opportunity load",
 		}
 		return function_map.get(value, "Unknown")
 
@@ -537,7 +537,7 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
 			(OutputFunction.TANK_PUMP, "Tank pump"),
 			(OutputFunction.TEMPERATURE, "Temperature"),
 			(OutputFunction.CONNECTED_GENSET_HELPER_RELAY, "Connected genset helper relay"),
-			(OutputFunction.S2_RM, "S2 resource manager"),
+			(OutputFunction.OPPORTUNITY_LOAD, "Opportunity load"),
 		]
 		return self._bitmask_text(value, entries)
 

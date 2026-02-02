@@ -29,7 +29,7 @@ class OutputFunction(IntEnum):
 	TANK_PUMP = 3
 	TEMPERATURE = 4
 	CONNECTED_GENSET_HELPER_RELAY = 5
-	S2_RM = 6
+	OPPORTUNITY_LOAD = 6 # Also known as S2 Resource manager
 
 # Text formatters
 formatters = {
