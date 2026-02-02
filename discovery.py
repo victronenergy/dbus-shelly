@@ -328,10 +328,13 @@ class ShellyDiscovery(object):
 			s['/Devices/{}/Name'.format(serial)] = name
 			s['/Devices/{}/DiscoveryType'.format(serial)] = 'Manual' if manual else 'mDNS'
 
-		for ch in channel_info:
+		for i, ch in enumerate(channel_info):
 			ch_type = ch.split('_')[0] # 'switch', 'em'
 			ch_num = int(ch.split('_')[1]) + 1
-			await self.settings.add_settings(Setting(f'/Settings/Devices/shelly_{serial}/{ch_type}/{ch_num}/Enabled', 0, alias=f"enabled_{serial}_{ch}"))
+
+			# Don't encode the channel type in the setting path to remain compatible with older versions.
+			# There are two types of channels: 'switch' and 'em'. Switch channels are enumerated first, then em channels.
+			await self.settings.add_settings(Setting(f'/Settings/Devices/shelly_{serial}/{i}/Enabled', 0, alias=f"enabled_{serial}_{ch}"))
 			enabled = self.settings.get_value(self.settings.alias(f"enabled_{serial}_{ch}"))
 
 			if self.service.get_item(f'/Devices/{serial}/{ch_type}/{ch_num}/Enabled') is None:
