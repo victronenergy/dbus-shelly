@@ -42,15 +42,15 @@ formatters = {
 }
 
 class SettingsMonitor(Monitor):
-	def __init__(self, bus, **kwargs):
-		super().__init__(bus, handlers = {
+	def __init__(self, bus, itemsChanged=None, **kwargs):
+		super().__init__(bus, itemsChanged=itemsChanged, handlers = {
 			'com.victronenergy.settings': SettingsClient
 		}, **kwargs)
 		
 
-async def wait_for_settings(bus):
+async def wait_for_settings(bus, itemsChanged=None):
 	""" Attempt a connection to localsettings. """
-	settingsmonitor = await SettingsMonitor.create(bus)
+	settingsmonitor = await SettingsMonitor.create(bus, itemsChanged=itemsChanged)
 	""" Attempt a connection to localsettings. If it does not show
 		    up within 5 seconds, return None. """
 	try:
