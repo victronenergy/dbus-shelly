@@ -117,8 +117,10 @@ class ShellyDevice(object):
 
 	@property
 	def server(self):
+		if self._server:
+			return self._server
 		if self._shelly_device:
-			return self._shelly_device.ip_address or self._server
+			return self._shelly_device.ip_address
 		return None
 
 	@property
@@ -165,8 +167,25 @@ class ShellyDevice(object):
 						await channel_obj.service.close()
 				del self._channels[ch]
 
+	def _parse_server(self):
+		if not self._server:
+			return None, None
+		if self._server.count(":") == 1:
+			host, port_str = self._server.rsplit(":", 1)
+			if host and port_str.isdigit():
+				port = int(port_str)
+				if 1 <= port <= 65535:
+					return host, port
+		return self._server, None
+
 	async def connect(self):
-		options = ConnectionOptions(self._server, "", "")
+		host, port = self._parse_server()
+		if host is None:
+			return False
+		if port is None:
+			options = ConnectionOptions(host, "", "")
+		else:
+			options = ConnectionOptions(host, "", "", port=port)
 		self._aiohttp_session = aiohttp.ClientSession()
 		self._ws_context = WsServer()
 

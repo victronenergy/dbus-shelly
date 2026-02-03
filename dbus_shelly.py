@@ -10,6 +10,7 @@ import logging
 import json
 import itertools
 from argparse import ArgumentParser
+import subprocess
 from discovery import ShellyDiscovery
 import asyncio
 
@@ -82,6 +83,7 @@ def main():
 			default='system')
 	parser.add_argument('--debug', help='Turn on debug logging',
 			default=False, action='store_true')
+	parser.add_argument('--mock', help='Start mock Shelly devices', action='store_true')
 	args = parser.parse_args()
 
 	logging.basicConfig(format='%(levelname)-8s %(message)s',
@@ -96,6 +98,16 @@ def main():
 	}.get(args.dbus, BusType.SESSION)
 
 	shellyDiscovery = ShellyDiscovery(bus_type)
+	mock_proc = None
+
+	if args.mock:
+		mock_script = os.path.join(os.path.dirname(__file__), 'mock', 'run_mock_devices.py')
+		cmd = [sys.executable, mock_script]
+		try:
+			mock_proc = subprocess.Popen(cmd)
+			logger.info("Started mock devices: %s", " ".join(cmd))
+		except Exception as e:
+			logger.error("Failed to start mock devices: %s", e)
 
 	mainloop = asyncio.new_event_loop()
 	asyncio.set_event_loop(mainloop)
@@ -111,6 +123,13 @@ def main():
 		mainloop.run_forever()
 	except KeyboardInterrupt:
 		mainloop.stop()
+	finally:
+		if mock_proc and mock_proc.poll() is None:
+			mock_proc.terminate()
+			try:
+				mock_proc.wait(timeout=2)
+			except Exception:
+				mock_proc.kill()
 
 
 if __name__ == "__main__":
