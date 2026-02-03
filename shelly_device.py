@@ -338,7 +338,7 @@ class ShellyDevice(object):
 				return False
 
 			is_switch = 'switch' in channel
-			name = f"Shelly {"Switch" if is_switch else "EM"}"
+			name = f"Shelly {'Switch' if is_switch else 'EM'}"
 			id = PRODUCT_ID_SHELLY_SWITCH if is_switch else PRODUCT_ID_SHELLY_EM
 
 			# Create channel object. The dbus service lives here.

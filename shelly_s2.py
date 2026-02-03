@@ -126,7 +126,9 @@ class ShellyHandlerS2Mixin():
 
 	@s2_active.setter
 	def s2_active(self, value):
-		self.service.get_item(f'/S2/0/Active').set_local_value(value)
+		item = self.service.get_item(f'/S2/0/Active')
+		if item:
+			item.set_local_value(value)
 
 	@property
 	def has_rm(self):
