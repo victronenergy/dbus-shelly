@@ -34,7 +34,7 @@ class ShellyChannel(object):
 		bus = await MessageBus(bus_type=bus_type).connect()
 		c = cls(bus_type, bus, productid, serial, channel_type_id, server, productName)
 		c.service = Service(bus, None)
-		c.settings = await wait_for_settings(bus)
+		c.settings = await wait_for_settings(bus, itemsChanged=c.itemsChanged)
 
 		settings_base = f'/Settings/Devices/shelly_{serial}_{c._channel_id}/'
 		await c.settings.add_settings(
@@ -55,6 +55,18 @@ class ShellyChannel(object):
 		self.bus = bus
 		self.connection = connection
 		self.productName = productName
+
+	def itemsChanged(self, service, values):
+		# Check if the device instance is changed
+		if not f'/Settings/Devices/shelly_{self._serial}_{self._channel_id}/ClassAndVrmInstance' in values:
+			return
+		if f'/Settings/Devices/shelly_{self._serial}_{self._channel_id}/ClassAndVrmInstance' in values:
+			try:
+				instance = int(values[f'/Settings/Devices/shelly_{self._serial}_{self._channel_id}/ClassAndVrmInstance'].split(':')[-1])
+				with self.service as s:
+					s['/DeviceInstance'] = instance
+			except:
+				pass
 
 	async def ainit(self):
 		instance = int(self.settings.get_value(self.settings.alias('instance_{}_{}'.format(self._serial, self._channel_id))).split(':')[-1])
