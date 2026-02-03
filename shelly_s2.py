@@ -11,8 +11,9 @@ import weakref
 
 try:
 	from dbus_fast.aio import MessageBus
+	from dbus_fast import Variant
 except ImportError:
-	from dbus_next.aio import MessageBus
+	from dbus_next import MessageBus, Variant
 
 #aiovelib
 sys.path.insert(1, os.path.join(os.path.dirname(__file__), 'ext', 'aiovelib'))
@@ -204,10 +205,10 @@ class ShellyHandlerS2Mixin():
 			await self.allow_rm_control(0)
 
 	async def enable_rm(self, channel):
+		logger.info("Enabling S2 Resource Manager for device %s", self._serial)
 		if not self.has_rm:
 			# Paths not yet present, add them to the service.
 			await self._add_rm_to_service(channel)
-			logger.info("Enabled S2 Resource Manager for device %s (%s)", self._serial, self._rm_details.name)
 
 			#FIXME: Better read the current state, and just report that, so a restart of S2 just continues where it was.
 			logger.debug("Setting output state off initially")
@@ -241,7 +242,11 @@ class ShellyHandlerS2Mixin():
 			if self.service.get_item(f'/SwitchableOutput/{self._channel_id}/Auto') is None:
 				# Add Auto item
 				init_val = self.settings.get_value(self.settings.alias(f'Auto_{self._serial}_{self._channel_id}')) or 0
-				self.service.add_item(IntegerItem(f'/SwitchableOutput/{self._channel_id}/Auto', init_val, writeable=True, onchange=self._auto_changed))
+				self.service.add_item(IntegerItem(f'/SwitchableOutput/{self._channel_id}/Auto', None, writeable=True, onchange=self._auto_changed))
+
+				# This sends an itemschanged, to make the GUI aware of it.
+				with self.service as s:
+					s[f'/SwitchableOutput/{self._channel_id}/Auto'] = init_val
 		else:
 			try:
 				with self.service as s:
@@ -251,12 +256,12 @@ class ShellyHandlerS2Mixin():
 				pass
 
 		with self.service as s:
-			s[f'/SwitchableOutput/{self._channel_id}/Settings/ValidTypes'] = (1 << OutputType.THREE_STATE_SWITCH) if enabled else self._default_valid_types
+			s[f'/SwitchableOutput/{self._channel_id}/Settings/ValidTypes'] = (1 << OutputType.THREE_STATE_SWITCH) if enabled else self._valid_types_mask
 
 		# Set type and invoke the callback
 		item = self.service.get_item(f'/SwitchableOutput/{self._channel_id}/Settings/Type')
 		if item:
-			item.set_value(OutputType.THREE_STATE_SWITCH if enabled else self._default_type)
+			item.set_value(OutputType.THREE_STATE_SWITCH if enabled else self._default_output_type)
 
 	async def disable_rm(self, channel):
 		logger.info("Disabling S2 Resource Manager for device %s", self._serial)
