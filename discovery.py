@@ -86,11 +86,16 @@ class ShellyDiscovery(object):
 		for ip in value.split(','):
 			# Validate IP address format
 			rgx = re.compile(
-				r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$"
+				r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?::[0-9]{1,5})?$"
 			)
 			if not rgx.match(ip):
 				logger.error("Invalid IP address format: %s", ip)
 				return
+			if ":" in ip:
+				port_str = ip.rsplit(":", 1)[1]
+				if not port_str.isdigit() or not 1 <= int(port_str) <= 65535:
+					logger.error("Invalid port in IP address: %s", ip)
+					return
 		if value != self.settings.get_value(self.settings.alias('ipaddresses')):
 			await self.settings.set_value(self.settings.alias('ipaddresses'), value)
 		item.set_local_value(value)
