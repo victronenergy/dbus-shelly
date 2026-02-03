@@ -307,8 +307,7 @@ def parse_args():
 	parser = argparse.ArgumentParser(description="Mock Shelly Gen2 device server.")
 	parser.add_argument("--host", default="0.0.0.0")
 	parser.add_argument("--port", type=int, default=8022)
-	parser.add_argument("--name", default="Mock Shelly")
-	parser.add_argument("--model", default="SHELLY-PLUS-MOCK")
+	parser.add_argument("--name", default="Mocked Shelly device")
 	parser.add_argument("--app", default="MockSwitchEM")
 	parser.add_argument("--mac", default="aabbccddeeff")
 	parser.add_argument("--switch-channels", type=int, default=1)
@@ -324,7 +323,7 @@ async def main():
 	args = parse_args()
 	device = MockShellyDevice(
 		name=args.name,
-		model=args.model,
+		model="Mock Shelly",	# Hardcoded so clients can identify it as a mock device
 		app=args.app,
 		mac=args.mac,
 		switch_channels=args.switch_channels,

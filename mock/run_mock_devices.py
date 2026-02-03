@@ -32,8 +32,6 @@ def build_cmd(script_path, device, verbose):
 		str(device["port"]),
 		"--name",
 		device["name"],
-		"--model",
-		device.get("model", "SHELLY-PLUS-MOCK"),
 		"--app",
 		device.get("app", "MockSwitchEM"),
 		"--mac",

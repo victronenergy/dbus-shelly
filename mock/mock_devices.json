@@ -2,7 +2,6 @@
   "devices": [
     {
       "name": "Mock Shelly 1",
-      "model": "SHELLY-PLUS-MOCK",
       "app": "MockSwitchEM",
       "mac": "aabbccddeef1",
       "port": 8022,
@@ -11,7 +10,6 @@
     },
     {
       "name": "Mock Shelly 2",
-      "model": "SHELLY-PLUS-MOCK",
       "app": "MockSwitchEM",
       "mac": "aabbccddeef2",
       "port": 8023,
@@ -20,7 +18,6 @@
     },
     {
       "name": "Mock Shelly 3",
-      "model": "SHELLY-PLUS-MOCK",
       "app": "MockSwitchEM",
       "mac": "aabbccddeef3",
       "port": 8024,
@@ -29,7 +26,6 @@
     },
     {
       "name": "Mock Shelly 4",
-      "model": "SHELLY-PLUS-MOCK",
       "app": "MockSwitchEM",
       "mac": "aabbccddeef4",
       "port": 8025,

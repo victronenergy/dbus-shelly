@@ -30,9 +30,9 @@ class ShellyConnectionError(Exception):
 
 class ShellyChannel(object):
 	@classmethod
-	async def create(cls, bus_type, serial, channel_type_id, server, productid=0x0000, productName=None):
+	async def create(cls, bus_type, serial, channel_type_id, server, productid=0x0000, productName=None, shellyModel=None):
 		bus = await MessageBus(bus_type=bus_type).connect()
-		c = cls(bus_type, bus, productid, serial, channel_type_id, server, productName)
+		c = cls(bus_type, bus, productid, serial, channel_type_id, server, productName, shellyModel)
 		c.service = Service(bus, None)
 		c.settings = await wait_for_settings(bus, itemsChanged=c.itemsChanged)
 
@@ -44,7 +44,7 @@ class ShellyChannel(object):
 		await c.ainit()
 		return c
 
-	def __init__(self, bus_type, bus, productid, serial, channel_type_id, connection, productName):
+	def __init__(self, bus_type, bus, productid, serial, channel_type_id, connection, productName, shellyModel=None):
 		self.service = None
 		self.settings = None
 		self.channel_custom_name = ""
@@ -55,6 +55,7 @@ class ShellyChannel(object):
 		self.bus = bus
 		self.connection = connection
 		self.productName = productName
+		self.shellyModel = shellyModel
 
 	def itemsChanged(self, service, values):
 		# Check if the device instance is changed
@@ -80,6 +81,7 @@ class ShellyChannel(object):
 		self.service.add_item(IntegerItem('/Connected', 1))
 		self.service.add_item(TextItem('/Serial', self._serial))
 		self.service.add_item(IntegerItem('/State', 0x100)) # Connected
+		self.service.add_item(TextItem('/ShellyModel', self.shellyModel))
 
 	async def start_service(self):
 		if self.service.name is None:
@@ -107,6 +109,7 @@ class ShellyDevice(object):
 		self._serial = serial
 		self._event_obj = event
 		self._shelly_device = None
+		self._shelly_info = None
 		self._ws_context = None
 		self._aiohttp_session = None
 		self._server = server
@@ -142,7 +145,11 @@ class ShellyDevice(object):
 	@property
 	def serial(self):
 		return self._serial
-	
+
+	@property
+	def shelly_info(self):
+		return self._shelly_info
+
 	@property
 	def channel_info(self):
 		return self._channel_info
@@ -206,6 +213,10 @@ class ShellyDevice(object):
 			if not (self._shelly_device.connected and self._shelly_device.initialized):
 				logger.warning("Failed to initialize shelly device %s", self._serial)
 				raise ShellyConnectionError()
+
+			# Get device info
+			self._shelly_info = await self._get_device_info()
+			logger.info("Connected to shelly device %s model %s", self._serial, self._shelly_info.get('model', 'Unknown'))
 
 			# List shelly methods
 			methods = await self.list_methods()
@@ -355,7 +366,8 @@ class ShellyDevice(object):
 				channel_type_id=channel,
 				productid=id,
 				productName=name,
-				server=self._shelly_device.ip_address or self._server
+				server=self._shelly_device.ip_address or self._server,
+				shellyModel=self._shelly_info.get('model', 'Unknown')
 			)
 
 			# Create handlers for the generic + switching OR EM capabilities
@@ -441,7 +453,7 @@ class ShellyDevice(object):
 			return None
 		return resp
 
-	async def get_device_info(self):
+	async def _get_device_info(self):
 		return await self.rpc_call("Shelly.GetDeviceInfo")
 
 	async def list_methods(self):

@@ -281,7 +281,7 @@ class ShellyDiscovery(object):
 				logger.error("Failed to connect to shelly device %s", server)
 				raise Exception()
 
-			info = await shelly.get_device_info()
+			info = shelly.shelly_info
 			ip = shelly.server
 
 			channel_info = shelly.channel_info
@@ -317,8 +317,8 @@ class ShellyDiscovery(object):
 		else:
 			self.discovered_devices.append(serial)
 
-		# Shelly plus plug S example: 'app': 'PlusPlugS', 'model': 'SNPL-00112EU'
-		model_name = device_info.get('app', device_info.get('model', 'Unknown'))
+		# Shelly plus plug S example: 'model': 'SNPL-00112EU'
+		model_name = device_info.get('model', 'Unknown')
 		# Custom name of the shelly device, if available
 		name = device_info.get('name', None)
 
