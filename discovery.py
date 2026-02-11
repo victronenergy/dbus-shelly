@@ -67,7 +67,8 @@ class ShellyDiscovery(object):
 			self.aiozc.zeroconf, ["_shelly._tcp.local."], handlers=[self.on_service_state_change]
 		)
 
-		self._start_add_by_ip_address_task(ip_addresses)
+		if ip_addresses:
+			self._start_add_by_ip_address_task(ip_addresses)
 
 		await self.bus.wait_for_disconnect()
 
