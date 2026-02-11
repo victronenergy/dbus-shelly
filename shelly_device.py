@@ -226,6 +226,9 @@ class ShellyDevice(object):
 
 			# Get device info
 			self._shelly_info = await self._get_device_info()
+			if not self._shelly_info:
+				logger.warning("Failed to get shelly device info for device at %s", self.server)
+				raise ShellyConnectionError()
 			logger.info("Connected to shelly device %s model %s", self._serial, self._shelly_info.get('model', 'Unknown'))
 
 			# List shelly methods
@@ -247,16 +250,13 @@ class ShellyDevice(object):
 
 			# Fetch device's serial if not known yet
 			if not self._serial:
-				info = await self.get_device_info()
-				if info and 'mac' in info:
-					self._serial = info['mac']
+				if 'mac' in self._shelly_info:
+					self._serial = self._shelly_info['mac']
 					logger.info("Shelly host %s has serial number %s", self.server, self._serial)
 				else:
 					logger.warning("Failed to get serial number for shelly device at %s", self.server)
 					raise ShellyConnectionError()
 
-			logger.info("Shelly device %s has %d channels, capabilities: %s", self.serial_or_server, self._num_channels, self._capabilities)
-			self._num_channels = await self._get_num_channels()
 			self._channel_info = await self._get_channels_info()
 
 			return True
