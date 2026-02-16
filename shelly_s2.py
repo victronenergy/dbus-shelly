@@ -47,43 +47,9 @@ from s2python.ombc import (
 from __main__ import VERSION
 from utils import STATUS_ON, formatters as fmt, OutputFunction, OutputType
 
-class OpportunityLoadsService(Client, ServiceHandler):
-	servicetype = "com.victronenergy.opportunityloads"
-	paths = { "/Dummy" } # No need to monitor any paths.
-
-
-class ServiceMonitor(Monitor):
-	def __init__(self, bus, itemsChanged=None, serviceAdded=None, serviceRemoved=None):
-		super().__init__(bus, itemsChanged=itemsChanged)
-		self._serviceAdded = serviceAdded
-		self._serviceRemoved = serviceRemoved
-
-	async def serviceAdded(self, service):
-		await self._serviceAdded(service)
-
-	async def serviceRemoved(self, service):
-		await self._serviceRemoved(service)
-
 logger = logging.getLogger('switch-device-rm')
 logger.setLevel(logging.DEBUG)
 background_tasks = set()
-_service_monitor: ServiceMonitor = None
-_service_monitor_lock: asyncio.Lock = asyncio.Lock()
-_service_monitor_listeners: "weakref.WeakSet[ShellyHandlerS2Mixin]" = weakref.WeakSet()
-
-async def _dispatch_service_added(service):
-	for listener in list(_service_monitor_listeners):
-		try:
-			await listener.service_added(service)
-		except Exception:
-			logger.exception("S2 service_added handler failed")
-
-async def _dispatch_service_removed(service):
-	for listener in list(_service_monitor_listeners):
-		try:
-			await listener.service_removed(service)
-		except Exception:
-			logger.exception("S2 service_removed handler failed")
 
 def phase_setting_to_commodity(phase:int)-> CommodityQuantity:
 	'''
@@ -137,43 +103,20 @@ class ShellyHandlerS2Mixin():
 
 	async def ainit(self):
 		self.rm_item = None
-		self._ol_service_present = False
 		self._control_type_ombc = None
 		self._control_type_noctrl = None
-		self._ainit_lock = asyncio.Lock()
 
 		# Indicates if the RM is enabled, i.e., the OMBC control type has been offered to HEMS.
 		# Whether the OMBC control type is actually activated by the HEMS is determined by self._control_type_ombc.active.
 		self._rm_enabled = False
 
-		# Register ourselves as listener to the global service monitor
-		_service_monitor_listeners.add(self)
+		# OpportunityLoads needs energy metering capability.
+		if await self.em_supported():
+			self._valid_functions_mask |= (1 << OutputFunction.OPPORTUNITY_LOAD)
+		else:
+			self._valid_functions_mask &= ~(1 << OutputFunction.OPPORTUNITY_LOAD)
 
-		# Create the global service monitor if it does not exist yet
-		global _service_monitor
-		if _service_monitor is None:
-			async with _service_monitor_lock:
-				if _service_monitor is None:
-					bus = await MessageBus(bus_type=self.sc.bus_type).connect()
-					_service_monitor = await ServiceMonitor.create(
-						bus,
-						serviceAdded=_dispatch_service_added,
-						serviceRemoved=_dispatch_service_removed,
-					)
-					if _service_monitor is None:
-						logger.error("Failed to create ServiceMonitor for OpportunityLoadsService")
-						return
-		self.monitor = _service_monitor
-
-		async with self._ainit_lock:
-			await super().ainit()
-
-		self._ol_service_present = self.monitor.get_service("com.victronenergy.opportunityloads") is not None
-		await self._check_rm_allowed()
-
-	# OpportunityLoads needs energy metering capability.
-	async def _check_rm_allowed(self):
-		await self.allow_rm_control(self._ol_service_present and hasattr(self, '_has_em') and self._has_em)
+		await super().ainit()
 
 	def on_channel_function_changed(self, channel, value):
 		self._function = value
@@ -184,36 +127,6 @@ class ShellyHandlerS2Mixin():
 			# Disable S2 RM
 			if self._rm_enabled:
 				asyncio.create_task(self.disable_rm(channel))
-
-	async def allow_rm_control(self, value):
-		if (self._valid_functions_mask & (1 << OutputFunction.OPPORTUNITY_LOAD) and value) or \
-			(not (self._valid_functions_mask & (1 << OutputFunction.OPPORTUNITY_LOAD)) and not value):
-			return
-		# Wait until ainit is done
-		# If this is called earlier, the item won't exist but self._valid_functions_mask will be set so it'll be set when creating the item in ainit.
-		async with self._ainit_lock:
-			# Update the valid functions mask
-			if value:
-				self._valid_functions_mask |= (1 << OutputFunction.OPPORTUNITY_LOAD)
-			else:
-				self._valid_functions_mask &= ~(1 << OutputFunction.OPPORTUNITY_LOAD)
-				# The UI is responsible for indicating that the S2 RM function is invalid, if it is currently selected.
-				# To be sure, turn off the output here.
-				self.state = 0
-
-			item = self.service.get_item(f'/SwitchableOutput/{self._channel_id}/Settings/ValidFunctions')
-			if item:
-				item.set_value(self._valid_functions_mask)
-
-	async def service_added(self, service):
-		if service.servicetype == 'com.victronenergy.opportunityloads':
-			self._ol_service_present = True
-			await self._check_rm_allowed()
-
-	async def service_removed(self, service):
-		if service.servicetype == 'com.victronenergy.opportunityloads':
-			self._ol_service_present = False
-			await self._check_rm_allowed()
 
 	async def enable_rm(self, channel):
 		logger.info("Enabling S2 Resource Manager for device %s", self._serial)

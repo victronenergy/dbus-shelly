@@ -104,6 +104,9 @@ class ShellyHandler(object):
 	def update(self, status_json, cap=None):
 		pass
 
+	async def em_supported(self):
+		return False
+
 # Temperature handler, puts temperature readings on dbus.
 @register_handler('Temperature', kind=HANDLER_KIND_GENERIC)
 class ShellyHandler_temperature(ShellyHandler):
@@ -394,17 +397,19 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
 		self.service.add_item(IntegerItem(path_base + 'Settings/ValidFunctions', int(self._valid_functions_mask), writeable=False,
 							text=self._valid_functions_text_callback))
 
-		if allow_em:
-			status = await self.request_channel_status()
-			if status is not None and 'aenergy' in status:
-				# Add energy metering paths
-				await self.init_em(1, ['acload'])
-				self._has_em = True
+		if allow_em and await self.em_supported():
+			# Add energy metering paths
+			await self.init_em(1, ['acload'])
+			self._has_em = True
 		self.set_service_name(self._service_type_with_em if self._has_em else self._service_type_no_em)
 
 		# Initialize channel type and function
 		self._set_channel_type(str(self._channel_id), self._type)
 		self._set_channel_function(str(self._channel_id), self._function)
+
+	async def em_supported(self):
+		status = await self.request_channel_status()
+		return status is not None and 'aenergy' in status
 
 	def update(self, status_json, cap=None):
 		try:
