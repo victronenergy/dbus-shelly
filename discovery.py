@@ -336,22 +336,24 @@ class ShellyDiscovery(object):
 
 		for i, ch in enumerate(channel_info):
 			ch_type = ch.split('_')[0] # 'switch', 'em'
-			ch_num = int(ch.split('_')[1]) + 1
 
 			# Don't encode the channel type in the setting path to remain compatible with older versions.
 			# There are two types of channels: 'switch' and 'em'. Switch channels are enumerated first, then em channels.
 			await self.settings.add_settings(Setting(f'/Settings/Devices/shelly_{serial}/{i}/Enabled', 0, alias=f"enabled_{serial}_{ch}"))
 			enabled = self.settings.get_value(self.settings.alias(f"enabled_{serial}_{ch}"))
 
-			if self.service.get_item(f'/Devices/{serial}/{ch_type}/{ch_num}/Enabled') is None:
-				enabled_item = IntegerItem(f'/Devices/{serial}/{ch_type}/{ch_num}/Enabled', writeable=True, onchange=partial(self._on_enabled_changed, serial, ch))
-				self.service.add_item(enabled_item)
-			else:
-				enabled_item = self.service.get_item(f'/Devices/{serial}/{ch_type}/{ch_num}/Enabled')
+			if self.service.get_item(f'/Devices/{serial}/{i}/Enabled') is None:
+				self.service.add_item(IntegerItem(f'/Devices/{serial}/{i}/Enabled',
+									  writeable=True, onchange=partial(self._on_enabled_changed, serial, ch)))
+			if self.service.get_item(f'/Devices/{serial}/{i}/Type') is None:
+				self.service.add_item(TextItem(f'/Devices/{serial}/{i}/Type', writeable=False))
+
 			with self.service as s:
-				s[f'/Devices/{serial}/{ch_type}/{ch_num}/Enabled'] = enabled
+				s[f'/Devices/{serial}/{i}/Type'] = ch_type
+				s[f'/Devices/{serial}/{i}/Enabled'] = enabled
 
 			if enabled:
+				enabled_item = self.service.get_item(f'/Devices/{serial}/{i}/Enabled')
 				await self._on_enabled_changed(serial, ch, enabled_item, enabled)
 
 	async def _on_service_state_change_async(self, zeroconf, service_type, name, state_change):
