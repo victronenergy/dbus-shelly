@@ -271,12 +271,20 @@ class ShellyHandlerS2Mixin():
 		off_hysteresis = self.settings.get_value(self.settings.alias(f'OffHysteresis_{self._serial}_{channel}'))
 
 		path_base = "/S2/0/"
-		self.service.add_item(IntegerItem(path_base + 'Active', 0))
-		self.service.add_item(IntegerItem(path_base + 'Priority', priority_setting, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'Priority')))
-		path_base = "/S2/0/RmSettings/"
-		self.service.add_item(IntegerItem(path_base + 'PowerSetting', power_setting, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'PowerSetting'), text=fmt['watt']))
-		self.service.add_item(IntegerItem(path_base + 'OnHysteresis', on_hysteresis, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'OnHysteresis')))
-		self.service.add_item(IntegerItem(path_base + 'OffHysteresis', off_hysteresis, writeable=True, onchange=partial(self._s2_value_changed, path_base + 'OffHysteresis')))
+		path_base_settings = "/S2/0/RmSettings/"
+		self.service.add_item(IntegerItem(path_base + 'Active'))
+		self.service.add_item(IntegerItem(path_base + 'Priority', writeable=True, onchange=partial(self._s2_value_changed, path_base + 'Priority')))
+		self.service.add_item(IntegerItem(path_base_settings + 'PowerSetting', writeable=True, onchange=partial(self._s2_value_changed, path_base_settings + 'PowerSetting'), text=fmt['watt']))
+		self.service.add_item(IntegerItem(path_base_settings + 'OnHysteresis', writeable=True, onchange=partial(self._s2_value_changed, path_base_settings + 'OnHysteresis')))
+		self.service.add_item(IntegerItem(path_base_settings + 'OffHysteresis', writeable=True, onchange=partial(self._s2_value_changed, path_base_settings + 'OffHysteresis')))
+
+		# Explicitly set initial values to force an items changed
+		with self.service as s:
+			s[path_base + 'Active'] = 0
+			s[path_base + 'Priority'] = priority_setting
+			s[path_base_settings + 'PowerSetting'] = power_setting
+			s[path_base_settings + 'OnHysteresis'] = on_hysteresis
+			s[path_base_settings + 'OffHysteresis'] = off_hysteresis
 
 		# Get channel custom name, if not available use the default name
 		name = self.service.get_item(f'/SwitchableOutput/{channel}/Settings/CustomName').value or \
@@ -305,9 +313,6 @@ class ShellyHandlerS2Mixin():
 		)
 
 		self.service.add_item(self.rm_item)
-
-		#FIXME: When the S2 paths are added after the service was already registered, itemschanged will not be sent automatically.
-		# This may cause the HEMS to not pick up the new paths, and thus not attempt to connect to the RM.
 
 class ShellyOMBC(OMBCControlType):
 	@property
