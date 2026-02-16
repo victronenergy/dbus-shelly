@@ -6,7 +6,12 @@ from functools import partial
 import asyncio
 import colorsys
 
-from shelly_s2 import ShellyHandlerS2Mixin
+try:
+	from shelly_s2 import ShellyHandlerS2Mixin as _ShellyHandlerS2Mixin
+	_S2_MIXIN_AVAILABLE = True
+except Exception:
+	_S2_MIXIN_AVAILABLE = False
+	_ShellyHandlerS2Mixin = None
 
 background_tasks = set()
 
@@ -573,9 +578,14 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
 
 		item.set_local_value(value)
 
-@register_handler('Switch', kind=HANDLER_KIND_SWITCH)
-class ShellyHandler_switch(ShellyHandlerS2Mixin, ShellyHandler_switch_base):
-	pass
+if _S2_MIXIN_AVAILABLE:
+	@register_handler('Switch', kind=HANDLER_KIND_SWITCH)
+	class ShellyHandler_switch(_ShellyHandlerS2Mixin, ShellyHandler_switch_base):
+		pass
+else:
+	@register_handler('Switch', kind=HANDLER_KIND_SWITCH)
+	class ShellyHandler_switch(ShellyHandler_switch_base):
+		pass
 
 
 class ThrottledUpdaterMixin:
