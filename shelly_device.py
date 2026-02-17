@@ -89,7 +89,7 @@ class ShellyChannel(object):
 			return
 		await self.service.register()
 
-	async def stop_service(self):
+	async def stop(self):
 		await self.service.close()
 
 	# Reinitialize the callbacks without restarting the service.
@@ -166,12 +166,12 @@ class ShellyDevice(object):
 			logger.warning(f"Stopping channel {ch} for shelly device {self._serial}")
 			if ch in self._channels:
 				entry = self._channels[ch]
+				handlers = entry.get("handlers", {})
+				for handler in handlers.values():
+					await handler.stop()
 				channel_obj = entry.get("channel")
 				if channel_obj is not None:
-					if hasattr(channel_obj, "stop"):
-						await channel_obj.stop()
-					elif hasattr(channel_obj, "service") and channel_obj.service is not None:
-						await channel_obj.service.close()
+					await channel_obj.stop()
 				del self._channels[ch]
 
 	def _parse_server(self):
@@ -402,16 +402,11 @@ class ShellyDevice(object):
 		await self.start_channel(channel)
 
 	async def stop(self):
-		async with self._device_lock:
-			for ch in self._channels.keys():
-				channel_obj = self._channels[ch].get("channel")
-				if channel_obj is not None:
-					if hasattr(channel_obj, "stop"):
-						await channel_obj.stop()
-					elif hasattr(channel_obj, "service") and channel_obj.service is not None:
-						await channel_obj.service.close()
-			self._channels.clear()
+		for ch in self._channels.keys():
+			await self.stop_channel(ch)
+		self._channels.clear()
 
+		async with self._device_lock:
 			if self._shelly_device:
 				await self._shelly_device.shutdown()
 			if self._aiohttp_session:
