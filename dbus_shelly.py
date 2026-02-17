@@ -9,6 +9,7 @@ import websockets
 import logging
 import json
 import itertools
+import signal
 from argparse import ArgumentParser
 import subprocess
 from discovery import ShellyDiscovery
@@ -111,25 +112,49 @@ def main():
 
 	mainloop = asyncio.new_event_loop()
 	asyncio.set_event_loop(mainloop)
+	shutdown_requested = False
+
+	def _stop_mocks(timeout_s=3):
+		if not mock_proc or mock_proc.poll() is not None:
+			return
+		mock_proc.terminate()
+		try:
+			mock_proc.wait(timeout=timeout_s)
+		except Exception:
+			mock_proc.kill()
+			try:
+				mock_proc.wait(timeout=1)
+			except Exception:
+				pass
+
+	def _shutdown(signum, _frame):
+		nonlocal shutdown_requested
+		logger.info("Received signal %s, shutting down", signum)
+		shutdown_requested = True
+		_stop_mocks()
+		if mainloop.is_running():
+			mainloop.stop()
+
+	signal.signal(signal.SIGINT, _shutdown)
+	signal.signal(signal.SIGTERM, _shutdown)
 
 	# This loop should be removed one day.
-	mainloop.run_until_complete(
-		websockets.serve(Server(lambda: Meter(bus_type)), '', 8000))
-
-	mainloop.run_until_complete(shellyDiscovery.start())
+	try:
+		mainloop.run_until_complete(
+			websockets.serve(Server(lambda: Meter(bus_type)), '', 8000))
+		mainloop.run_until_complete(shellyDiscovery.start())
+	except RuntimeError as e:
+		if not shutdown_requested or "Event loop stopped before Future completed" not in str(e):
+			raise
 
 	try:
-		logger.info("Starting main loop")
-		mainloop.run_forever()
+		if not shutdown_requested:
+			logger.info("Starting main loop")
+			mainloop.run_forever()
 	except KeyboardInterrupt:
 		mainloop.stop()
 	finally:
-		if mock_proc and mock_proc.poll() is None:
-			mock_proc.terminate()
-			try:
-				mock_proc.wait(timeout=2)
-			except Exception:
-				mock_proc.kill()
+		_stop_mocks()
 
 
 if __name__ == "__main__":
