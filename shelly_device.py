@@ -157,13 +157,17 @@ class ShellyDevice(object):
 	@property
 	def active_channels(self):
 		return list(self._channels.keys())
+
+	@property
+	def serial_or_server(self):
+		return self._serial if self._serial else self.server
 	
 	def is_supported(self):
 		return shelly_handlers.has_functional_handler(self._capabilities)
 
 	async def stop_channel(self, ch):
 		async with self._device_lock:
-			logger.warning(f"Stopping channel {ch} for shelly device {self._serial}")
+			logger.warning(f"Stopping channel {ch} for shelly device {self.serial_or_server}")
 			if ch in self._channels:
 				entry = self._channels[ch]
 				handlers = entry.get("handlers", {})
@@ -207,16 +211,16 @@ class ShellyDevice(object):
 				async with async_timeout.timeout(5):
 					await self._shelly_device.initialize()
 			except Exception:
-				logger.warning("Failed to initialize shelly device %s", self._serial)
+				logger.warning("Failed to initialize shelly device %s", self.serial_or_server)
 				raise ShellyConnectionError()
 
 			if not (self._shelly_device.connected and self._shelly_device.initialized):
-				logger.warning("Failed to initialize shelly device %s", self._serial)
+				logger.warning("Failed to initialize shelly device %s", self.serial_or_server)
 				raise ShellyConnectionError()
 
 			# Get device info
 			self._shelly_info = await self._get_device_info()
-			logger.info("Connected to shelly device %s model %s", self._serial, self._shelly_info.get('model', 'Unknown'))
+			logger.info("Connected to shelly device %s model %s", self.serial_or_server, self._shelly_info.get('model', 'Unknown'))
 
 			# List shelly methods
 			methods = await self.list_methods()
@@ -229,7 +233,7 @@ class ShellyDevice(object):
 			if not shelly_handlers.has_functional_handler(reported_capabilities):
 				logger.warning(
 					"Shelly device %s with capabilities: %s is not supported",
-					self._serial,
+					self.serial_or_server,
 					reported_capabilities,
 				)
 				raise ShellyConnectionError()
@@ -258,7 +262,7 @@ class ShellyDevice(object):
 		task.add_done_callback(clear_reconnecting)
 
 	async def _reconnect(self):
-		logger.info("Reconnecting to shelly device %s", self._serial)
+		logger.info("Reconnecting to shelly device %s", self.serial_or_server)
 		if self._shelly_device:
 			try:
 				for ch in self._channels.keys():
@@ -275,15 +279,15 @@ class ShellyDevice(object):
 		for i in range(CONNECTION_RETRIES):
 			if await self.ping_shelly() and self._shelly_device.initialized:
 				break
-			logger.info("Attempting to reconnect to shelly device %s (%d/%d)", self._serial, i + 1, CONNECTION_RETRIES)
+			logger.info("Attempting to reconnect to shelly device %s (%d/%d)", self.serial_or_server, i + 1, CONNECTION_RETRIES)
 
 			if await self.start():
 				break
 
-		logger.info("Reconnected to shelly device %s", self._serial)
+		logger.info("Reconnected to shelly device %s", self.serial_or_server)
 
 		if not (await self.ping_shelly() and self._shelly_device.initialized):
-			logger.error("Failed to reconnect to shelly device %s", self._serial)
+			logger.error("Failed to reconnect to shelly device %s", self.serial_or_server)
 			self.set_event("disconnected")
 			return False
 		# Reinit all channels
@@ -339,10 +343,10 @@ class ShellyDevice(object):
 				if not await self.connect():
 					return False
 
-			logger.info(f"Starting shelly device {self._serial}")
+			logger.info(f"Starting shelly device {self.serial_or_server}")
 
 			if not shelly_handlers.has_functional_handler(self._capabilities):
-				logger.error("Unsupported Shelly device %s", self._serial)
+				logger.error("Unsupported Shelly device %s", self.serial_or_server)
 				return False
 
 			self._shelly_device.subscribe_updates(self.device_updated)
@@ -350,9 +354,9 @@ class ShellyDevice(object):
 
 	async def start_channel(self, channel):
 		async with self._device_lock:
-			logger.info(f"Starting channel {channel} for shelly device {self._serial}")
+			logger.info(f"Starting channel {channel} for shelly device {self.serial_or_server}")
 			if channel not in self._channel_info:
-				logger.error(f"Invalid channel {channel} for shelly device {self._serial}, which has channels: {self._channel_info}")
+				logger.error(f"Invalid channel {channel} for shelly device {self.serial_or_server}, which has channels: {self._channel_info}")
 				return False
 
 			is_switch = 'switch' in channel
@@ -426,7 +430,7 @@ class ShellyDevice(object):
 					resp = await self._shelly_device.call_rpc("Shelly.GetDeviceInfo")
 					return resp is not None
 		except Exception as e:
-			logger.error("Ping to shelly device %s failed: %s", self._serial, e)
+			logger.error("Ping to shelly device %s failed: %s", self.serial_or_server, e)
 			return False
 		return False
 
@@ -441,7 +445,7 @@ class ShellyDevice(object):
 				async with async_timeout.timeout(4):
 					resp = await self._shelly_device.call_rpc(method, params)
 		except (DeviceConnectionError, TimeoutError):
-			logger.error("Failed to call RPC method on shelly device %s", self._serial)
+			logger.error("Failed to call RPC method on shelly device %s", self.serial_or_server)
 			self.do_reconnect()
 			return None
 		except:
@@ -469,7 +473,7 @@ class ShellyDevice(object):
 
 		elif update_type == RpcUpdateType.DISCONNECTED:
 			if self._shelly_device:
-				logger.warning("Shelly device %s disconnected", self._serial)
+				logger.warning("Shelly device %s disconnected", self.serial_or_server)
 				self.do_reconnect()
 
 		elif update_type == RpcUpdateType.EVENT:
