@@ -220,6 +220,10 @@ class ShellyDevice(object):
 
 			# Get device info
 			self._shelly_info = await self._get_device_info()
+			# Fetch device's serial if not known yet
+			if not self._serial:
+				self._serial = self._shelly_info.get('mac', 'Unknown')
+
 			logger.info("Connected to shelly device %s model %s", self.serial_or_server, self._shelly_info.get('model', 'Unknown'))
 
 			# List shelly methods
