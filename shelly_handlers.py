@@ -83,6 +83,9 @@ class ShellyHandler(object):
 	async def ainit(self):
 		pass
 
+	async def stop(self):
+		pass
+
 	async def restart(self):
 		pass
 
