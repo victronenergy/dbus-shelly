@@ -1,35 +1,35 @@
 {
   "devices": [
     {
-      "name": "Mock Shelly 1",
+      "device-name": "Mock Shelly 1",
+      "channel-name": "Mock shelly 1 - Channel 1",
       "app": "MockSwitchEM",
       "mac": "aabbccddeef1",
       "port": 8022,
-      "switch_channels": 1,
       "apower": 1000.0
     },
     {
-      "name": "Mock Shelly 2",
+      "device-name": "Mock Shelly 2",
+      "channel-name": "Mock shelly 2 - Channel 1",
       "app": "MockSwitchEM",
       "mac": "aabbccddeef2",
       "port": 8023,
-      "switch_channels": 1,
       "apower": 1000.0
     },
     {
-      "name": "Mock Shelly 3",
+      "device-name": "Mock Shelly 3",
+      "channel-name": "Mock shelly 3 - Channel 1",
       "app": "MockSwitchEM",
       "mac": "aabbccddeef3",
       "port": 8024,
-      "switch_channels": 1,
       "apower": 1000.0
     },
     {
-      "name": "Mock Shelly 4",
+      "device-name": "Mock Shelly 4",
+      "channel-name": "Mock shelly 4 - Channel 1",
       "app": "MockSwitchEM",
       "mac": "aabbccddeef4",
       "port": 8025,
-      "switch_channels": 1,
       "apower": 1000.0
     }
   ]

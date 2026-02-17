@@ -84,7 +84,12 @@ def main():
 			default='system')
 	parser.add_argument('--debug', help='Turn on debug logging',
 			default=False, action='store_true')
-	parser.add_argument('--mock', help='Start mock Shelly devices', action='store_true')
+	parser.add_argument(
+		'--mock',
+		nargs='?',
+		const='__default__',
+		help='Start mock Shelly devices (optionally provide config path)',
+	)
 	args = parser.parse_args()
 
 	logging.basicConfig(format='%(levelname)-8s %(message)s',
@@ -101,9 +106,11 @@ def main():
 	shellyDiscovery = ShellyDiscovery(bus_type)
 	mock_proc = None
 
-	if args.mock:
+	if args.mock is not None:
 		mock_script = os.path.join(os.path.dirname(__file__), 'mock', 'run_mock_devices.py')
 		cmd = [sys.executable, mock_script]
+		if args.mock != '__default__':
+			cmd += ['--config', args.mock]
 		try:
 			mock_proc = subprocess.Popen(cmd)
 			logger.info("Started mock devices: %s", " ".join(cmd))

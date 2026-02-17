@@ -9,7 +9,8 @@ from aiohttp import web
 class MockShellyDevice:
 	def __init__(
 		self,
-		name,
+		device_name,
+		channel_name,
 		model,
 		app,
 		mac,
@@ -18,7 +19,8 @@ class MockShellyDevice:
 		apower=120.0,
 		pf=0.98,
 	):
-		self.name = name
+		self.name = device_name
+		self.channel_name = channel_name
 		self.model = model
 		self.app = app
 		self.mac = mac.lower()
@@ -29,7 +31,7 @@ class MockShellyDevice:
 		self._start = time.time()
 
 		self._switch_outputs = [False] * switch_channels
-		self._switch_names = [f"Channel {i + 1}" for i in range(switch_channels)]
+		self._switch_names = [channel_name if i == 0 else f"Channel {i + 1}" for i in range(switch_channels)]
 		self._energy_total = [0.0] * switch_channels
 		self._ret_energy_total = [0.0] * switch_channels
 		self._last_energy_update = time.time()
@@ -307,7 +309,8 @@ def parse_args():
 	parser = argparse.ArgumentParser(description="Mock Shelly Gen2 device server.")
 	parser.add_argument("--host", default="0.0.0.0")
 	parser.add_argument("--port", type=int, default=8022)
-	parser.add_argument("--name", default="Mocked Shelly device")
+	parser.add_argument("--device-name", default="Mocked Shelly device")
+	parser.add_argument("--channel-name", default="Channel 1")
 	parser.add_argument("--app", default="MockSwitchEM")
 	parser.add_argument("--mac", default="aabbccddeeff")
 	parser.add_argument("--switch-channels", type=int, default=1)
@@ -322,7 +325,8 @@ def parse_args():
 async def main():
 	args = parse_args()
 	device = MockShellyDevice(
-		name=args.name,
+		device_name=args.device_name,
+		channel_name=args.channel_name,
 		model="Mock Shelly",	# Hardcoded so clients can identify it as a mock device
 		app=args.app,
 		mac=args.mac,
