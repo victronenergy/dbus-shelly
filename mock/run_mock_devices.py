@@ -30,14 +30,14 @@ def build_cmd(script_path, device, verbose):
 		script_path,
 		"--port",
 		str(device["port"]),
-		"--name",
-		device["name"],
+		"--device-name",
+		device["device-name"],
+		"--channel-name",
+		device["channel-name"],
 		"--app",
 		device.get("app", "MockSwitchEM"),
 		"--mac",
 		device["mac"],
-		"--switch-channels",
-		str(device.get("switch_channels", 1)),
 		"--apower",
 		str(device.get("apower", 1000.0)),
 	]
@@ -102,7 +102,7 @@ def main():
 
 	for device in devices:
 		cmd = build_cmd(script_path, device, args.verbose)
-		print(f"Starting {device['name']} on port {device['port']}...")
+		print(f"Starting {device['device-name']} on port {device['port']}...")
 		procs.append(subprocess.Popen(cmd))
 
 	ip_list = ",".join([f"127.0.0.1:{d['port']}" for d in devices])
