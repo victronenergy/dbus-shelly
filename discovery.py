@@ -170,9 +170,9 @@ class ShellyDiscovery(object):
 			s['/Devices/{}/Model'.format(serial)] = None
 			s['/Devices/{}/Name'.format(serial)] = None
 			s['/Devices/{}/DiscoveryType'.format(serial)] = None
-			for _type in ['switch', 'em']:
+			for path in ['Enabled', 'Type']:
 				i = 1
-				while self.service.get_item(key := f'/Devices/{serial}/{_type}/{i}/Enabled') is not None:
+				while self.service.get_item(key := f'/Devices/{serial}/{i}/{path}') is not None:
 					s[key] = None
 					i += 1
 
@@ -339,21 +339,22 @@ class ShellyDiscovery(object):
 
 			# Don't encode the channel type in the setting path to remain compatible with older versions.
 			# There are two types of channels: 'switch' and 'em'. Switch channels are enumerated first, then em channels.
+			# Note, settings are stored 0-indexed, while the channels on dbus are 1 indexed.
 			await self.settings.add_settings(Setting(f'/Settings/Devices/shelly_{serial}/{i}/Enabled', 0, alias=f"enabled_{serial}_{ch}"))
 			enabled = self.settings.get_value(self.settings.alias(f"enabled_{serial}_{ch}"))
 
-			if self.service.get_item(f'/Devices/{serial}/{i}/Enabled') is None:
-				self.service.add_item(IntegerItem(f'/Devices/{serial}/{i}/Enabled',
+			if self.service.get_item(f'/Devices/{serial}/{i + 1}/Enabled') is None:
+				self.service.add_item(IntegerItem(f'/Devices/{serial}/{i + 1}/Enabled',
 									  writeable=True, onchange=partial(self._on_enabled_changed, serial, ch)))
-			if self.service.get_item(f'/Devices/{serial}/{i}/Type') is None:
-				self.service.add_item(TextItem(f'/Devices/{serial}/{i}/Type', writeable=False))
+			if self.service.get_item(f'/Devices/{serial}/{i + 1}/Type') is None:
+				self.service.add_item(TextItem(f'/Devices/{serial}/{i + 1}/Type', writeable=False))
 
 			with self.service as s:
-				s[f'/Devices/{serial}/{i}/Type'] = ch_type
-				s[f'/Devices/{serial}/{i}/Enabled'] = enabled
+				s[f'/Devices/{serial}/{i + 1}/Type'] = ch_type
+				s[f'/Devices/{serial}/{i + 1}/Enabled'] = enabled
 
 			if enabled:
-				enabled_item = self.service.get_item(f'/Devices/{serial}/{i}/Enabled')
+				enabled_item = self.service.get_item(f'/Devices/{serial}/{i + 1}/Enabled')
 				await self._on_enabled_changed(serial, ch, enabled_item, enabled)
 
 	async def _on_service_state_change_async(self, zeroconf, service_type, name, state_change):
