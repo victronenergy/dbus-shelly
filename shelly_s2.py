@@ -142,8 +142,24 @@ class ShellyHandlerS2Mixin():
 			except:
 				pass
 
+		# Explicitly set initial values to force an items changed
+		priority_setting = self.settings.get_value(self.settings.alias(f'Priority_{self._serial}_{channel}'))
+		power_setting = self.settings.get_value(self.settings.alias(f'PowerSetting_{self._serial}_{channel}'))
+		on_hysteresis = self.settings.get_value(self.settings.alias(f'OnHysteresis_{self._serial}_{channel}'))
+		off_hysteresis = self.settings.get_value(self.settings.alias(f'OffHysteresis_{self._serial}_{channel}'))
+		with self.service as s:
+			s['/S2/0/Active'] = 0
+			s['/S2/0/Priority'] = priority_setting
+			s['/S2/0/RmSettings/PowerSetting'] = power_setting
+			s['/S2/0/RmSettings/OnHysteresis'] = on_hysteresis
+			s['/S2/0/RmSettings/OffHysteresis'] = off_hysteresis
+
 		# Set switch type to Three-state switch (9)
 		await self._set_three_state_switch(True)
+
+		# Let the CEM know the RM is ready to connect.
+		await self.rm_item.set_ready(True)
+
 		self._rm_enabled = True
 
 	async def _auto_changed(self, item, value):
@@ -208,6 +224,17 @@ class ShellyHandlerS2Mixin():
 			# Will throw when the HEMS is not connected, but will still update the available control types.
 			# So next time HEMS connects, it will only be offered the NoControl control type.
 			pass
+		finally:
+			# Close S2 connection
+			await self.rm_item.set_ready(False)
+
+			# Clear S2 paths
+			with self.service as s:
+				s['/S2/0/Active'] = None
+				s['/S2/0/Priority'] = None
+				s['/S2/0/RmSettings/PowerSetting'] = None
+				s['/S2/0/RmSettings/OnHysteresis'] = None
+				s['/S2/0/RmSettings/OffHysteresis'] = None
 
 		# Set switch type back to the default type.
 		await self._set_three_state_switch(False)
@@ -262,11 +289,6 @@ class ShellyHandlerS2Mixin():
 			Setting(settings_base + 'OffHysteresis', 30, _min=0, _max=999999, alias=f'OffHysteresis_{self._serial}_{channel}')
 		)
 
-		priority_setting = self.settings.get_value(self.settings.alias(f'Priority_{self._serial}_{channel}'))
-		power_setting = self.settings.get_value(self.settings.alias(f'PowerSetting_{self._serial}_{channel}'))
-		on_hysteresis = self.settings.get_value(self.settings.alias(f'OnHysteresis_{self._serial}_{channel}'))
-		off_hysteresis = self.settings.get_value(self.settings.alias(f'OffHysteresis_{self._serial}_{channel}'))
-
 		path_base = "/S2/0/"
 		path_base_settings = "/S2/0/RmSettings/"
 		self.service.add_item(IntegerItem(path_base + 'Active'))
@@ -274,14 +296,6 @@ class ShellyHandlerS2Mixin():
 		self.service.add_item(IntegerItem(path_base_settings + 'PowerSetting', writeable=True, onchange=partial(self._s2_value_changed, path_base_settings + 'PowerSetting'), text=fmt['watt']))
 		self.service.add_item(IntegerItem(path_base_settings + 'OnHysteresis', writeable=True, onchange=partial(self._s2_value_changed, path_base_settings + 'OnHysteresis')))
 		self.service.add_item(IntegerItem(path_base_settings + 'OffHysteresis', writeable=True, onchange=partial(self._s2_value_changed, path_base_settings + 'OffHysteresis')))
-
-		# Explicitly set initial values to force an items changed
-		with self.service as s:
-			s[path_base + 'Active'] = 0
-			s[path_base + 'Priority'] = priority_setting
-			s[path_base_settings + 'PowerSetting'] = power_setting
-			s[path_base_settings + 'OnHysteresis'] = on_hysteresis
-			s[path_base_settings + 'OffHysteresis'] = off_hysteresis
 
 		# Get channel custom name, if not available use the default name
 		name = self.service.get_item(f'/SwitchableOutput/{channel}/Settings/CustomName').value or \
