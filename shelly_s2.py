@@ -19,7 +19,6 @@ except ImportError:
 sys.path.insert(1, os.path.join(os.path.dirname(__file__), 'ext', 'aiovelib'))
 from aiovelib.service import IntegerItem
 from aiovelib.localsettings import Setting
-from aiovelib.client import Monitor, ServiceHandler, Service as Client
 
 from s2 import S2ResourceManagerItem
 from s2python.s2_control_type import NoControlControlType, OMBCControlType
@@ -64,8 +63,6 @@ def phase_setting_to_commodity(phase:int)-> CommodityQuantity:
 	return CommodityQuantity.ELECTRIC_POWER_3_PHASE_SYMMETRIC
 
 class ShellyHandlerS2Mixin():
-	# Reference to the ServiceMonitor instance
-	monitor: ServiceMonitor = None
 
 	@property
 	def power(self):
