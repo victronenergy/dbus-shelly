@@ -320,6 +320,7 @@ class ShellyDevice(object):
 			#FIXME: Notify the discovery service that the number of channels has changed. Currently it may continue to list channels that no longer exist.
 			await self.restart_channel(ch)
 		else:
+			#FIXME: This invokes the handler's restart method, which just invokes the ShellyDevice.restart_channel. So we end up restarting the channel multiple times if multiple handlers are affected. We should just restart the channel once and reinit all handlers without restarting them.
 			await asyncio.gather(*(handler.restart() for handler in handlers.values()))
 
 	# Get the number of switching and/or metering channels.
