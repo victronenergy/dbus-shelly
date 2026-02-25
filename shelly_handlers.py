@@ -124,39 +124,54 @@ class ShellyHandler_temperature(ShellyHandler):
 		except:
 			pass
 
-# System handler, handles device custom name setting and getting.
+# System handler placeholder
 @register_handler('Sys', kind=HANDLER_KIND_GENERIC)
 class ShellyHandler_sys(ShellyHandler):
 	async def ainit(self):
-		self.service.add_item(TextItem('/CustomName', "", writeable=True, onchange=self.set_custom_name))
-		await self._set_device_customname()
+		pass
+
+# Generic channel config mixin, adds support for custom channel names and requesting channel config. Used by multiple handlers.
+# Allows for synching the channel name to multiple paths on the service.
+class ShellyHandler_channel_config_mixin():
+	def __init__(self):
+		super().__init__()
+		self._custom_name_paths = []
+
+	async def add_customname_path(self, path='/CustomName'):
+		if self.service.get_item(path) is None:
+			self.service.add_item(TextItem(path, "", writeable=True, onchange=self.set_custom_name))
+			self._custom_name_paths.append(path)
+			await self._get_channel_customname()
+
+	async def request_channel_config(self, _fun=None):
+		return await self.rpc_call('GetConfig', {"id": self._channel_id}, fun=_fun)
+
+	async def set_channel_config(self, config):
+		return await self.rpc_call('SetConfig', {"id": self._channel_id, "config": config})
+
+	def _update_customname(self, config, cap=None):
+		if config and 'name' in config:
+			with self.service as s:
+				for path in self._custom_name_paths:
+					s[path] = config.get('name')
 
 	async def set_custom_name(self, item, value):
 		if value is not None:
-			logger.debug("Setting device name for shelly device %s to: %s", self._serial, value)
 			item.set_local_value(value)
-			await self.rpc_call("SetConfig", {"config": {"device": {"name": value}}})
+			await self.set_channel_config({"name": value})
 
-	async def _set_device_customname(self):
-		name = await self._get_device_customname()
-		with self.service as s:
-			s['/CustomName'] = name
-
-	async def _get_device_customname(self):
-		config = await self.rpc_call("GetConfig", {})
-		if config is not None and 'device' in config and 'name' in config['device'] and config['device']['name']:
-			return config['device']['name']
-		return f'Shelly {self._serial}'
+	async def _get_channel_customname(self):
+		await self.request_channel_config(self._update_customname)
 
 	def on_event(self, event):
 		if event['event'] == "config_changed":
-			task = asyncio.get_event_loop().create_task(self._set_device_customname())
+			task = asyncio.get_event_loop().create_task(self._get_channel_customname())
 			background_tasks.add(task)
 			task.add_done_callback(background_tasks.discard)
 
 	async def restart(self):
-		await self._set_device_customname()
-
+		await self._get_channel_customname()
+		await super().restart()
 
 class ShellyHandler_EM_paths_mixin():
 	# Adds common energy metering paths to the service
@@ -270,9 +285,10 @@ class Shelly_EM_base(ShellyHandler_EM_paths_mixin):
 
 # EM handler, puts voltage, current, power measurements on dbus.
 @register_handler('EM', 'EMData', kind=HANDLER_KIND_EM)
-class ShellyHandler_em(Shelly_EM_base, ShellyHandler):
+class ShellyHandler_em(Shelly_EM_base, ShellyHandler_channel_config_mixin, ShellyHandler):
 	async def ainit(self):
 		self._num_phases = await self.get_num_phases()
+		await self.add_customname_path()
 		role = await self.init_em(self._num_phases, ['acload', 'pvinverter', 'genset'])
 		self.set_service_name(role)
 		await self.force_update()
@@ -315,9 +331,10 @@ class ShellyHandler_em(Shelly_EM_base, ShellyHandler):
 # EM1Data handler, puts energy metering data on dbus.
 # The EM1Data component is available on single-phase shelly energy meters.
 @register_handler('EM1', 'EM1Data', kind=HANDLER_KIND_EM)
-class ShellyHandler_em1(Shelly_EM_base, ShellyHandler):
+class ShellyHandler_em1(Shelly_EM_base, ShellyHandler_channel_config_mixin, ShellyHandler):
 	async def ainit(self):
 		self._num_phases = 1
+		await self.add_customname_path()
 		role = await self.init_em(self._num_phases, ['acload', 'pvinverter', 'genset'])
 		self.set_service_name(role)
 		await self.force_update()
@@ -342,7 +359,7 @@ class ShellyHandler_em1(Shelly_EM_base, ShellyHandler):
 			pass
 
 
-class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
+class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_base, ShellyHandler):
 	_default_output_type = OutputType.TOGGLE
 	_default_function = OutputFunction.MANUAL
 	_valid_types_mask = int((1 << OutputType.TOGGLE.value) | (1 << OutputType.MOMENTARY.value))
@@ -368,6 +385,11 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
 		base = self._settings_base + '%s/' % self._channel_id
 		self._function = OutputFunction.MANUAL
 		self._has_em = False
+
+		path_base  = '/SwitchableOutput/%s/' % self._channel_id
+		await self.add_customname_path()
+		await self.add_customname_path(path_base + 'Settings/CustomName')
+
 		await self.settings.add_settings(
 			Setting(base + 'Group', "", alias=f'Group_{self._serial}_{self._channel_id}'),
 			Setting(base + 'ShowUIControl', 1, _min=0, _max=6, alias=f'ShowUIControl_{self._serial}_{self._channel_id}'),
@@ -378,9 +400,6 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
 		self._type = self.settings.get_value(self.settings.alias(f'Type_{self._serial}_{self._channel_id}'))
 		self._function = self.settings.get_value(self.settings.alias(f'Function_{self._serial}_{self._channel_id}'))
 
-		initial_custom_name = await self._get_channel_customname()
-
-		path_base  = '/SwitchableOutput/%s/' % self._channel_id
 		self.service.add_item(IntegerItem(path_base + 'State', 0, writeable=True, onchange=self.set_state))
 		self.service.add_item(IntegerItem(path_base + 'Status', 0, writeable=False, text=self._status_text_callback))
 		self.service.add_item(TextItem(path_base + 'Name', f'Channel {self._channel_id}', writeable=False))
@@ -388,7 +407,6 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
 		group = self.settings.get_value(self.settings.alias(f'Group_{self._serial}_{self._channel_id}'))
 		show_ui_control = self.settings.get_value(self.settings.alias(f'ShowUIControl_{self._serial}_{self._channel_id}'))
 		self.service.add_item(TextItem(path_base + 'Settings/Group', group, writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/Group')))
-		self.service.add_item(TextItem(path_base + 'Settings/CustomName', initial_custom_name, writeable=True, onchange=self.set_channel_name))
 		self.service.add_item(IntegerItem(path_base + 'Settings/ShowUIControl', show_ui_control, writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/ShowUIControl')))
 		self.service.add_item(IntegerItem(path_base + 'Settings/Type', self._type, writeable=True, onchange=partial(self._value_changed, path_base + 'Settings/Type'),
 							text=self._type_text_callback))
@@ -447,12 +465,6 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
 				logger.error("KeyError in update: %s", e)
 				pass
 
-	async def _get_channel_customname(self):
-		config = await self.request_channel_config()
-		if config is not None and 'name' in config and config['name']:
-			return config['name']
-		return f'Channel {self._channel_id + 1}'
-
 	async def set_channel_name(self, item, value):
 		if value is not None:
 			logger.debug("Setting channel name for shelly device %s channel %d to: %s", self._serial, self._channel_id, value)
@@ -461,8 +473,6 @@ class ShellyHandler_switch_base(ShellyHandler, Shelly_EM_base):
 
 	async def request_channel_status(self):
 		return await self.rpc_call('GetStatus' , {"id": self._channel_id})
-	async def request_channel_config(self):
-		return await self.rpc_call('GetConfig', {"id": self._channel_id})
 
 	async def _value_changed(self, path, item, value):
 		split = path.split('/')
