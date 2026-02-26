@@ -255,10 +255,45 @@ class ShellyDiscovery(object):
 				elif e == "stopped":
 					return
 
+				# Usually happens when the device profile has changed. E.g. from triphase measuring to monophase measuring.
+				# The number of channels and their capabilities have changed, so stop all channels and refresh the device info.
+				elif e == "capabilities_changed":
+					logger.info("The capabilities of shelly device %s have changed, disabling all channels", serial)
+					# Disable all channels and reset the Enabled setting.
+					await self.stop_and_disable_all_channels(serial)
+					# Refresh device info
+					await self.refresh_device(serial)
+
 				event.clear()
 		except asyncio.CancelledError:
 			logger.info("Shelly event monitor for %s cancelled", serial)
 		return
+
+	async def stop_and_disable_all_channels(self, serial):
+		# Not only disables all channels, but also clears the Enabled setting.
+		try:
+			i = 1
+			while self.service.get_item(key := f'/Devices/{serial}/{i}/Enabled') is not None:
+				enabled_item = self.service.get_item(key)
+				if enabled_item is not None and enabled_item.value == 1:
+					ch_type = self.service.get_item(f'/Devices/{serial}/{i}/Type')
+					# Call callback to disable channel and update the setting.
+					await self._on_enabled_changed(serial, f"{ch_type}_{i-1}", enabled_item, 0)
+				i += 1
+		except Exception as e:
+			logger.error("Error while stopping channels of shelly device %s: %s", serial, e)
+
+	async def refresh_device(self, serial):
+		if serial not in self.shellies:
+			logger.error("Device not found for refresh: %s", serial)
+			return
+
+		shelly = self.shellies[serial]['device']
+		host = shelly.server
+
+		self.remove_discovered_device(serial)
+		self.delete_shelly_device(serial)
+		await self._add_device(host, serial)
 
 	async def _get_device_info(self, server, serial=None):
 		ip = None
