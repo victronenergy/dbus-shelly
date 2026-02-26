@@ -89,6 +89,16 @@ class ShellyHandler(object):
 	async def restart(self):
 		pass
 
+	async def force_update(self):
+		await self.rpc_call('GetStatus', {"id": self._channel_id}, fun=self.update)
+
+	# Less disruptive than restart.
+	# Invoked when the connection was lost and re-established within the time-out window.
+	# The default behavior is to re-fetch the status and pass it to update.
+	# The handler can decide to just refresh the data without restarting the service.
+	async def refresh(self):
+		await self.force_update()
+
 	def set_service_name(self, type):
 		self.service.name = f"com.victronenergy.{type}.shelly_{self._serial}_{self._channel_id}"
 
@@ -254,9 +264,6 @@ class Shelly_EM_base(ShellyHandler_EM_paths_mixin):
 		await self.force_update()
 		item.set_local_value(value)
 		return True
-
-	async def force_update(self):
-		await self.rpc_call('GetStatus', {"id": self._channel_id}, fun=self.update)
 
 	def role_instance(self, value):
 		val = value.split(':')
