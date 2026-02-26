@@ -299,8 +299,6 @@ class ShellyDevice(object):
 		return True
 
 	async def _reinit_channel_and_handlers(self, ch):
-		channel_obj = self._channels[ch].get("channel")
-		await channel_obj.reinit(self.rpc_call, partial(self.restart_channel, ch))
 		# Check if capabilities changed
 		restart = False
 		handlers = self._channels[ch].get("handlers", {})
@@ -320,8 +318,10 @@ class ShellyDevice(object):
 			#FIXME: Notify the discovery service that the number of channels has changed. Currently it may continue to list channels that no longer exist.
 			await self.restart_channel(ch)
 		else:
-			#FIXME: This invokes the handler's restart method, which just invokes the ShellyDevice.restart_channel. So we end up restarting the channel multiple times if multiple handlers are affected. We should just restart the channel once and reinit all handlers without restarting them.
-			await asyncio.gather(*(handler.restart() for handler in handlers.values()))
+			channel_obj = self._channels[ch].get("channel")
+			await channel_obj.reinit(self.rpc_call, partial(self.restart_channel, ch))
+			# Use set here to avoid refreshing the same handler multiple times if it handles multiple capabilities.
+			await asyncio.gather(*(handler.refresh() for handler in set(handlers.values())))
 
 	# Get the number of switching and/or metering channels.
 	async def _get_channels_info(self):
