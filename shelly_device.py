@@ -316,24 +316,24 @@ class ShellyDevice(object):
 
 	async def _reinit_channel_and_handlers(self, ch):
 		# Check if capabilities changed
-		restart = False
+		cap_changed = False
 		handlers = self._channels[ch].get("handlers", {})
 		# Capability removed
 		for cap in list(handlers.keys()):
 			if cap not in self._capabilities:
-				restart = True
+				cap_changed = True
 				break
 		# Capability added for which we have a handler
 		for cap in self._capabilities:
 			if cap not in handlers and shelly_handlers.get_handler_class(cap, ch.split('_')[0]) is not None:
-				restart = True
+				cap_changed = True
 				break
-		if restart:
-			# Sometimes the number of channels can also change.
-			# If a channel is removed, this will just stop it and not start it again.
-			#FIXME: Notify the discovery service that the number of channels has changed. Currently it may continue to list channels that no longer exist.
-			await self.restart_channel(ch)
+
+		# Capabilities changed, Stop all channels and let the discovery service refresh the device.
+		if cap_changed:
+			self.set_event("capabilities_changed")
 		else:
+			# No capability change, just reinitialize the existing handlers with the new RPC connection.
 			channel_obj = self._channels[ch].get("channel")
 			await channel_obj.reinit(self.rpc_call, partial(self.restart_channel, ch))
 			# Use set here to avoid refreshing the same handler multiple times if it handles multiple capabilities.
