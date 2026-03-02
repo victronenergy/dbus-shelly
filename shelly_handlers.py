@@ -347,7 +347,7 @@ class ShellyHandler_em(Shelly_EM_base, ShellyHandler_channel_config_mixin, Shell
 
 # EM1Data handler, puts energy metering data on dbus.
 # The EM1Data component is available on single-phase shelly energy meters.
-@register_handler('EM1', 'EM1Data', kind=HANDLER_KIND_EM)
+@register_handler('EM1', 'EM1Data', 'PM1', kind=HANDLER_KIND_EM)
 class ShellyHandler_em1(Shelly_EM_base, ShellyHandler_channel_config_mixin, ShellyHandler):
 	async def ainit(self):
 		self._num_phases = 1
@@ -357,22 +357,33 @@ class ShellyHandler_em1(Shelly_EM_base, ShellyHandler_channel_config_mixin, Shel
 		await self.force_update()
 
 	def update(self, status_json, cap=None):
+		if status_json is None:
+			return
 		try:
 			with self.service as s:
+				em_prefix = "/Ac/L{}/".format(self._phase or 1)
 				if cap == 'em1':
-					em_prefix = "/Ac/L{}/".format(self._phase or 1)
 					s[em_prefix + 'Voltage'] = status_json["voltage"]
 					s[em_prefix + 'Current'] = status_json["current"]
 					s[em_prefix + 'Power'] = status_json["act_power"]
 					s[em_prefix + 'PowerFactor'] = status_json["pf"] if 'pf' in status_json else None
 					s['/Ac/Power'] = status_json["act_power"]
 				elif cap == 'em1data':
-					em_prefix = "/Ac/L{}/".format(self._phase or 1)
 					s['/Ac/Energy/Forward'] = s[em_prefix + 'Energy/Forward'] = status_json['total_act_energy'] / 1000
 					s['/Ac/Energy/Reverse'] = s[em_prefix + 'Energy/Reverse'] = status_json['total_act_ret_energy'] / 1000
-
+				elif cap == 'pm1':
+					s[em_prefix + 'Voltage'] = status_json["voltage"]
+					s[em_prefix + 'Current'] = status_json["current"]
+					s[em_prefix + 'Power'] = status_json["apower"]
+					s[em_prefix + 'PowerFactor'] = status_json["pf"] if 'pf' in status_json else None
+					s['/Ac/Power'] = status_json["apower"]
+					s['/Ac/Energy/Forward'] = s[em_prefix + 'Energy/Forward'] = status_json['aenergy']['total'] / 1000
+					s['/Ac/Energy/Reverse'] = s[em_prefix + 'Energy/Reverse'] = status_json['ret_aenergy']['total'] / 1000
 		except KeyError as e:
 			logger.error("KeyError in update: %s", e)
+			pass
+		except Exception as e:
+			logger.error("Exception in update: %s", e)
 			pass
 
 
