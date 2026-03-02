@@ -101,8 +101,6 @@ class ShellyChannel(object):
 # Handles the websocket connection to the Shelly device and provides methods to control it.
 # Creates an instance of ShellyChannel for each enabled channel.
 class ShellyDevice(object):
-	SWITCHING_CAPABILITIES = ['Switch', 'Light', 'RGB', 'RGBW']
-	EM_CAPABILITIES = ['EM', 'EM1']
 
 	def __init__(self, bus_type=None, serial=None, server=None, event=None):
 		self._bus_type= bus_type
@@ -343,18 +341,23 @@ class ShellyDevice(object):
 	async def _get_channels_info(self):
 		channels = []
 
-		async def add_channels(capabilities, ch_type):
-			for cap in (c for c in capabilities if c in self._capabilities):
-				ch = 0
-				while True:
+		async def add_channels(ch_type, capabilities):
+			ch = 0
+			while True:
+				found = False
+				for cap in (c for c in capabilities if c in self._capabilities):
 					resp = await self.rpc_call(f"{cap}.GetStatus", {"id": ch})
 					if resp is None:
-						break
+						continue
+					found = True
 					channels.append(f"{ch_type}_{ch}")
 					ch += 1
+				if not found:
+					# No capabilities on this channel number, or the channel doesn't exist at all. Done.
+					return
 
-		await add_channels(self.SWITCHING_CAPABILITIES, "switch")
-		await add_channels(self.EM_CAPABILITIES, "em")
+		for kind, caps in shelly_handlers.get_capabilities_by_kind().items():
+			await add_channels(kind, caps)
 
 		return channels
 
