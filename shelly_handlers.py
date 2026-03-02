@@ -20,12 +20,18 @@ HANDLER_KIND_SWITCH = "switch"
 HANDLER_KIND_EM = "em"
 HANDLER_KIND_GENERIC = "generic"
 
+# Handler type generic is not included here because a channel which only has generic capabilities (or unsupported ones) should not be listed.
+FUNCTIONAL_HANDLERS = [HANDLER_KIND_SWITCH, HANDLER_KIND_EM]
+
 _HANDLER_REGISTRY = {}
+_CAPS_BY_KIND = {kind: [] for kind in FUNCTIONAL_HANDLERS}
 
 def register_handler(*capabilities, kind):
 	def _decorator(handler_cls):
 		for cap in capabilities:
 			_HANDLER_REGISTRY[cap] = {"cls": handler_cls, "kind": kind}
+			if kind in FUNCTIONAL_HANDLERS and cap not in _CAPS_BY_KIND[kind]:
+				_CAPS_BY_KIND[kind].append(cap)
 		handler_cls._rpc_device_type = list(capabilities) if len(capabilities) > 1 else capabilities[0]
 		return handler_cls
 	return _decorator
@@ -40,9 +46,13 @@ def get_handler_kind(capability):
 
 def has_functional_handler(capabilities):
 	for cap in capabilities:
-		if get_handler_kind(cap) == HANDLER_KIND_SWITCH or get_handler_kind(cap) == HANDLER_KIND_EM:
+		if get_handler_kind(cap) in FUNCTIONAL_HANDLERS:
 			return True
 	return False
+
+# Used by shelly_device to identify a shelly device as a switch or energy meter device based on its capabilities.
+def get_capabilities_by_kind():
+	return _CAPS_BY_KIND
 
 # The shelly handler base class implements basic functionality common to all shelly capability handlers.
 # These methods apply to channels of all devices
