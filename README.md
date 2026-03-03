@@ -9,6 +9,35 @@ The shelly and the GX should be in the same network. The GX device discovers the
 - Shelly smart plugs without energy metering capabilities will be registered as `com.victronenergy.switch`.
 - Shelly energy metering devices without a switchable output (so energy meters to be installed at an input or an output position) are registered as a standard grid meter. `com.victronenergy.<role>` with role equal to 'genset', 'pvinverter' or 'acload', depending on the setting and defaulting to 'acload'.
 
+# Supported RPC components
+Shelly devices use Remote Procedure Calls (RPC) to send commands to devices and receive notifications and replies from the devices. More info [here](https://shelly-api-docs.shelly.cloud/gen2/General/RPCProtocol/). An [RPC component](https://shelly-api-docs.shelly.cloud/gen2/General/ComponentConcept) is an encapsulated functional unit which exposes methods used to control the device.
+
+The RPC components a shelly device supports depend on the device type. For example, the [Shelly plus plug S](https://shelly-api-docs.shelly.cloud/gen2/Devices/Gen3/ShellyPlugSG3/) supports one instance of the [Switch](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/Switch) component.
+
+Since V2.00, dbus-shelly implements handlers for RPC components, which enables component-based support for devices.
+Currently, handlers for the following RPC components exist:
+
+## Generic handlers
+Adds functionality but shelly device needs to support at least one of the functional handlers to be supported.
+- Sys
+- Temperature
+
+## Functional handlers
+A device needs at least one of the following RPC components to be supported
+- EM
+- EMData
+- EM1
+- EM1Data
+- PM1
+- Switch
+- Light
+- RGB
+- RGBW
+
+## How to check if my device is supported
+1. Find your device in the [Gen 2+ Device API list](https://shelly-api-docs.shelly.cloud/gen2/)
+2. Check if at least one of the functional handlers (list above) is available for your device.
+
 # Tested devices
 
 The following shelly devices have been verified to work correctly:
@@ -16,12 +45,16 @@ The following shelly devices have been verified to work correctly:
 - Shelly plus plug S
 - Shelly Pro 4PM
 - Shelly Pro 1PM
-- Shelly Pro3EM (3 phase EM only)
+- Shelly Pro3EM (3 phase EM or 3x single phase EM)
 - Shelly 1PM Gen4 (SW + EM)
 - Shelly Mini 1PM Gen4 (SW + EM)
 - Shelly Mini 1 Gen4 (SW only)
 - Shelly Dimmer Gen3
-- Shelly Plus RGBW PM
+- Shelly Plus RGBW PM (all profiles)
+- Shelly Pro EM50 (2X em, 1x SW)
+- Shelly Powerstrip gen4 (4x SW)
+- Shelly PM mini gen3 (1x PM)
+- Shelly Pro 1
 
 # Shelly settings
 This driver will only control runtime values like the on/off state and brightness. The settings of the shelly device will not be touched. There are some settings that may affect the behavior of your shelly device when controlled through the GX device:
