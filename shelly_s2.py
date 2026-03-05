@@ -100,8 +100,8 @@ class ShellyHandlerS2Mixin():
 
 	async def ainit(self):
 		self.rm_item = None
-		self._control_type_ombc = None
-		self._control_type_noctrl = None
+		self._control_type_ombc = ShellyOMBC(self)
+		self._control_type_noctrl = ShellyNOCTRL(self)
 
 		# Indicates if the RM is enabled, i.e., the OMBC control type has been offered to HEMS.
 		# Whether the OMBC control type is actually activated by the HEMS is determined by self._control_type_ombc.active.
@@ -117,28 +117,42 @@ class ShellyHandlerS2Mixin():
 
 	def on_channel_function_changed(self, channel, value):
 		self._function = value
-		if value == OutputFunction.OPPORTUNITY_LOAD:
-			# Enable S2 RM
-			asyncio.create_task(self.enable_rm(channel))
-		else:
-			# Disable S2 RM
-			if self._rm_enabled:
-				asyncio.create_task(self.disable_rm(channel))
+		asyncio.create_task(self._handle_channel_function_changed(channel, value))
 
-	async def enable_rm(self, channel):
-		logger.info("Enabling S2 Resource Manager for device %s", self._serial)
-		if not self.has_rm:
-			# Paths not yet present, add them to the service.
-			await self._add_rm_to_service(channel)
+	async def _handle_channel_function_changed(self, channel, value):
+		if value == OutputFunction.OPPORTUNITY_LOAD:
+			# Set type to three-state switch
+			await self._set_type_to_three_state_switch(True)
+
+			# Get current value of the /Auto path
+			auto_item = self.service.get_item(f'/SwitchableOutput/{channel}/Auto')
+			auto_value = auto_item.value if auto_item else 0
+
+			logger.info(f"Enabling S2 Resource Manager for device {self._serial}, channel {channel}")
+			await self.enable_rm(channel, auto_value)
 
 			#FIXME: Better read the current state, and just report that, so a restart of S2 just continues where it was.
 			logger.debug("Setting output state off initially")
 			self.state = 0
+		else:
+			# Disable RM if it was running
+			if self._rm_enabled:
+				await self.disable_rm()
+			# Set type back to default
+			await self._set_type_to_three_state_switch(False)
 
+	async def enable_rm(self, channel, enabled):
+		control_types = [self._control_type_noctrl]
+		if enabled:
+			control_types.append(self._control_type_ombc)
+		logger.debug(f"Shelly RM: Device {self._serial}, channel {channel}, offering control types: {[type(ct).__name__ for ct in control_types]}")
+		# Paths not yet present.
+		if not self.has_rm:
+			await self._add_rm_to_service(channel, control_types)
 		else:
 			# Let the HEMS know the RM is enabled by updating the allowed control types.
 			try:
-				await self.rm_item.send_resource_manager_details(control_types=[self._control_type_noctrl, self._control_type_ombc], asset_details=self._rm_details)
+				await self.rm_item.send_resource_manager_details(control_types=control_types, asset_details=self._rm_details)
 			except:
 				pass
 
@@ -154,9 +168,6 @@ class ShellyHandlerS2Mixin():
 			s['/S2/0/RmSettings/OnHysteresis'] = on_hysteresis
 			s['/S2/0/RmSettings/OffHysteresis'] = off_hysteresis
 
-		# Set switch type to Three-state switch (9)
-		await self._set_three_state_switch(True)
-
 		# Let the CEM know the RM is ready to connect.
 		await self.rm_item.set_ready(True)
 
@@ -167,11 +178,12 @@ class ShellyHandlerS2Mixin():
 		setting = f'Auto_{self._serial}_{self._channel_id}'
 		try:
 			await self.settings.set_value(self.settings.alias(setting), value)
+			await self.enable_rm(self._channel_id, value)
 		except:
 			return
 		item.set_local_value(value)
 
-	async def _set_three_state_switch(self, enabled):
+	async def _set_type_to_three_state_switch(self, enabled):
 		if enabled:
 			if self.settings.alias(f'Auto_{self._serial}_{self._channel_id}') is None:
 				await self.settings.add_settings(Setting(f'{self._settings_base}{self._channel_id}/Auto', 0,
@@ -200,7 +212,7 @@ class ShellyHandlerS2Mixin():
 		if item:
 			item.set_value(OutputType.THREE_STATE_SWITCH if enabled else self._default_output_type)
 
-	async def disable_rm(self, channel):
+	async def disable_rm(self):
 		logger.info("Disabling S2 Resource Manager for device %s", self._serial)
 		# Let the HEMS know the RM is disabled by updating the allowed control types to only NoControl.
 		#        For now, let's simply completly disconnect and see if that works out fine.
@@ -236,8 +248,6 @@ class ShellyHandlerS2Mixin():
 				s['/S2/0/RmSettings/OnHysteresis'] = None
 				s['/S2/0/RmSettings/OffHysteresis'] = None
 
-		# Set switch type back to the default type.
-		await self._set_three_state_switch(False)
 		self._rm_enabled = False
 
 	def update(self, status_json, cap=None):
@@ -274,7 +284,7 @@ class ShellyHandlerS2Mixin():
 				background_tasks.add(task)
 				task.add_done_callback(background_tasks.discard)
 
-	async def _add_rm_to_service(self, channel):
+	async def _add_rm_to_service(self, channel, control_types):
 		# Paths will be added once when the function is set to S2 resource manager.
 		# After that, enabling/disabling the RM will only update the allowed control types.
 		logger.info("Adding S2 Resource Manager paths to service")
@@ -315,11 +325,9 @@ class ShellyHandlerS2Mixin():
 			serial_number=self._serial
 		)
 
-		self._control_type_ombc = ShellyOMBC(self)
-		self._control_type_noctrl = ShellyNOCTRL(self)
 		self.rm_item = S2ResourceManagerItem(
 			'/S2/0/Rm',
-			control_types=[self._control_type_noctrl, self._control_type_ombc],
+			control_types=control_types,
 			asset_details=self._rm_details
 		)
 
