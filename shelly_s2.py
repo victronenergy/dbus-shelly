@@ -157,13 +157,11 @@ class ShellyHandlerS2Mixin():
 				pass
 
 		# Explicitly set initial values to force an items changed
-		priority_setting = self.settings.get_value(self.settings.alias(f'Priority_{self._serial}_{channel}'))
 		power_setting = self.settings.get_value(self.settings.alias(f'PowerSetting_{self._serial}_{channel}'))
 		on_hysteresis = self.settings.get_value(self.settings.alias(f'OnHysteresis_{self._serial}_{channel}'))
 		off_hysteresis = self.settings.get_value(self.settings.alias(f'OffHysteresis_{self._serial}_{channel}'))
 		with self.service as s:
 			s['/S2/0/Active'] = 0
-			s['/S2/0/Priority'] = priority_setting
 			s['/S2/0/RmSettings/PowerSetting'] = power_setting
 			s['/S2/0/RmSettings/OnHysteresis'] = on_hysteresis
 			s['/S2/0/RmSettings/OffHysteresis'] = off_hysteresis
@@ -243,7 +241,6 @@ class ShellyHandlerS2Mixin():
 			# Clear S2 paths
 			with self.service as s:
 				s['/S2/0/Active'] = None
-				s['/S2/0/Priority'] = None
 				s['/S2/0/RmSettings/PowerSetting'] = None
 				s['/S2/0/RmSettings/OnHysteresis'] = None
 				s['/S2/0/RmSettings/OffHysteresis'] = None
@@ -293,7 +290,6 @@ class ShellyHandlerS2Mixin():
 		settings_base = self._settings_base + f'{channel}/S2/'
 		await self.settings.add_settings(
 			Setting(settings_base + 'PowerSetting', 1000, alias=f'PowerSetting_{self._serial}_{channel}'),
-			Setting(settings_base + 'Priority', 0, alias=f'Priority_{self._serial}_{channel}'),
 			Setting(settings_base + 'Phase', 1, _min=0, _max=3, alias=f'Phase_{self._serial}_{channel}'), #Phase 0 will map to a 3 phased symmetric load.
 			Setting(settings_base + 'OnHysteresis', 30, _min=0, _max=999999, alias=f'OnHysteresis_{self._serial}_{channel}'),
 			Setting(settings_base + 'OffHysteresis', 30, _min=0, _max=999999, alias=f'OffHysteresis_{self._serial}_{channel}')
@@ -302,7 +298,6 @@ class ShellyHandlerS2Mixin():
 		path_base = "/S2/0/"
 		path_base_settings = "/S2/0/RmSettings/"
 		self.service.add_item(IntegerItem(path_base + 'Active'))
-		self.service.add_item(IntegerItem(path_base + 'Priority', writeable=True, onchange=partial(self._s2_value_changed, path_base + 'Priority')))
 		self.service.add_item(IntegerItem(path_base_settings + 'PowerSetting', writeable=True, onchange=partial(self._s2_value_changed, path_base_settings + 'PowerSetting'), text=fmt['watt']))
 		self.service.add_item(IntegerItem(path_base_settings + 'OnHysteresis', writeable=True, onchange=partial(self._s2_value_changed, path_base_settings + 'OnHysteresis')))
 		self.service.add_item(IntegerItem(path_base_settings + 'OffHysteresis', writeable=True, onchange=partial(self._s2_value_changed, path_base_settings + 'OffHysteresis')))
