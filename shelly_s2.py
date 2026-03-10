@@ -20,7 +20,7 @@ sys.path.insert(1, os.path.join(os.path.dirname(__file__), 'ext', 'aiovelib'))
 from aiovelib.service import IntegerItem
 from aiovelib.localsettings import Setting
 
-from s2 import S2ResourceManagerItem
+from aiovelib.s2 import S2ResourceManagerItem
 from s2python.s2_control_type import NoControlControlType, OMBCControlType
 from s2python.s2_asset_details import AssetDetails
 from s2python.generated.gen_s2 import CommodityQuantity, RoleType
@@ -149,12 +149,6 @@ class ShellyHandlerS2Mixin():
 		# Paths not yet present.
 		if not self.has_rm:
 			await self._add_rm_to_service(channel, control_types)
-		else:
-			# Let the HEMS know the RM is enabled by updating the allowed control types.
-			try:
-				await self.rm_item.send_resource_manager_details(control_types=control_types, asset_details=self._rm_details)
-			except:
-				pass
 
 		# Explicitly set initial values to force an items changed
 		power_setting = self.settings.get_value(self.settings.alias(f'PowerSetting_{self._serial}_{channel}'))
@@ -167,7 +161,7 @@ class ShellyHandlerS2Mixin():
 			s['/S2/0/RmSettings/OffHysteresis'] = off_hysteresis
 
 		# Let the CEM know the RM is ready to connect.
-		await self.rm_item.set_ready(True)
+		await self.rm_item.set_ready(True, control_types=control_types, asset_details=self._rm_details)
 
 		self._rm_enabled = True
 
@@ -215,8 +209,6 @@ class ShellyHandlerS2Mixin():
 		# Let the HEMS know the RM is disabled by updating the allowed control types to only NoControl.
 		#        For now, let's simply completly disconnect and see if that works out fine.
 		try:
-			await self.rm_item.send_resource_manager_details(control_types=[self._control_type_noctrl], asset_details=self._rm_details)
-
 			#make sure to send a 0 power measurement to EMS as well.
 			await self.rm_item.send_msg_and_await_reception_status(
 				PowerMeasurement(
@@ -236,7 +228,8 @@ class ShellyHandlerS2Mixin():
 			pass
 		finally:
 			# Close S2 connection
-			await self.rm_item.set_ready(False)
+			# Updating the allowed control types is probably not needed here since the S2 connection will be closed anyways.
+			await self.rm_item.set_ready(False, control_types=[self._control_type_noctrl], asset_details=self._rm_details)
 
 			# Clear S2 paths
 			with self.service as s:
