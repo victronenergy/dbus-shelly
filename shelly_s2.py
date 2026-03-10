@@ -182,12 +182,12 @@ class ShellyHandlerS2Mixin():
 											 _min=0, _max=1, alias=f"Auto_{self._serial}_{self._channel_id}"))
 			if self.service.get_item(f'/SwitchableOutput/{self._channel_id}/Auto') is None:
 				# Add Auto item
-				init_val = self.settings.get_value(self.settings.alias(f'Auto_{self._serial}_{self._channel_id}')) or 0
 				self.service.add_item(IntegerItem(f'/SwitchableOutput/{self._channel_id}/Auto', None, writeable=True, onchange=self._auto_changed))
 
-				# This sends an itemschanged, to make the GUI aware of it.
-				with self.service as s:
-					s[f'/SwitchableOutput/{self._channel_id}/Auto'] = init_val
+			init_val = self.settings.get_value(self.settings.alias(f'Auto_{self._serial}_{self._channel_id}')) or 0
+			# This sends an itemschanged, to make the GUI aware of it.
+			with self.service as s:
+				s[f'/SwitchableOutput/{self._channel_id}/Auto'] = init_val
 		else:
 			try:
 				with self.service as s:
