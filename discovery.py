@@ -353,8 +353,9 @@ class ShellyDiscovery(object):
 		else:
 			self.discovered_devices.append(serial)
 
-		# Shelly plus plug S example: 'model': 'SNPL-00112EU'
-		model_name = device_info.get('model', 'Unknown')
+		# 'app' is a more user-friendly name for the model. Use that if available.
+		# Shelly plus plug S example: 'app': 'PlusPlugS', 'model': 'SNPL-00112EU'
+		model_name = device_info.get('app', device_info.get('model', 'unknown'))
 		# Custom name of the shelly device, if available
 		name = device_info.get('name', None)
 
