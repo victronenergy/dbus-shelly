@@ -7,13 +7,6 @@ import logging
 from functools import partial
 import uuid
 from datetime import datetime, timezone
-import weakref
-
-try:
-	from dbus_fast.aio import MessageBus
-	from dbus_fast import Variant
-except ImportError:
-	from dbus_next import MessageBus, Variant
 
 #aiovelib
 sys.path.insert(1, os.path.join(os.path.dirname(__file__), 'ext', 'aiovelib'))
