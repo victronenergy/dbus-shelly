@@ -15,28 +15,23 @@ Shelly devices use Remote Procedure Calls (RPC) to send commands to devices and 
 The RPC components a shelly device supports depend on the device type. For example, the [Shelly plus plug S](https://shelly-api-docs.shelly.cloud/gen2/Devices/Gen3/ShellyPlugSG3/) supports one instance of the [Switch](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/Switch) component.
 
 Since V2.00, dbus-shelly implements handlers for RPC components, which enables component-based support for devices.
-Currently, handlers for the following RPC components exist:
-
-## Generic handlers
-Adds functionality but shelly device needs to support at least one of the functional handlers to be supported.
-- Sys
-- Temperature
-
-## Functional handlers
-A device needs at least one of the following RPC components to be supported
-- EM
-- EMData
-- EM1
-- EM1Data
-- PM1
-- Switch
-- Light
-- RGB
-- RGBW
 
 ## How to check if my device is supported
-1. Find your device in the [Gen 2+ Device API list](https://shelly-api-docs.shelly.cloud/gen2/)
-2. Check if at least one of the functional handlers (list above) is available for your device.
+1. Find your device in the [Gen 2+ Device API list](https://shelly-api-docs.shelly.cloud/gen2/) (left pane - Devices)
+2. Check if the device supports at least one of RPC components listed in the table below:
+
+### RPC component to service type mapping
+| RPC component      | Service type                     | Remarks                                                                                    |
+|--------------------|----------------------------------|--------------------------------------------------------------------------------------------|
+| EM and/or EMData   | *.acload, *.pvinverter, *.genset | Three-phase EM                                                                             |
+| EM1 and/or EM1Data | *.acload, *.pvinverter, *.genset | Single-phase EM                                                                            |
+| PM1                | *.acload, *.pvinverter, *.genset | Single-phase EM                                                                            |
+| Switch             | *.switch, *.acload               | acload service when switch component reports voltage/current etc. switch service otherwise |
+| Light              | *.switch                         | Switch type: Dimmable                                                                      |
+| RGB                | *.switch                         | Switch type: RGB                                                                           |
+| RGBW               | *.switch                         | Switch type: RGBW                                                                          |
+
+If a device exposes x instances of an RPC component listed above, then x channels of that type will show up in the integration menu.
 
 # Tested devices
 
