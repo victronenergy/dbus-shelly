@@ -173,7 +173,7 @@ class ShellyHandler_channel_config_mixin():
 		if config and 'name' in config:
 			with self.service as s:
 				for path in self._custom_name_paths:
-					s[path] = config.get('name')
+					s[path] = config.get('name') or ""
 
 	async def set_custom_name(self, item, value):
 		if value is not None:
