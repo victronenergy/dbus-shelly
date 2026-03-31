@@ -4,6 +4,7 @@ FILES =					\
 	discovery.py		\
 	shelly_device.py	\
 	shelly_handlers.py	\
+	shelly_s2.py		\
 	utils.py
 
 LIB =					\
@@ -11,6 +12,7 @@ LIB =					\
 	service.py			\
 	client.py			\
 	localsettings.py	\
+	s2.py				\
 
 all:
 
