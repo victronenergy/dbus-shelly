@@ -27,7 +27,7 @@ install:
 testinstall:
 	$(eval TMP := $(shell mktemp -d))
 	$(MAKE) DESTDIR=$(TMP) install
-	(cd $(TMP) && ./dbus_shelly.py --help > /dev/null)
+	(cd $(TMP) && python3 dbus_shelly.py --help > /dev/null)
 	-rm -rf $(TMP)
 
 clean:
