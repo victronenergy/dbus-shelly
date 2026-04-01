@@ -335,13 +335,15 @@ class ShellyHandler_em(Shelly_EM_base, ShellyHandler_channel_config_mixin, Shell
 				if cap == 'emdata':
 					for l in range(1, self._num_phases + 1):
 						with self.service as s:
-							em_prefix = f'/Ac/L{l}/'
 							p = {1:'a', 2:'b', 3:'c'}.get(l)
-							s[em_prefix + 'Energy/Forward'] = status_json[f'{p}_total_act_energy'] / 1000
-							s[em_prefix + 'Energy/Reverse'] = status_json[f'{p}_total_act_ret_energy'] / 1000
+							if status_json[f"{p}_total_act_energy"] != 0 and status_json[f"{p}_total_act_ret_energy"] != 0:
+								em_prefix = f'/Ac/L{l}/'
+								s[em_prefix + 'Energy/Forward'] = status_json[f"{p}_total_act_energy"] / 1000
+								s[em_prefix + 'Energy/Reverse'] = status_json[f"{p}_total_act_ret_energy"] / 1000
 					with self.service as s:
-						s['/Ac/Energy/Forward'] = status_json['total_act'] / 1000
-						s['/Ac/Energy/Reverse'] = status_json['total_act_ret'] / 1000
+						if status_json["total_act"] != 0 and status_json["total_act_ret"] != 0:
+							s['/Ac/Energy/Forward'] = status_json["total_act"] / 1000
+							s['/Ac/Energy/Reverse'] = status_json["total_act_ret"] / 1000
 		except KeyError as e:
 			logger.error("KeyError in update: %s", e)
 			pass
@@ -370,16 +372,18 @@ class ShellyHandler_em1(Shelly_EM_base, ShellyHandler_channel_config_mixin, Shel
 					s[em_prefix + 'PowerFactor'] = status_json["pf"] if 'pf' in status_json else None
 					s['/Ac/Power'] = status_json["act_power"]
 				elif cap == 'em1data':
-					s['/Ac/Energy/Forward'] = s[em_prefix + 'Energy/Forward'] = status_json['total_act_energy'] / 1000
-					s['/Ac/Energy/Reverse'] = s[em_prefix + 'Energy/Reverse'] = status_json['total_act_ret_energy'] / 1000
+					if status_json["total_act_energy"] != 0 and status_json["total_act_ret_energy"] != 0:
+						s['/Ac/Energy/Forward'] = s[em_prefix + 'Energy/Forward'] = status_json["total_act_energy"] / 1000
+						s['/Ac/Energy/Reverse'] = s[em_prefix + 'Energy/Reverse'] = status_json["total_act_ret_energy"] / 1000
 				elif cap == 'pm1':
 					s[em_prefix + 'Voltage'] = status_json["voltage"]
 					s[em_prefix + 'Current'] = status_json["current"]
 					s[em_prefix + 'Power'] = status_json["apower"]
 					s[em_prefix + 'PowerFactor'] = status_json["pf"] if 'pf' in status_json else None
 					s['/Ac/Power'] = status_json["apower"]
-					s['/Ac/Energy/Forward'] = s[em_prefix + 'Energy/Forward'] = status_json['aenergy']['total'] / 1000
-					s['/Ac/Energy/Reverse'] = s[em_prefix + 'Energy/Reverse'] = status_json['ret_aenergy']['total'] / 1000
+					if status_json["aenergy"]["total"] != 0 and status_json["ret_aenergy"]["total"] != 0:
+						s['/Ac/Energy/Forward'] = s[em_prefix + 'Energy/Forward'] = status_json["aenergy"]["total"] / 1000
+						s['/Ac/Energy/Reverse'] = s[em_prefix + 'Energy/Reverse'] = status_json["ret_aenergy"]["total"] / 1000
 		except KeyError as e:
 			logger.error("KeyError in update: %s", e)
 			pass
@@ -481,14 +485,16 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 					s[em_prefix + 'Current'] = status_json["current"]
 					s[em_prefix + 'Power'] = status_json["apower"]
 					s[em_prefix + 'PowerFactor'] = status_json["pf"] if 'pf' in status_json else None
-					# Shelly reports energy in Wh, so convert to kWh
-					eforward = status_json["aenergy"]["total"] / 1000 if 'aenergy' in status_json else None
-					ereverse = status_json["ret_aenergy"]["total"] / 1000 if 'ret_aenergy' in status_json else None
-					s[em_prefix + 'Energy/Forward'] = eforward
-					s[em_prefix + 'Energy/Reverse'] = ereverse
-					s['/Ac/Energy/Forward'] = eforward
-					s['/Ac/Energy/Reverse'] = ereverse
 					s['/Ac/Power'] = status_json["apower"]
+					# Shelly reports energy in Wh, so convert to kWh
+					if "aenergy" in status_json and status_json["aenergy"]["total"] != 0 and \
+					   "ret_aenergy" in status_json and status_json["ret_aenergy"]["total"] != 0:
+						eforward = status_json["aenergy"]["total"] / 1000
+						ereverse = status_json["ret_aenergy"]["total"] / 1000
+						s[em_prefix + 'Energy/Forward'] = eforward
+						s[em_prefix + 'Energy/Reverse'] = ereverse
+						s['/Ac/Energy/Forward'] = eforward
+						s['/Ac/Energy/Reverse'] = ereverse
 
 			except KeyError as e:
 				logger.error("KeyError in update: %s", e)
