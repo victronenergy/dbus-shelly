@@ -10,6 +10,7 @@ try:
 	from shelly_s2 import ShellyHandlerS2Mixin as _ShellyHandlerS2Mixin
 	_S2_MIXIN_AVAILABLE = True
 except Exception:
+	logger.warning("Shelly S2 mixin not available, opportunity loads function won't be available.")
 	_S2_MIXIN_AVAILABLE = False
 	_ShellyHandlerS2Mixin = None
 
