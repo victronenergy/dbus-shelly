@@ -240,7 +240,7 @@ class ShellyDevice(object):
 			# Will be a list of capabilities, e.g. ['Switch', 'EM', 'Sys']
 			reported_capabilities = list(set([m.split('.')[0] for m in methods]))
 			if not shelly_handlers.has_functional_handler(reported_capabilities):
-				logger.warning(
+				logger.debug(
 					"Shelly device %s with capabilities: %s is not supported",
 					self._serial,
 					reported_capabilities,

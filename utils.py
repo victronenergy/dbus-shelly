@@ -9,7 +9,6 @@ from aiovelib.client import Monitor
 from aiovelib.localsettings import SettingsService as SettingsClient, SETTINGS_SERVICE
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
 
 STATUS_OFF = 0x00
 STATUS_ON = 0x09
