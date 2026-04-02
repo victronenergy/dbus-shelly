@@ -213,7 +213,7 @@ class ShellyHandler_EM_paths_mixin():
 
 # Contains common code for shelly handlers that have energy metering capabilities (single or multi-phase)
 class Shelly_EM_base(ShellyHandler_EM_paths_mixin):
-	async def init_em(self, num_phases, allowed_roles):
+	async def init_em(self, num_phases, allowed_roles=['acload', 'pvinverter', 'genset', 'heatpump']):
 		# Determine role and instance
 		_em_role, instance = self.role_instance(
 			self.settings.get_value(self.settings.alias('instance_{}_{}'.format(self._serial, self._channel_id))))
@@ -307,7 +307,7 @@ class ShellyHandler_em(Shelly_EM_base, ShellyHandler_channel_config_mixin, Shell
 	async def ainit(self):
 		self._num_phases = await self.get_num_phases()
 		await self.add_customname_path()
-		role = await self.init_em(self._num_phases, ['acload', 'pvinverter', 'genset'])
+		role = await self.init_em(self._num_phases)
 		self.set_service_name(role)
 		await self.force_update()
 
@@ -355,7 +355,7 @@ class ShellyHandler_em1(Shelly_EM_base, ShellyHandler_channel_config_mixin, Shel
 	async def ainit(self):
 		self._num_phases = 1
 		await self.add_customname_path()
-		role = await self.init_em(self._num_phases, ['acload', 'pvinverter', 'genset'])
+		role = await self.init_em(self._num_phases)
 		self.set_service_name(role)
 		await self.force_update()
 
@@ -397,9 +397,6 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 	_default_function = OutputFunction.MANUAL
 	_valid_types_mask = int((1 << OutputType.TOGGLE.value) | (1 << OutputType.MOMENTARY.value))
 	_valid_functions_mask = int(1 << OutputFunction.MANUAL)
-
-	_service_type_no_em = "switch"
-	_service_type_with_em = "acload"
 
 	@property
 	def status(self):
@@ -453,9 +450,10 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 
 		if allow_em and await self.em_supported():
 			# Add energy metering paths
-			await self.init_em(1, ['acload'])
+			role = await self.init_em(1, ['acload', 'pvinverter', 'heatpump'])
 			self._has_em = True
-		self.set_service_name(self._service_type_with_em if self._has_em else self._service_type_no_em)
+		# Set service name based on role if EM is supported, otherwise default to switch.
+		self.set_service_name(role if self._has_em else 'switch')
 
 		# Initialize channel type and function
 		self._set_channel_type(str(self._channel_id), self._type)
