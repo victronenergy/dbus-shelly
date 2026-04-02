@@ -14,14 +14,18 @@ LIB =					\
 	localsettings.py	\
 	s2.py				\
 
+MOCK_FILES = $(wildcard mock/*)
+
 all:
 
 install:
 	install -d $(DESTDIR)$(bindir)
 	install -d $(DESTDIR)$(bindir)/ext/aiovelib/aiovelib
+	install -d $(DESTDIR)$(bindir)/mock
 	install -m 0644 $(FILES) $(DESTDIR)$(bindir)
 	install -m 0644 $(addprefix ext/aiovelib/aiovelib/,$(LIB)) \
 		$(DESTDIR)$(bindir)/ext/aiovelib/aiovelib
+	install -m 0644 $(MOCK_FILES) $(DESTDIR)$(bindir)/mock
 	chmod +x $(DESTDIR)$(bindir)/$(firstword $(FILES))
 
 testinstall:
