@@ -104,13 +104,25 @@ class ShellyDiscovery(object):
 		self._start_add_by_ip_address_task(value)
 
 	async def _add_devices_by_ip(self, ipaddresses):
-		for serial in self.saved_devices:
+		# Track which serials are in saved_devices for safe iteration
+		saved_serials = list(self.saved_devices)
+
+		for serial in saved_serials:
 			device_ip = self.service.get_item('/Devices/{}/Ip'.format(serial))
 
-			# Remove manually added devices that are no longer in the list, but only if they are not currently enabled.
-			if device_ip is not None and device_ip.value not in ipaddresses and serial not in self.shellies:
-				await self.stop_shelly_device(serial)
-				self.remove_discovered_device(serial)
+			# Check if a manually added device's IP is no longer in the list
+			if device_ip is not None and device_ip.value not in ipaddresses:
+				# Remove from saved_devices since the manual IP is gone
+				if serial in self.saved_devices:
+					self.saved_devices.remove(serial)
+
+				# If device is still discoverable via mDNS, update DiscoveryType to reflect that
+				if serial in self.discovered_devices:
+					with self.service as s:
+						s['/Devices/{}/DiscoveryType'.format(serial)] = 'mDNS'
+				# Otherwise, if not enabled and not discoverable via mDNS, fully remove the device
+				elif serial not in self.shellies:
+					self.remove_discovered_device(serial)
 
 		for ip in set(ipaddresses): # Use set to avoid duplicates
 			ip_found = False
@@ -348,10 +360,19 @@ class ShellyDiscovery(object):
 		if serial is None:
 			serial = device_info.get('mac', 'unknown').replace(":", "")
 
+		# Track if this is a known (previously discovered) device
+		known = serial in self.discovered_devices or serial in self.saved_devices
+
+		# Handle device inventory: manual devices take priority over mDNS-discovered devices.
+		# If a device is found by both methods, it should remain in both lists to preserve origin info.
 		if manual:
-			self.saved_devices.append(serial)
+			# Add to saved devices (or ensure it's there if not already)
+			if serial not in self.saved_devices:
+				self.saved_devices.append(serial)
 		else:
-			self.discovered_devices.append(serial)
+			# If device hasn't been discovered yet (either path), add to discovered
+			if serial not in self.discovered_devices and serial not in self.saved_devices:
+				self.discovered_devices.append(serial)
 
 		# 'app' is a more user-friendly name for the model. Use that if available.
 		# Shelly plus plug S example: 'app': 'PlusPlugS', 'model': 'SNPL-00112EU'
@@ -368,7 +389,12 @@ class ShellyDiscovery(object):
 			s['/Devices/{}/Mac'.format(serial)] = serial
 			s['/Devices/{}/Model'.format(serial)] = model_name
 			s['/Devices/{}/Name'.format(serial)] = name
-			s['/Devices/{}/DiscoveryType'.format(serial)] = 'Manual' if manual else 'mDNS'
+			# DiscoveryType reflects current state: 'Manual' if in saved_devices, 'mDNS' if only in discovered_devices
+			s['/Devices/{}/DiscoveryType'.format(serial)] = 'Manual' if serial in self.saved_devices else 'mDNS'
+
+		# Skip channel setup for already-known devices; their dbus items and settings are already configured
+		if known:
+			return
 
 		for i, ch in enumerate(channel_info):
 			ch_type = ch.split('_')[0] # 'switch', 'em'

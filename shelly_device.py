@@ -379,6 +379,9 @@ class ShellyDevice(object):
 	async def start_channel(self, channel):
 		async with self._device_lock:
 			logger.info(f"Starting channel {channel} for shelly device {self.serial_or_server}")
+			if channel in self._channels:
+				# Channel is already active; avoid creating/registering a duplicate service.
+				return True
 			if channel not in self._channel_info:
 				logger.error(f"Invalid channel {channel} for shelly device {self.serial_or_server}, which has channels: {self._channel_info}")
 				return False
