@@ -326,9 +326,9 @@ class ShellyHandler_em(Shelly_EM_base, ShellyHandler_channel_config_mixin, Shell
 						em_prefix = f"/Ac/L{l}/"
 						p = {1:'a', 2:'b', 3:'c'}.get(l)
 						s[em_prefix + 'Voltage'] = status_json[f"{p}_voltage"]
-						s[em_prefix + 'Current'] = status_json[f"{p}_current"]
-						power += status_json[f"{p}_act_power"]
-						s[em_prefix + 'Power'] = status_json[f"{p}_act_power"]
+						s[em_prefix + 'Current'] = abs(status_json[f"{p}_current"])
+						power += abs(status_json[f"{p}_act_power"])
+						s[em_prefix + 'Power'] = abs(status_json[f"{p}_act_power"])
 						s[em_prefix + 'PowerFactor'] = status_json[f"{p}_pf"]
 					s['/Ac/Power'] = power
 
@@ -367,20 +367,20 @@ class ShellyHandler_em1(Shelly_EM_base, ShellyHandler_channel_config_mixin, Shel
 				em_prefix = "/Ac/L{}/".format(self._phase or 1)
 				if cap == 'em1':
 					s[em_prefix + 'Voltage'] = status_json["voltage"]
-					s[em_prefix + 'Current'] = status_json["current"]
-					s[em_prefix + 'Power'] = status_json["act_power"]
+					s[em_prefix + 'Current'] = abs(status_json["current"])
+					s[em_prefix + 'Power'] = abs(status_json["act_power"])
 					s[em_prefix + 'PowerFactor'] = status_json["pf"] if 'pf' in status_json else None
-					s['/Ac/Power'] = status_json["act_power"]
+					s['/Ac/Power'] = abs(status_json["act_power"])
 				elif cap == 'em1data':
 					if status_json["total_act_energy"] != 0:
 						s['/Ac/Energy/Forward'] = s[em_prefix + 'Energy/Forward'] = status_json["total_act_energy"] / 1000
 						s['/Ac/Energy/Reverse'] = s[em_prefix + 'Energy/Reverse'] = status_json["total_act_ret_energy"] / 1000
 				elif cap == 'pm1':
 					s[em_prefix + 'Voltage'] = status_json["voltage"]
-					s[em_prefix + 'Current'] = status_json["current"]
-					s[em_prefix + 'Power'] = status_json["apower"]
+					s[em_prefix + 'Current'] = abs(status_json["current"])
+					s[em_prefix + 'Power'] = abs(status_json["apower"])
 					s[em_prefix + 'PowerFactor'] = status_json["pf"] if 'pf' in status_json else None
-					s['/Ac/Power'] = status_json["apower"]
+					s['/Ac/Power'] = abs(status_json["apower"])
 					if status_json["aenergy"]["total"] != 0:
 						s['/Ac/Energy/Forward'] = s[em_prefix + 'Energy/Forward'] = status_json["aenergy"]["total"] / 1000
 						s['/Ac/Energy/Reverse'] = s[em_prefix + 'Energy/Reverse'] = status_json["ret_aenergy"]["total"] / 1000
@@ -480,10 +480,10 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 					#so, report values on the proper phase.
 					em_prefix = "/Ac/L{}/".format(self._phase)
 					s[em_prefix + 'Voltage'] = status_json["voltage"]
-					s[em_prefix + 'Current'] = status_json["current"]
-					s[em_prefix + 'Power'] = status_json["apower"]
+					s[em_prefix + 'Current'] = abs(status_json["current"])
+					s[em_prefix + 'Power'] = abs(status_json["apower"])
 					s[em_prefix + 'PowerFactor'] = status_json["pf"] if 'pf' in status_json else None
-					s['/Ac/Power'] = status_json["apower"]
+					s['/Ac/Power'] = abs(status_json["apower"])
 					# Shelly reports energy in Wh, so convert to kWh
 					if "aenergy" in status_json and status_json["aenergy"]["total"] != 0:
 						eforward = status_json["aenergy"]["total"] / 1000
