@@ -456,11 +456,11 @@ class ShellyOMBC(OMBCControlType):
 		msg = await self.send_system_description()
 		if (msg is None) or (msg.status != ReceptionStatusValues.OK):
 			logger.error("Failed to activate OMBC control type, reception status message: %s", msg)
-			self.deactivate(conn)
+			await self.deactivate(conn)
 			return
 		await self.send_status()
 
-	def deactivate(self, conn):
+	async def deactivate(self, conn):
 		if self._switch_item.rm_item is None:
 			logger.error("Switch item does not have a Resource Manager item, cannot deactivate OMBCControlTypeSwitch")
 			return
@@ -528,11 +528,11 @@ class ShellyNOCTRL(NoControlControlType):
 		self._switch_item = switch_item
 		super().__init__()
 
-	def activate(self, conn):
+	async def activate(self, conn):
 		logger.info("NOCTRL activated.")
 		self.system_description=None
 		self.on_id=None
 		self.off_id=None
 
-	def deactivate(self, conn):
+	async def deactivate(self, conn):
 		logger.info("NOCTRL deactivated.")
