@@ -487,10 +487,11 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 					# Shelly reports energy in Wh, so convert to kWh
 					if "aenergy" in status_json and status_json["aenergy"]["total"] != 0:
 						eforward = status_json["aenergy"]["total"] / 1000
-						ereverse = status_json["ret_aenergy"]["total"] / 1000
 						s[em_prefix + 'Energy/Forward'] = eforward
-						s[em_prefix + 'Energy/Reverse'] = ereverse
 						s['/Ac/Energy/Forward'] = eforward
+					if "ret_aenergy" in status_json:
+						ereverse = status_json["ret_aenergy"]["total"] / 1000
+						s[em_prefix + 'Energy/Reverse'] = ereverse
 						s['/Ac/Energy/Reverse'] = ereverse
 
 			except KeyError as e:
