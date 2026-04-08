@@ -433,9 +433,8 @@ class ShellyDevice(object):
 		await self.start_channel(channel)
 
 	async def stop(self):
-		for ch in self._channels.keys():
+		for ch in list(self._channels):
 			await self.stop_channel(ch)
-		self._channels.clear()
 
 		async with self._device_lock:
 			if self._shelly_device:
