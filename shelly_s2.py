@@ -315,6 +315,8 @@ class ShellyHandlerS2Mixin():
 		self.service.add_item(self.rm_item)
 
 class ShellyOMBC(OMBCControlType):
+	POST_MODE_CHANGE_POWER_UPDATE_DELAY_S = 2
+
 	@property
 	def active(self):
 		return self._active
@@ -440,6 +442,15 @@ class ShellyOMBC(OMBCControlType):
 		self._switch_item.state = (1 if op_id == self._id_on else 0)
 		logger.debug("Set operation mode to %s", "on" if op_id == self._id_on else "off")
 		# Don't set _status here. It will be updated by values_changed when its done. Status message will then also be sent to HEMS.
+
+		async def _force_delayed_update_after_mode_change():
+			await asyncio.sleep(self.POST_MODE_CHANGE_POWER_UPDATE_DELAY_S)
+			await self._switch_item.force_update()
+
+		# Refresh device status after each mode change so update() can publish a measurement when needed.
+		task = asyncio.create_task(_force_delayed_update_after_mode_change())
+		background_tasks.add(task)
+		task.add_done_callback(background_tasks.discard)
 
 	async def activate(self, conn):
 		logger.debug("Activate OMBCControlTypeSwitch")
