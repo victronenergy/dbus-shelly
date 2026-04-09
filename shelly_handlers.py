@@ -119,11 +119,19 @@ class ShellyHandler(object):
 		results = {}
 		for rpc in rpc_types:
 			resp = await self._rpc_call(f"{rpc}.{method}", params)
-			if fun:
+			if asyncio.iscoroutinefunction(fun):
+				await fun(resp, cap=rpc.lower())
+			elif fun:
 				fun(resp, cap=rpc.lower())
 			results[rpc] = resp
 		return results[rpc_types[0]] if is_single else results
-	
+
+	async def _get_device_name(self):
+		info = await self._rpc_call("Shelly.GetDeviceInfo")
+		if info:
+			return info.get('name') or info.get('app') or info.get('model')
+		return "Unknown shelly device"
+
 	# Override this in the handlers
 	def update(self, status_json, cap=None):
 		pass
@@ -170,11 +178,17 @@ class ShellyHandler_channel_config_mixin():
 	async def set_channel_config(self, config):
 		return await self.rpc_call('SetConfig', {"id": self._channel_id, "config": config})
 
-	def _update_customname(self, config, cap=None):
+	async def _update_customname(self, config, cap=None):
+		name = None
 		if config and 'name' in config:
-			with self.service as s:
-				for path in self._custom_name_paths:
-					s[path] = config.get('name') or ""
+			name = config['name']	# Try shelly channel custom name
+		if name is None:
+			# Otherwise fallback to device name + channel index
+			device_name = await self._get_device_name()
+			name = f"{device_name} - channel {self._channel_id}"
+		with self.service as s:
+			for path in self._custom_name_paths:
+				s[path] = name
 
 	async def set_custom_name(self, item, value):
 		if value is not None:
