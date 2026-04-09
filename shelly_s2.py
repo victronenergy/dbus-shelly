@@ -441,6 +441,19 @@ class ShellyOMBC(OMBCControlType):
 		logger.debug("Set operation mode to %s", "on" if op_id == self._id_on else "off")
 		# Don't set _status here. It will be updated by values_changed when its done. Status message will then also be sent to HEMS.
 
+		async def _force_delayed_update_after_mode_change():
+			# Make sure the update is done before the next iteration of OL (5 seconds)
+			await asyncio.sleep(2)
+			await self._switch_item.force_update()
+
+		# Refresh device status after each mode change so update() can publish a measurement when needed.
+		# After turning on/off the output, the Shelly will send a status update immediately, but with the old power measurement.
+		# This will lead OL to believe the load isn't consuming its nominal power, while the multi will report the increased consumption.
+		# To solve this, manually request a status update after 2 seconds.
+		task = asyncio.create_task(_force_delayed_update_after_mode_change())
+		background_tasks.add(task)
+		task.add_done_callback(background_tasks.discard)
+
 	async def activate(self, conn):
 		logger.debug("Activate OMBCControlTypeSwitch")
 		if self._switch_item.rm_item is None:
