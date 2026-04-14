@@ -256,6 +256,10 @@ class Shelly_EM_base(ShellyHandler_EM_paths_mixin):
 			self._phase = self.settings.get_value(self.settings.alias("phasesetting_{}_{}".format(self._serial, self._channel_id)))
 			self.service.add_item(IntegerItem('/PhaseSetting', self._phase, writeable=True, onchange=self.phase_changed))
 
+		# For PV inverters, a /StatusCode path is expected, but shelly does not support this. So, add the path with value 99, indicating "not supported".
+		if _em_role == 'pvinverter':
+			self.service.add_item(IntegerItem('/StatusCode', 99, writeable=False, text=lambda v: "Not supported" if v == 99 else "Unknown status code"))
+
 		# Indicate when we're masquerading for another device
 		self.service.add_item(IntegerItem('/IsGenericEnergyMeter', 1))
 
