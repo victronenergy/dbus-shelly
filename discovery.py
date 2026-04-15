@@ -137,8 +137,16 @@ class ShellyDiscovery(object):
 			if not ip_found:
 				await self._add_device(ip, serial=None, manual=True)
 
+		# Clear refresh path in case it was triggered.
+		if self.service['/Refresh'] != 0:
+			with self.service as s:
+				s['/Refresh'] = 0
+
 	async def refresh(self, item, value):
 		if value == 1:
+			# Instead of setting the value back to 0 immediately, set it to 1 here and reset it later.
+			# This is needed to make sure refresh can be triggered again later.
+			item.set_local_value(value)
 			# Delete discovered devices that are currently disabled.
 			for serial in self.discovered_devices + self.saved_devices:
 				delete = True
@@ -167,7 +175,6 @@ class ShellyDiscovery(object):
 
 			# Retry adding the manually added IP addresses
 			self._start_add_by_ip_address_task(self.settings.get_value(self.settings.alias('ipaddresses')))
-		item.set_local_value(0)
 
 	def remove_discovered_device(self, serial):
 		if serial in self.discovered_devices:
