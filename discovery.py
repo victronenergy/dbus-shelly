@@ -29,6 +29,7 @@ from shelly_device import ShellyDevice
 from utils import logger, wait_for_settings
 
 background_tasks = set()
+ADD_BY_IP_RECHECK_SECONDS = 15 * 60
 
 class ShellyDiscovery(object):
 	def __init__(self, bus_type):
@@ -40,6 +41,8 @@ class ShellyDiscovery(object):
 		self.bus_type = bus_type
 		self.aiobrowser = None
 		self.aiozc = None
+		self._add_by_ip_task = None
+		self._add_by_ip_wakeup = asyncio.Event()
 		self._mdns_lock = asyncio.Lock()
 		self._shelly_lock = asyncio.Lock()
 		self._enable_tasks = {}
@@ -68,20 +71,52 @@ class ShellyDiscovery(object):
 		)
 
 		if ip_addresses != "":
-			self._start_add_by_ip_address_task(ip_addresses)
+			self._start_add_by_ip_address_task()
+			self._add_by_ip_wakeup.set()
 
 		await self.bus.wait_for_disconnect()
 
-	def _start_add_by_ip_address_task(self, ip_addresses):
-		task = asyncio.create_task(self._add_devices_by_ip(ip_addresses.split(',')))
-		background_tasks.add(task)
-		task.add_done_callback(background_tasks.discard)
+	def _start_add_by_ip_address_task(self):
+		if self._add_by_ip_task is None or self._add_by_ip_task.done():
+			self._add_by_ip_task = asyncio.create_task(self._run_add_by_ip_periodic())
+
+	async def _run_add_by_ip_periodic(self):
+		try:
+			while True:
+				# Run immediately if already woken; otherwise wait for wakeup or periodic timeout.
+				if self._add_by_ip_wakeup.is_set():
+					self._add_by_ip_wakeup.clear()
+				else:
+					try:
+						await asyncio.wait_for(self._add_by_ip_wakeup.wait(), timeout=ADD_BY_IP_RECHECK_SECONDS)
+						self._add_by_ip_wakeup.clear()
+					except asyncio.TimeoutError:
+						# Don't clear on timeout; a wakeup may have arrived just after timeout.
+						pass
+
+				ip_addresses = self.settings.get_value(self.settings.alias('ipaddresses'))
+				if ip_addresses == "":
+					return
+
+				await self._add_devices_by_ip(ip_addresses.split(','))
+		except asyncio.CancelledError:
+			raise
+		finally:
+			self._add_by_ip_task = None
+			self._add_by_ip_wakeup.clear()
+
+	def _cancel_add_by_ip_address_task(self):
+		if self._add_by_ip_task is not None and not self._add_by_ip_task.done():
+			self._add_by_ip_task.cancel()
+		self._add_by_ip_task = None
+		self._add_by_ip_wakeup.clear()
 
 	async def _on_ip_addresses_changed(self, item, value):
 		if value == "":
 			if self.settings.get_value(self.settings.alias('ipaddresses')) != "":
 				await self.settings.set_value(self.settings.alias('ipaddresses'), value)
 			item.set_local_value(value)
+			self._cancel_add_by_ip_address_task()
 			return
 
 		for ip in value.split(','):
@@ -100,8 +135,8 @@ class ShellyDiscovery(object):
 		if value != self.settings.get_value(self.settings.alias('ipaddresses')):
 			await self.settings.set_value(self.settings.alias('ipaddresses'), value)
 		item.set_local_value(value)
-
-		self._start_add_by_ip_address_task(value)
+		self._start_add_by_ip_address_task()
+		self._add_by_ip_wakeup.set()
 
 	async def _add_devices_by_ip(self, ipaddresses):
 		# Track which serials are in saved_devices for safe iteration
@@ -174,7 +209,12 @@ class ShellyDiscovery(object):
 				)
 
 			# Retry adding the manually added IP addresses
-			self._start_add_by_ip_address_task(self.settings.get_value(self.settings.alias('ipaddresses')))
+			ip_addresses = self.settings.get_value(self.settings.alias('ipaddresses'))
+			if ip_addresses != "":
+				self._start_add_by_ip_address_task()
+				self._add_by_ip_wakeup.set()
+			else:
+				self._cancel_add_by_ip_address_task()
 
 	def remove_discovered_device(self, serial):
 		if serial in self.discovered_devices:
@@ -252,6 +292,7 @@ class ShellyDiscovery(object):
 		pass
 
 	async def stop(self):
+		self._cancel_add_by_ip_address_task()
 		assert self.aiozc is not None
 		assert self.aiobrowser is not None
 		await self.aiobrowser.async_cancel()
