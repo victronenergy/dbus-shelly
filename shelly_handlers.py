@@ -18,11 +18,12 @@ background_tasks = set()
 
 # Capability -> handler class registry
 HANDLER_KIND_SWITCH = "switch"
+HANDLER_KIND_EM1 = "em1"
 HANDLER_KIND_EM = "em"
 HANDLER_KIND_GENERIC = "generic"
 
 # Handler type generic is not included here because a channel which only has generic capabilities (or unsupported ones) should not be listed.
-FUNCTIONAL_HANDLERS = [HANDLER_KIND_SWITCH, HANDLER_KIND_EM]
+FUNCTIONAL_HANDLERS = [HANDLER_KIND_SWITCH, HANDLER_KIND_EM1, HANDLER_KIND_EM]
 
 _HANDLER_REGISTRY = {}
 _CAPS_BY_KIND = {kind: [] for kind in FUNCTIONAL_HANDLERS}
@@ -368,7 +369,7 @@ class ShellyHandler_em(Shelly_EM_base, ShellyHandler_channel_config_mixin, Shell
 
 # EM1Data handler, puts energy metering data on dbus.
 # The EM1Data component is available on single-phase shelly energy meters.
-@register_handler('EM1', 'EM1Data', 'PM1', kind=HANDLER_KIND_EM)
+@register_handler('EM1', 'EM1Data', 'PM1', kind=HANDLER_KIND_EM1)
 class ShellyHandler_em1(Shelly_EM_base, ShellyHandler_channel_config_mixin, ShellyHandler):
 	async def ainit(self):
 		self._num_phases = 1
