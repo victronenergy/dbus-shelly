@@ -155,6 +155,8 @@ class ShellyHandlerS2Mixin():
 
 		# Let the CEM know the RM is ready to connect.
 		await self.rm_item.set_ready(True, control_types=control_types, asset_details=self._rm_details)
+		if self.rm_item.is_connected:
+			await self.rm_item.send_resource_manager_details(control_types=control_types, asset_details=self._rm_details)
 
 		self._rm_enabled = True
 
@@ -223,6 +225,8 @@ class ShellyHandlerS2Mixin():
 			# Close S2 connection
 			# Updating the allowed control types is probably not needed here since the S2 connection will be closed anyways.
 			await self.rm_item.set_ready(False, control_types=[self._control_type_noctrl], asset_details=self._rm_details)
+			if self.rm_item.is_connected:
+				await self.rm_item.send_resource_manager_details(control_types=[self._control_type_noctrl], asset_details=self._rm_details)
 
 			# Clear S2 paths
 			with self.service as s:
