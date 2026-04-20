@@ -333,6 +333,34 @@ class ShellyOMBC(OMBCControlType):
 		self._active = False
 		self._status = None
 		self._switch_item = switch_item
+		self._status_queue = asyncio.Queue()
+		self._status_queue_stop = object()
+		self._status_worker_task = None
+
+	def _ensure_status_worker(self):
+		if self._status_worker_task is None or self._status_worker_task.done():
+			self._status_worker_task = asyncio.create_task(self._status_sender_worker())
+
+	async def _stop_status_worker(self):
+		if self._status_worker_task is None:
+			return
+
+		if not self._status_worker_task.done():
+			self._status_queue.put_nowait(self._status_queue_stop)
+			try:
+				await self._status_worker_task
+			except Exception as e:
+				logger.error("Status worker stopped with error: %s", e)
+
+		self._status_worker_task = None
+
+	async def _status_sender_worker(self):
+		while True:
+			status = await self._status_queue.get()
+			if status is self._status_queue_stop:
+				return
+
+			await self.send_status(status)
 
 	def _make_system_description(self):
 		#First, create the system description required. It contains 2 controltypes (On / Off)
@@ -401,9 +429,9 @@ class ShellyOMBC(OMBCControlType):
 		if 'Status' in values and self._status != values['Status']:
 			# Status has changed, update the HEMS
 			self._status = values['Status']
-			task = asyncio.create_task(self.send_status())
-			background_tasks.add(task)
-			task.add_done_callback(background_tasks.discard)
+			if self._active:
+				self._ensure_status_worker()
+				self._status_queue.put_nowait(self._status)
 
 		if 'Power' in values:
 			power = values['Power']
@@ -475,13 +503,15 @@ class ShellyOMBC(OMBCControlType):
 			logger.error("Failed to activate OMBC control type, reception status message: %s", msg)
 			await self.deactivate(conn)
 			return
-		await self.send_status()
+		self._ensure_status_worker()
+		self._status_queue.put_nowait(self._status)
 
 	async def deactivate(self, conn):
 		if self._switch_item.rm_item is None:
 			logger.error("Switch item does not have a Resource Manager item, cannot deactivate OMBCControlTypeSwitch")
 			return
 		logger.debug("Deactivate OMBCControlTypeSwitch")
+		await self._stop_status_worker()
 		self._active = False
 		self._switch_item.s2_active = 0
 
@@ -497,12 +527,9 @@ class ShellyOMBC(OMBCControlType):
 			logger.error("Failed to send OMBCSystemDescription: %s", e)
 			return
 
-	async def send_status(self):
-		if not self._active:
-			return
-
-		logger.debug("Sending status for OMBCControlTypeSwitch, current status: %s", self._status)
-		operation_mode = self._id_on if self._status == STATUS_ON else self._id_off
+	async def send_status(self, status):
+		logger.debug("Sending status for OMBCControlTypeSwitch, current status: %s", status)
+		operation_mode = self._id_on if status == STATUS_ON else self._id_off
 		try:
 			return await self._switch_item.rm_item.send_msg_and_await_reception_status(
 				OMBCStatus(
@@ -519,8 +546,6 @@ class ShellyOMBC(OMBCControlType):
 			self._previous_operation_mode = operation_mode
 
 	async def send_power_measurement(self):
-		if not self._active:
-			return
 		try:
 			logger.info("Sending Power Measurement {}={}W".format(self._switch_item.rm_item.asset_details.name, self._switch_item.power))
 			await self._switch_item.rm_item.send_msg_and_await_reception_status(
