@@ -40,7 +40,6 @@ from __main__ import VERSION
 from utils import STATUS_ON, formatters as fmt, OutputFunction, OutputType
 
 logger = logging.getLogger('switch-device-rm')
-logger.setLevel(logging.DEBUG)
 background_tasks = set()
 
 def phase_setting_to_commodity(phase:int)-> CommodityQuantity:
@@ -142,7 +141,7 @@ class ShellyHandlerS2Mixin():
 		else:
 			self._control_type_ombc.enabled = False
 
-		logger.debug(f"Shelly RM: Device {self._serial}, channel {channel}, offering control types: {[type(ct).__name__ for ct in control_types]}")
+		logger.info(f"Shelly RM: Device {self._serial}, channel {channel}, offering control types: {[type(ct).__name__ for ct in control_types]}")
 		# Paths not yet present.
 		if not self.has_rm:
 			await self._add_rm_to_service(channel, control_types)
@@ -251,7 +250,7 @@ class ShellyHandlerS2Mixin():
 		ret = await super()._value_changed(path, item, value)
 
 		if path.endswith('/PhaseSetting') and ret and self._rm_enabled and self._control_type_ombc.active:
-			logger.debug("Phase setting changed, updating OMBC system description")
+			logger.info("Phase setting changed, updating OMBC system description")
 			task = asyncio.create_task(self._control_type_ombc.send_system_description())
 			background_tasks.add(task)
 			task.add_done_callback(background_tasks.discard)
@@ -270,7 +269,7 @@ class ShellyHandlerS2Mixin():
 			# Update OMBC system description when (relevant)power setting changes.
 			relevant_settings = ["PowerSetting", "OnHysteresis", "OffHysteresis"]
 			if split[-1] in relevant_settings and self._rm_enabled and self._control_type_ombc.active:
-				logger.debug(f"setting changed: {split[-1]}, updating OMBC system description")
+				logger.info(f"setting changed: {split[-1]}, updating OMBC system description")
 				task = asyncio.create_task(self._control_type_ombc.send_system_description())
 				background_tasks.add(task)
 				task.add_done_callback(background_tasks.discard)
@@ -567,7 +566,7 @@ class ShellyOMBC(OMBCControlType):
 
 	async def send_power_measurement(self):
 		try:
-			logger.info("Sending Power Measurement {}={}W".format(self._switch_item.rm_item.asset_details.name, self._switch_item.power))
+			logger.debug("Sending Power Measurement {}={}W".format(self._switch_item.rm_item.asset_details.name, self._switch_item.power))
 			await self._switch_item.rm_item.send_msg_and_await_reception_status(
 				PowerMeasurement(
 					message_id=uuid.uuid4(),
