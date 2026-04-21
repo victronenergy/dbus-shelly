@@ -345,6 +345,9 @@ class ShellyOMBC(OMBCControlType):
 		self._status_queue = asyncio.Queue()
 		self._status_queue_stop = object()
 		self._status_worker_task = None
+		self._power_queue = asyncio.Queue()
+		self._power_queue_stop = object()
+		self._power_worker_task = None
 
 	def _ensure_status_worker(self):
 		if self._status_worker_task is None or self._status_worker_task.done():
@@ -370,6 +373,31 @@ class ShellyOMBC(OMBCControlType):
 				return
 
 			await self.send_status(status)
+
+	def _ensure_power_worker(self):
+		if self._power_worker_task is None or self._power_worker_task.done():
+			self._power_worker_task = asyncio.create_task(self._power_sender_worker())
+
+	async def _stop_power_worker(self):
+		if self._power_worker_task is None:
+			return
+
+		if not self._power_worker_task.done():
+			self._power_queue.put_nowait(self._power_queue_stop)
+			try:
+				await self._power_worker_task
+			except Exception as e:
+				logger.error("Power worker stopped with error: %s", e)
+
+		self._power_worker_task = None
+
+	async def _power_sender_worker(self):
+		while True:
+			power = await self._power_queue.get()
+			if power is self._power_queue_stop:
+				return
+
+			await self.send_power_measurement(power)
 
 	def _make_system_description(self):
 		#First, create the system description required. It contains 2 controltypes (On / Off)
@@ -447,9 +475,10 @@ class ShellyOMBC(OMBCControlType):
 			# we cannot monitor for a significant power change here.
 			# Sometimes the shelly reports 2 or 3 watt as last state before beeing off,
 			# this would then get "stuck", cause the 0 is no longer transfered.
-			task = asyncio.create_task(self.send_power_measurement())
-			background_tasks.add(task)
-			task.add_done_callback(background_tasks.discard)
+
+			# TODO: Reduce load by preventing (nearly) equal power measurements to be sent.
+			self._ensure_power_worker()
+			self._power_queue.put_nowait(values['Power'])
 
 	async def handle_instruction(self, conn, msg, send_okay):
 		if not isinstance(msg, OMBCInstruction):
@@ -518,6 +547,7 @@ class ShellyOMBC(OMBCControlType):
 			return
 		self._ensure_status_worker()
 		self._status_queue.put_nowait(self._status)
+		self._ensure_power_worker()
 
 	async def deactivate(self, conn):
 		if self._switch_item.rm_item is None:
@@ -525,6 +555,7 @@ class ShellyOMBC(OMBCControlType):
 			return
 		logger.debug("Deactivate OMBCControlTypeSwitch")
 		await self._stop_status_worker()
+		await self._stop_power_worker()
 		self._active = False
 		self._switch_item.s2_active = 0
 
@@ -558,9 +589,9 @@ class ShellyOMBC(OMBCControlType):
 		finally:
 			self._previous_operation_mode = operation_mode
 
-	async def send_power_measurement(self):
+	async def send_power_measurement(self, power):
 		try:
-			logger.debug("Sending Power Measurement {}={}W".format(self._switch_item.rm_item.asset_details.name, self._switch_item.power))
+			logger.debug("Sending Power Measurement {}={}W".format(self._switch_item.rm_item.asset_details.name, power))
 			await self._switch_item.rm_item.send_msg_and_await_reception_status(
 				PowerMeasurement(
 					message_id=uuid.uuid4(),
@@ -568,7 +599,7 @@ class ShellyOMBC(OMBCControlType):
 					values=[
 						PowerValue(
 							commodity_quantity= phase_setting_to_commodity(self._switch_item.phase),
-							value=self._switch_item.power
+							value=power
 						)
 					]
 				)
