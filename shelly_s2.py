@@ -123,9 +123,6 @@ class ShellyHandlerS2Mixin():
 			logger.info(f"Enabling S2 Resource Manager for device {self._serial}, channel {channel}")
 			await self.enable_rm(channel, auto_value)
 
-			#FIXME: Better read the current state, and just report that, so a restart of S2 just continues where it was.
-			logger.debug("Setting output state off initially")
-			self.state = 0
 		else:
 			# Disable RM if it was running
 			if self._rm_enabled:
