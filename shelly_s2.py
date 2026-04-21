@@ -338,7 +338,6 @@ class ShellyOMBC(OMBCControlType):
 		self._id_on_off = uuid.uuid4()
 		self._id_off_on = uuid.uuid4()
 		self._previous_operation_mode = None
-		self._previous_power = 0
 		self._enabled = False
 		self._active = False
 		self._status = None
@@ -433,7 +432,7 @@ class ShellyOMBC(OMBCControlType):
 
 	def values_changed(self, values):
 		#Ensure a 0 power package is transfered, even if the device isn't active anymore.
-		if not self._active and self._previous_power == 0:
+		if not self._active:
 			return
 
 		# Let status update pass when control type is disabled because in that case the state won't change but the HEMS still needs to be notified.
@@ -445,11 +444,9 @@ class ShellyOMBC(OMBCControlType):
 				self._status_queue.put_nowait(self._status)
 
 		if 'Power' in values:
-			power = values['Power']
 			# we cannot monitor for a significant power change here.
 			# Sometimes the shelly reports 2 or 3 watt as last state before beeing off,
 			# this would then get "stuck", cause the 0 is no longer transfered.
-			self._previous_power = power
 			task = asyncio.create_task(self.send_power_measurement())
 			background_tasks.add(task)
 			task.add_done_callback(background_tasks.discard)
