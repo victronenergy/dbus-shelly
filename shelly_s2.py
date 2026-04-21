@@ -137,7 +137,11 @@ class ShellyHandlerS2Mixin():
 	async def enable_rm(self, channel, enabled):
 		control_types = [self._control_type_noctrl]
 		if enabled:
+			self._control_type_ombc.enabled = True
 			control_types.append(self._control_type_ombc)
+		else:
+			self._control_type_ombc.enabled = False
+
 		logger.debug(f"Shelly RM: Device {self._serial}, channel {channel}, offering control types: {[type(ct).__name__ for ct in control_types]}")
 		# Paths not yet present.
 		if not self.has_rm:
@@ -319,6 +323,15 @@ class ShellyHandlerS2Mixin():
 		self.service.add_item(self.rm_item)
 
 class ShellyOMBC(OMBCControlType):
+
+	@property
+	def enabled(self):
+		return self._enabled
+
+	@enabled.setter
+	def enabled(self, value):
+		self._enabled = value
+
 	@property
 	def active(self):
 		return self._active
@@ -330,6 +343,7 @@ class ShellyOMBC(OMBCControlType):
 		self._id_off_on = uuid.uuid4()
 		self._previous_operation_mode = None
 		self._previous_power = 0
+		self._enabled = False
 		self._active = False
 		self._status = None
 		self._switch_item = switch_item
@@ -426,7 +440,8 @@ class ShellyOMBC(OMBCControlType):
 		if not self._active and self._previous_power == 0:
 			return
 
-		if 'Status' in values and self._status != values['Status']:
+		# Let status update pass when control type is disabled because in that case the state won't change but the HEMS still needs to be notified.
+		if 'Status' in values and (self._status != values['Status'] or not self._enabled):
 			# Status has changed, update the HEMS
 			self._status = values['Status']
 			if self._active:
@@ -449,7 +464,6 @@ class ShellyOMBC(OMBCControlType):
 			return
 
 		if not self._active:
-			logger.error("OMBCControlTypeSwitch is not active, ignoring instruction")
 			return
 
 		op_id = msg.operation_mode_id
@@ -457,7 +471,13 @@ class ShellyOMBC(OMBCControlType):
 			logger.error("Received unknown operation mode ID: %s", op_id)
 			return
 
-		logger.info("Op-Id selected by EMS: {}".format(op_id))
+		if self._enabled:
+			logger.info("Op-Id selected by EMS: {}".format(op_id))
+		else:
+			# OMBC control type is not enabled, but HEMS may not be aware of that. Keep S2 message flow going but do not change the state.
+			op_id = self._id_on if self._switch_item.state == 1 else self._id_off
+			logger.warning("Received OMBCInstruction while control type is not enabled, state transition will be ignored")
+
 		seconds = (msg.execution_time - datetime.now(timezone.utc)).total_seconds()
 		task = asyncio.create_task(self._set_operation_mode(op_id, max(0, seconds)))
 		background_tasks.add(task)
