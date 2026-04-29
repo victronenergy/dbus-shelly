@@ -214,8 +214,9 @@ class ShellyDevice(object):
 				raise ShellyConnectionError()
 
 			try:
-				async with async_timeout.timeout(5):
-					await self._shelly_device.initialize()
+				# Let aioshelly manage RPC call timeouts internally to avoid
+				# cancelling in-flight RPC futures from an outer timeout wrapper.
+				await self._shelly_device.initialize()
 			except Exception:
 				logger.warning("Failed to initialize shelly device %s", self.serial_or_server)
 				raise ShellyConnectionError()
@@ -452,9 +453,10 @@ class ShellyDevice(object):
 			return False
 		try:
 			async with self._rpc_lock:
-				async with async_timeout.timeout(2):
-					resp = await self._shelly_device.call_rpc("Shelly.GetDeviceInfo")
-					return resp is not None
+				resp = await self._shelly_device.call_rpc_multiple(
+					(("Shelly.GetDeviceInfo", None),), timeout=2
+				)
+				return len(resp) > 0 and resp[0] is not None
 		except Exception as e:
 			logger.error("Ping to shelly device %s failed: %s", self.serial_or_server, e)
 			return False
@@ -466,10 +468,12 @@ class ShellyDevice(object):
 			return None
 		try:
 			async with self._rpc_lock:
-				# Aioshelly uses a timeout of 10 seconds.
-				# We use a shorter timeout to detect connection issues faster.
-				async with async_timeout.timeout(4):
-					resp = await self._shelly_device.call_rpc(method, params)
+				# Use aioshelly's own timeout handling to avoid cancelling
+				# in-flight per-call futures from an outer timeout context.
+				resp_list = await self._shelly_device.call_rpc_multiple(
+					((method, params),), timeout=4
+				)
+				resp = resp_list[0] if resp_list else None
 		except (DeviceConnectionError, TimeoutError):
 			logger.error("Failed to call RPC method on shelly device %s", self.serial_or_server)
 			self.do_reconnect()
