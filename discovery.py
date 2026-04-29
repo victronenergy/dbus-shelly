@@ -31,70 +31,81 @@ from utils import logger, wait_for_settings
 background_tasks = set()
 ADD_BY_IP_RECHECK_SECONDS = 15 * 60
 
-class ShellyDiscovery(object):
-	def __init__(self, bus_type):
-		self.discovered_devices = []
-		self.saved_devices = []
-		self.shellies = {}
-		self.service = None
-		self.settings = None
-		self.bus_type = bus_type
-		self.aiobrowser = None
-		self.aiozc = None
-		self._add_by_ip_task = None
-		self._add_by_ip_wakeup = asyncio.Event()
-		self._mdns_lock = asyncio.Lock()
-		self._shelly_lock = asyncio.Lock()
-		self._enable_tasks = {}
 
-	async def start(self):
-		# Connect to dbus, localsettings
-		self.bus = await MessageBus(bus_type=self.bus_type).connect()
-		self.monitor = await Monitor.create(self.bus, itemsChanged=self.items_changed)
+class ManualIpDiscovery(object):
+	"""Manages manual device discovery from the /IpAddresses setting.
 
-		self.settings = await wait_for_settings(self.bus)
+	Validates user-provided IP entries, runs periodic rechecks,
+	and reconciles manual devices with the active IP list.
+	"""
 
-		# Set up the service
-		self.service = Service(self.bus, "com.victronenergy.shelly")
-		await self.settings.add_settings(Setting('/Settings/Shelly/IpAddresses', "", alias="ipaddresses"))
+	def __init__(
+		self,
+		settings,
+		service,
+		saved_devices,
+		discovered_devices,
+		shellies,
+		add_device_callback,
+		remove_device_callback,
+		logger_obj,
+		recheck_seconds=ADD_BY_IP_RECHECK_SECONDS,
+		settings_alias='ipaddresses',
+	):
+		self.settings = settings
+		self.service = service
+		self.saved_devices = saved_devices
+		self.discovered_devices = discovered_devices
+		self.shellies = shellies
+		self._add_device = add_device_callback
+		self._remove_device = remove_device_callback
+		self.logger = logger_obj
+		self.recheck_seconds = recheck_seconds
+		self.settings_alias = settings_alias
 
-		ip_addresses = self.settings.get_value(self.settings.alias('ipaddresses'))
+		self._task = None
+		self._wakeup = asyncio.Event()
+		self._ip_rgx = re.compile(r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?::[0-9]{1,5})?$")
 
-		self.service.add_item(IntegerItem('/Refresh', 0, writeable=True,
-			onchange=self.refresh))
-		self.service.add_item(TextItem('/IpAddresses', ip_addresses, writeable=True, onchange=self._on_ip_addresses_changed))
-		await self.service.register()
+	def start_if_needed(self, ip_addresses):
+		if ip_addresses == "":
+			return
+		self._start_task()
+		self._wakeup.set()
 
-		self.aiozc = AsyncZeroconf()
-		self.aiobrowser = AsyncServiceBrowser(
-			self.aiozc.zeroconf, ["_shelly._tcp.local."], handlers=[self.on_service_state_change]
-		)
-
+	async def on_refresh(self):
+		ip_addresses = self.settings.get_value(self.settings.alias(self.settings_alias))
 		if ip_addresses != "":
-			self._start_add_by_ip_address_task()
-			self._add_by_ip_wakeup.set()
+			self._start_task()
+			self._wakeup.set()
+		else:
+			self.stop()
 
-		await self.bus.wait_for_disconnect()
+	def stop(self):
+		if self._task is not None and not self._task.done():
+			self._task.cancel()
+		self._task = None
+		self._wakeup.clear()
 
-	def _start_add_by_ip_address_task(self):
-		if self._add_by_ip_task is None or self._add_by_ip_task.done():
-			self._add_by_ip_task = asyncio.create_task(self._run_add_by_ip_periodic())
+	def _start_task(self):
+		if self._task is None or self._task.done():
+			self._task = asyncio.create_task(self._run_periodic())
 
-	async def _run_add_by_ip_periodic(self):
+	async def _run_periodic(self):
 		try:
 			while True:
 				# Run immediately if already woken; otherwise wait for wakeup or periodic timeout.
-				if self._add_by_ip_wakeup.is_set():
-					self._add_by_ip_wakeup.clear()
+				if self._wakeup.is_set():
+					self._wakeup.clear()
 				else:
 					try:
-						await asyncio.wait_for(self._add_by_ip_wakeup.wait(), timeout=ADD_BY_IP_RECHECK_SECONDS)
-						self._add_by_ip_wakeup.clear()
+						await asyncio.wait_for(self._wakeup.wait(), timeout=self.recheck_seconds)
+						self._wakeup.clear()
 					except asyncio.TimeoutError:
 						# Don't clear on timeout; a wakeup may have arrived just after timeout.
 						pass
 
-				ip_addresses = self.settings.get_value(self.settings.alias('ipaddresses'))
+				ip_addresses = self.settings.get_value(self.settings.alias(self.settings_alias))
 				if ip_addresses == "":
 					return
 
@@ -102,41 +113,32 @@ class ShellyDiscovery(object):
 		except asyncio.CancelledError:
 			raise
 		finally:
-			self._add_by_ip_task = None
-			self._add_by_ip_wakeup.clear()
+			self._task = None
+			self._wakeup.clear()
 
-	def _cancel_add_by_ip_address_task(self):
-		if self._add_by_ip_task is not None and not self._add_by_ip_task.done():
-			self._add_by_ip_task.cancel()
-		self._add_by_ip_task = None
-		self._add_by_ip_wakeup.clear()
-
-	async def _on_ip_addresses_changed(self, item, value):
+	async def on_ip_addresses_changed(self, item, value):
 		if value == "":
-			if self.settings.get_value(self.settings.alias('ipaddresses')) != "":
-				await self.settings.set_value(self.settings.alias('ipaddresses'), value)
+			if self.settings.get_value(self.settings.alias(self.settings_alias)) != "":
+				await self.settings.set_value(self.settings.alias(self.settings_alias), value)
 			item.set_local_value(value)
-			self._cancel_add_by_ip_address_task()
+			self.stop()
 			return
 
 		for ip in value.split(','):
-			# Validate IP address format
-			rgx = re.compile(
-				r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?::[0-9]{1,5})?$"
-			)
-			if not rgx.match(ip):
-				logger.error("Invalid IP address format: %s", ip)
+			if not self._ip_rgx.match(ip):
+				self.logger.error("Invalid IP address format: %s", ip)
 				return
 			if ":" in ip:
 				port_str = ip.rsplit(":", 1)[1]
 				if not port_str.isdigit() or not 1 <= int(port_str) <= 65535:
-					logger.error("Invalid port in IP address: %s", ip)
+					self.logger.error("Invalid port in IP address: %s", ip)
 					return
-		if value != self.settings.get_value(self.settings.alias('ipaddresses')):
-			await self.settings.set_value(self.settings.alias('ipaddresses'), value)
+
+		if value != self.settings.get_value(self.settings.alias(self.settings_alias)):
+			await self.settings.set_value(self.settings.alias(self.settings_alias), value)
 		item.set_local_value(value)
-		self._start_add_by_ip_address_task()
-		self._add_by_ip_wakeup.set()
+		self._start_task()
+		self._wakeup.set()
 
 	async def _add_devices_by_ip(self, ipaddresses):
 		# Track which serials are in saved_devices for safe iteration
@@ -157,7 +159,7 @@ class ShellyDiscovery(object):
 						s['/Devices/{}/DiscoveryType'.format(serial)] = 'mDNS'
 				# Otherwise, if not enabled and not discoverable via mDNS, fully remove the device
 				elif serial not in self.shellies:
-					self.remove_discovered_device(serial)
+					self._remove_device(serial)
 
 		for ip in set(ipaddresses): # Use set to avoid duplicates
 			ip_found = False
@@ -165,56 +167,109 @@ class ShellyDiscovery(object):
 			for serial in self.discovered_devices + self.saved_devices:
 				device_ip = self.service.get_item('/Devices/{}/Ip'.format(serial))
 				if device_ip is not None and device_ip.value == ip:
-					logger.info("Device with IP %s already found, SN: %s", ip, serial)
+					self.logger.info("Device with IP %s already found, SN: %s", ip, serial)
 					ip_found = True
 					break
 
 			if not ip_found:
 				await self._add_device(ip, serial=None, manual=True)
 
-		# Clear refresh path in case it was triggered.
-		if self.service['/Refresh'] != 0:
-			with self.service as s:
-				s['/Refresh'] = 0
 
-	async def refresh(self, item, value):
-		if value == 1:
-			# Instead of setting the value back to 0 immediately, set it to 1 here and reset it later.
-			# This is needed to make sure refresh can be triggered again later.
-			item.set_local_value(value)
-			# Delete discovered devices that are currently disabled.
-			for serial in self.discovered_devices + self.saved_devices:
-				delete = True
-				i = 1
-				while (True):
-					enabled_item = self.service.get_item(f'/Devices/{serial}/{i}/Enabled')
-					if enabled_item is None:
-						break
-					# Only delete if all channels are disabled
-					if enabled_item.value == 1:
-						delete = False
-						break
-					i += 1
-				if delete:
-					# Remove from the list if not enabled
-					self.remove_discovered_device(serial)
-				elif serial in self.shellies:
-					# Try reconnecting if enabled.
-					self.shellies[serial]['device'].do_reconnect()
-			async with self._mdns_lock:
-				if self.aiobrowser is not None:
-					await self.aiobrowser.async_cancel()
+class MdnsDiscovery(object):
+	"""Handles Zeroconf mDNS browsing for Shelly devices.
+
+	Translates mDNS add/update/remove events into callback-based
+	candidate and removal notifications for the manager.
+	"""
+
+	def __init__(self, on_candidate_callback, on_removed_callback):
+		self._on_candidate = on_candidate_callback
+		self._on_removed = on_removed_callback
+		self.aiozc = None
+		self.aiobrowser = None
+		self._mdns_lock = asyncio.Lock()
+		self._name_rgx = re.compile(r"^shelly[\d\w\-]+-[0-9a-f]{12}\._shelly\._tcp\.local\.$")
+
+	async def start(self):
+		self.aiozc = AsyncZeroconf()
+		self.aiobrowser = AsyncServiceBrowser(
+			self.aiozc.zeroconf,
+			["_shelly._tcp.local."],
+			handlers=[self.on_service_state_change],
+		)
+
+	async def restart(self):
+		async with self._mdns_lock:
+			if self.aiobrowser is not None:
+				await self.aiobrowser.async_cancel()
+			if self.aiozc is not None:
 				self.aiobrowser = AsyncServiceBrowser(
-					self.aiozc.zeroconf, ["_shelly._tcp.local."], handlers=[self.on_service_state_change]
+					self.aiozc.zeroconf,
+					["_shelly._tcp.local."],
+					handlers=[self.on_service_state_change],
 				)
 
-			# Retry adding the manually added IP addresses
-			ip_addresses = self.settings.get_value(self.settings.alias('ipaddresses'))
-			if ip_addresses != "":
-				self._start_add_by_ip_address_task()
-				self._add_by_ip_wakeup.set()
-			else:
-				self._cancel_add_by_ip_address_task()
+	async def stop(self):
+		if self.aiobrowser is not None:
+			await self.aiobrowser.async_cancel()
+			self.aiobrowser = None
+		if self.aiozc is not None:
+			await self.aiozc.async_close()
+			self.aiozc = None
+
+	def on_service_state_change(self, zeroconf, service_type, name, state_change):
+		if not self._name_rgx.match(name):
+			return
+		task = asyncio.get_event_loop().create_task(
+			self._on_service_state_change_async(zeroconf, service_type, name, state_change)
+		)
+		task.add_done_callback(background_tasks.discard)
+		background_tasks.add(task)
+
+	async def _on_service_state_change_async(self, zeroconf, service_type, name, state_change):
+		async with self._mdns_lock:
+			info = AsyncServiceInfo(service_type, name)
+			await info.async_request(zeroconf, 3000)
+			if not info or not info.server:
+				return
+			serial = info.server.split(".")[0].split("-")[-1]
+
+			if state_change in (ServiceStateChange.Added, ServiceStateChange.Updated):
+				await self._on_candidate(info.server[:-1], serial)
+			elif state_change == ServiceStateChange.Removed:
+				await self._on_removed(serial)
+
+
+class ShellyManager(object):
+	"""Owns Shelly device state and runtime behavior.
+
+	Merges discovery sources, updates DBus device inventory,
+	and controls device/channel lifecycle operations.
+	"""
+
+	def __init__(self, bus_type, service, settings):
+		self.bus_type = bus_type
+		self.service = service
+		self.settings = settings
+		self.discovered_devices = [] 	# Devices found via mDNS but not manually added
+		self.saved_devices = []			# Devices manually added via IP that should be retained even if not found via mDNS
+		self.shellies = {}
+		self._shelly_lock = asyncio.Lock()
+		self._enable_tasks = {}
+
+	async def add_device(self, server, serial=None, manual=False):
+		await self._add_device(server, serial, manual)
+
+	async def on_mdns_candidate(self, server, serial):
+		if serial not in self.discovered_devices + self.saved_devices:
+			logger.info("Found shelly device: %s", serial)
+			await self._add_device(server, serial)
+
+	async def on_mdns_removed(self, serial):
+		if serial in self.discovered_devices:
+			logger.warning("Shelly device: %s disappeared", serial)
+			if serial in self.shellies:
+				self.shellies[serial]['device'].do_reconnect()
 
 	def remove_discovered_device(self, serial):
 		if serial in self.discovered_devices:
@@ -265,38 +320,28 @@ class ShellyDiscovery(object):
 			if serial not in self.shellies:
 				await self.add_shelly_device(serial, server)
 
-		return await self.shellies[serial]['device'].start_channel(channel)
+			return await self.shellies[serial]['device'].start_channel(channel)
 
 	def delete_shelly_device(self, serial, fut=None):
 		if serial in self.shellies:
 			del self.shellies[serial]
 
 	async def disable_shelly_channel(self, serial, channel):
-		""" Disable a shelly channel. """
-		if serial not in self.shellies:
-			return False
-		await self.shellies[serial]['device'].stop_channel(channel)
+		async with self._shelly_lock:
+			if serial not in self.shellies:
+				return False
+			await self.shellies[serial]['device'].stop_channel(channel)
 
-		if len(self.shellies[serial]['device'].active_channels) == 0:
-			logger.info("No active channels left for device %s, stopping device", serial)
-			await self.shellies[serial]['device'].stop()
-		return True
+			if len(self.shellies[serial]['device'].active_channels) == 0:
+				logger.info("No active channels left for device %s, stopping device", serial)
+				await self.shellies[serial]['device'].stop()
+			return True
 
 	async def stop_shelly_device(self, serial):
 		if serial in self.shellies:
 			await self.shellies[serial]['device'].stop()
 		else:
 			logger.warning("Device not found: %s", serial)
-
-	def items_changed(self, service, values):
-		pass
-
-	async def stop(self):
-		self._cancel_add_by_ip_address_task()
-		assert self.aiozc is not None
-		assert self.aiobrowser is not None
-		await self.aiobrowser.async_cancel()
-		await self.aiozc.async_close()
 
 	async def _shelly_event_monitor(self, event, shelly):
 		serial = shelly.serial
@@ -389,16 +434,6 @@ class ShellyDiscovery(object):
 			del shelly
 		return ip, info, channel_info
 
-	def on_service_state_change(self, zeroconf, service_type, name, state_change):
-		rgx = re.compile(
-			r"^shelly[\d\w\-]+-[0-9a-f]{12}\._shelly\._tcp\.local\.$"
-		)
-
-		if rgx.match(name):
-			task = asyncio.get_event_loop().create_task(self._on_service_state_change_async(zeroconf, service_type, name, state_change))
-			task.add_done_callback(background_tasks.discard)
-			background_tasks.add(task)
-
 	async def _add_device(self, server, serial=None, manual=False):
 		ip, device_info, channel_info = await self._get_device_info(server, serial)
 		if device_info is None:
@@ -467,23 +502,6 @@ class ShellyDiscovery(object):
 				enabled_item = self.service.get_item(f'/Devices/{serial}/{i + 1}/Enabled')
 				await self._on_enabled_changed(serial, ch, enabled_item, enabled)
 
-	async def _on_service_state_change_async(self, zeroconf, service_type, name, state_change):
-		async with self._mdns_lock:
-			info = AsyncServiceInfo(service_type, name)
-			await info.async_request(zeroconf, 3000)
-			if not info or not info.server:
-				return
-			serial = info.server.split(".")[0].split("-")[-1]
-
-			if (state_change == ServiceStateChange.Added or state_change == ServiceStateChange.Updated) and serial not in self.discovered_devices + self.saved_devices:
-				logger.info("Found shelly device: %s", serial)
-				await self._add_device(info.server[:-1], serial)
-
-			elif state_change == ServiceStateChange.Removed and serial in self.discovered_devices:
-				logger.warning("Shelly device: %s disappeared", serial)
-				if serial in self.shellies:
-					self.shellies[serial]['device'].do_reconnect()
-
 	async def _on_enabled_changed(self, serial, channel, item, value):
 		if value not in (0, 1) or item.service is None:
 			return
@@ -508,3 +526,124 @@ class ShellyDiscovery(object):
 		if ret:
 			item.set_local_value(value)
 			await self.settings.set_value(self.settings.alias(f'enabled_{serial}_{channel}'), value)
+
+class ShellyDiscovery(object):
+	"""Thin composition root for discovery subsystem wiring.
+
+	Initializes bus/settings/service, creates discovery sources,
+	and coordinates lifecycle and refresh orchestration.
+	"""
+
+	def __init__(self, bus_type):
+		self.service = None
+		self.settings = None
+		self.bus_type = bus_type
+		self.manager = None
+		self.manual_ip_discovery = None
+		self.mdns_discovery = None
+		self.bus = None
+		self.monitor = None
+		self._refresh_task = None
+
+	async def start(self):
+		# Connect to dbus, localsettings
+		self.bus = await MessageBus(bus_type=self.bus_type).connect()
+		self.monitor = await Monitor.create(self.bus, itemsChanged=self.items_changed)
+
+		self.settings = await wait_for_settings(self.bus)
+
+		# Set up the service
+		self.service = Service(self.bus, "com.victronenergy.shelly")
+		await self.settings.add_settings(Setting('/Settings/Shelly/IpAddresses', "", alias="ipaddresses"))
+
+		ip_addresses = self.settings.get_value(self.settings.alias('ipaddresses'))
+
+		self.service.add_item(IntegerItem('/Refresh', 0, writeable=True,
+			onchange=self.start_refresh_task))
+		self.manager = ShellyManager(
+			bus_type=self.bus_type,
+			service=self.service,
+			settings=self.settings,
+		)
+
+		self.manual_ip_discovery = ManualIpDiscovery(
+			settings=self.settings,
+			service=self.service,
+			saved_devices=self.manager.saved_devices,
+			discovered_devices=self.manager.discovered_devices,
+			shellies=self.manager.shellies,
+			add_device_callback=self.manager.add_device,
+			remove_device_callback=self.manager.remove_discovered_device,
+			logger_obj=logger,
+		)
+		self.service.add_item(TextItem('/IpAddresses', ip_addresses, writeable=True, onchange=self.manual_ip_discovery.on_ip_addresses_changed))
+		await self.service.register()
+
+		self.mdns_discovery = MdnsDiscovery(
+			on_candidate_callback=self.manager.on_mdns_candidate,
+			on_removed_callback=self.manager.on_mdns_removed,
+		)
+		await self.mdns_discovery.start()
+
+		self.manual_ip_discovery.start_if_needed(ip_addresses)
+
+		await self.bus.wait_for_disconnect()
+
+	async def start_refresh_task(self, item, value):
+		if value != 1 or self.manager is None:
+			return False
+
+		# Instead of setting the value back to 0 immediately, set it to 1 here and reset it later.
+		# This is needed to make sure refresh can be triggered again later.
+		item.set_local_value(value)
+
+		if self._refresh_task is None or self._refresh_task.done():
+			self._refresh_task = asyncio.create_task(self._refresh())
+
+		# Do this outside of the event loop
+		task = asyncio.get_event_loop().create_task(self._clear_refresh())
+		task.add_done_callback(background_tasks.discard)
+		background_tasks.add(task)
+
+	async def _refresh(self):
+			# Delete discovered devices that are currently disabled.
+			for serial in list(self.manager.discovered_devices + self.manager.saved_devices):
+				delete = True
+				i = 1
+				while (True):
+					enabled_item = self.service.get_item(f'/Devices/{serial}/{i}/Enabled')
+					if enabled_item is None:
+						break
+					# Only delete if all channels are disabled
+					if enabled_item.value == 1:
+						delete = False
+						break
+					i += 1
+				if delete:
+					# Remove from the list if not enabled
+					self.manager.remove_discovered_device(serial)
+				elif serial in self.manager.shellies:
+					# Try reconnecting if enabled.
+					self.manager.shellies[serial]['device'].do_reconnect()
+			if self.mdns_discovery is not None:
+				await self.mdns_discovery.restart()
+
+			if self.manual_ip_discovery is not None:
+				await self.manual_ip_discovery.on_refresh()
+
+	async def _clear_refresh(self):
+		# Wait for the refresh task to complete before clearing the refresh flag
+		if self._refresh_task is not None:
+			await self._refresh_task
+			self._refresh_task = None
+		with self.service as s:
+			s['/Refresh'] = 0
+
+	def items_changed(self, service, values):
+		pass
+
+	async def stop(self):
+		if self.manual_ip_discovery is not None:
+			self.manual_ip_discovery.stop()
+		if self.mdns_discovery is not None:
+			await self.mdns_discovery.stop()
