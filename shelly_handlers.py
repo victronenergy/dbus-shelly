@@ -131,7 +131,7 @@ class ShellyHandler(object):
 		info = await self._rpc_call("Shelly.GetDeviceInfo")
 		if info:
 			return info.get('name') or info.get('app') or info.get('model')
-		return "Unknown shelly device"
+		return None
 
 	# Override this in the handlers
 	def update(self, status_json, cap=None):
@@ -166,6 +166,8 @@ class ShellyHandler_channel_config_mixin():
 	def __init__(self):
 		super().__init__()
 		self._custom_name_paths = []
+		self._custom_name_retries = 0
+		self._custom_name_retry_task = None
 
 	async def add_customname_path(self, path='/CustomName'):
 		if self.service.get_item(path) is None:
@@ -186,6 +188,12 @@ class ShellyHandler_channel_config_mixin():
 		if name is None:
 			# Otherwise fallback to device name + channel index
 			device_name = await self._get_device_name()
+			if device_name is None:
+				device_name = "Unknown shelly device"
+				self._schedule_customname_retry(2)
+			else:
+				self._custom_name_retries = 0
+
 			name = f"{device_name} - channel {self._channel_id}"
 		with self.service as s:
 			for path in self._custom_name_paths:
@@ -195,6 +203,28 @@ class ShellyHandler_channel_config_mixin():
 		if value is not None:
 			item.set_local_value(value)
 			await self.set_channel_config({"name": value})
+
+	async def _get_channel_customname_retry(self, wait_time):
+		await asyncio.sleep(wait_time)
+		# Start as a separate task so we can wait on self._get_channel_customname_retry without blocking the main thread.
+		task = asyncio.get_event_loop().create_task(self._get_channel_customname())
+		background_tasks.add(task)
+		task.add_done_callback(background_tasks.discard)
+
+	def _clear_customname_retry_task(self, task):
+		if self._custom_name_retry_task is task:
+			self._custom_name_retry_task = None
+
+	def _schedule_customname_retry(self, wait_time):
+		# Ensure delayed retries do not pile up when multiple fetch triggers arrive.
+		if self._custom_name_retries >= 10:
+			logger.warning("Failed to get channel custom name for shelly device %s channel %d after 10 attempts, no longer retrying", self._serial, self._channel_id)
+			return
+		if self._custom_name_retry_task and not self._custom_name_retry_task.done():
+			return
+		self._custom_name_retries += 1
+		logger.warning("Failed to get channel custom name for shelly device %s channel %d, retrying in %d seconds (attempt %d/10)", self._serial, self._channel_id, wait_time, self._custom_name_retries)
+		self._custom_name_retry_task = asyncio.get_event_loop().create_task(self._get_channel_customname_retry(wait_time))
 
 	async def _get_channel_customname(self):
 		await self.request_channel_config(self._update_customname)
