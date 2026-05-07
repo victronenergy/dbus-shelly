@@ -187,6 +187,12 @@ class ShellyHandler_channel_config_mixin():
 	def custom_name_changed(self, value):
 		pass
 
+	def _cancel_customname_retry_task(self):
+		task = self._custom_name_retry_task
+		if task and not task.done():
+			task.cancel()
+		self._custom_name_retry_task = None
+
 	async def add_customname_path(self, path='/CustomName'):
 		if self.service.get_item(path) is None:
 			self.service.add_item(TextItem(path, "", writeable=True, onchange=self.set_custom_name))
@@ -202,6 +208,9 @@ class ShellyHandler_channel_config_mixin():
 
 	async def _update_customname(self, config, cap=None):
 		name = None
+		# Make sure the service is still there as this function can be called delayed due to the retry mechanism.
+		if self.service is None or getattr(self.service, '_closed', False):
+			return
 		if config and 'name' in config:
 			name = config['name']	# Try shelly channel custom name
 		if name is None:
@@ -229,10 +238,7 @@ class ShellyHandler_channel_config_mixin():
 
 	async def _get_channel_customname_retry(self, wait_time):
 		await asyncio.sleep(wait_time)
-		# Start as a separate task so we can wait on self._get_channel_customname_retry without blocking the main thread.
-		task = asyncio.get_event_loop().create_task(self._get_channel_customname())
-		background_tasks.add(task)
-		task.add_done_callback(background_tasks.discard)
+		await self._get_channel_customname()
 
 	def _clear_customname_retry_task(self, task):
 		if self._custom_name_retry_task is task:
@@ -248,9 +254,14 @@ class ShellyHandler_channel_config_mixin():
 		self._custom_name_retries += 1
 		logger.warning("Failed to get channel custom name for shelly device %s channel %d, retrying in %d seconds (attempt %d/10)", self._serial, self._channel_id, wait_time, self._custom_name_retries)
 		self._custom_name_retry_task = asyncio.get_event_loop().create_task(self._get_channel_customname_retry(wait_time))
+		self._custom_name_retry_task.add_done_callback(self._clear_customname_retry_task)
 
 	async def _get_channel_customname(self):
 		await self.request_channel_config(self._update_customname)
+
+	async def stop(self):
+		self._cancel_customname_retry_task()
+		await super().stop()
 
 	def on_event(self, event):
 		if event['event'] == "config_changed":

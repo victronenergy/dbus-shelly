@@ -91,6 +91,7 @@ class ShellyChannel(object):
 
 	async def stop(self):
 		await self.service.close()
+		self.service = None
 
 	# Reinitialize the callbacks without restarting the service.
 	async def reinit(self, rpc_callback, restart):
