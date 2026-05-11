@@ -185,7 +185,6 @@ class ManualIpDiscovery(object):
 			for serial in self.discovered_devices + self.saved_devices:
 				device_ip = self.service.get_item(f'/Devices/{serial}/Ip')
 				if device_ip is not None and device_ip.value == ip:
-					self.logger.info("Device with IP %s already found, SN: %s", ip, serial)
 					ip_found = True
 					break
 
@@ -520,7 +519,8 @@ class ShellyManager(object):
 	async def _add_device(self, server, serial=None, manual=False):
 		ip, device_info = await self._get_device_info(server, serial)
 		if device_info is None:
-			logger.error("Failed to get device info for %s", server)
+			if not manual:	# Prevent filling up the log with errors for manually added devices that can't be reached.
+				logger.error("Failed to get device info for %s", server)
 			return
 
 		if serial is None:

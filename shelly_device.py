@@ -242,7 +242,6 @@ class ShellyDevice(object):
 			except InvalidAuthError:
 				raise
 			except Exception:
-				logger.warning("Failed to initialize shelly device %s", self.serial_or_server)
 				raise ShellyConnectionError()
 
 			if not (self._shelly_device.connected and self._shelly_device.initialized):
