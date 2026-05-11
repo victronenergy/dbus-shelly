@@ -163,7 +163,7 @@ class ManualIpDiscovery(object):
 		saved_serials = list(self.saved_devices)
 
 		for serial in saved_serials:
-			device_ip = self.service.get_item('/Devices/{}/Ip'.format(serial))
+			device_ip = self.service.get_item(f'/Devices/{serial}/Ip')
 
 			# Check if a manually added device's IP is no longer in the list
 			if device_ip is not None and device_ip.value not in ipaddresses:
@@ -174,7 +174,7 @@ class ManualIpDiscovery(object):
 				# If device is still discoverable via mDNS, update DiscoveryType to reflect that
 				if serial in self.discovered_devices:
 					with self.service as s:
-						s['/Devices/{}/DiscoveryType'.format(serial)] = 'mDNS'
+						s[f'/Devices/{serial}/DiscoveryType'] = 'mDNS'
 				# Otherwise, if not enabled and not discoverable via mDNS, fully remove the device
 				elif serial not in self.shellies:
 					self._remove_device(serial)
@@ -183,7 +183,7 @@ class ManualIpDiscovery(object):
 			ip_found = False
 			# Check if we already have this device
 			for serial in self.discovered_devices + self.saved_devices:
-				device_ip = self.service.get_item('/Devices/{}/Ip'.format(serial))
+				device_ip = self.service.get_item(f'/Devices/{serial}/Ip')
 				if device_ip is not None and device_ip.value == ip:
 					self.logger.info("Device with IP %s already found, SN: %s", ip, serial)
 					ip_found = True
@@ -297,14 +297,14 @@ class ShellyManager(object):
 		else:
 			return
 		with self.service as s:
-			s['/Devices/{}/Ip'.format(serial)] = None
-			s['/Devices/{}/Mac'.format(serial)] = None
-			s['/Devices/{}/Model'.format(serial)] = None
-			s['/Devices/{}/Name'.format(serial)] = None
-			s['/Devices/{}/DiscoveryType'.format(serial)] = None
-			s['/Devices/{}/PasswordProtected'.format(serial)] = None
-			s['/Devices/{}/ConnectionStatus'.format(serial)] = None
-			s['/Devices/{}/Password'.format(serial)] = None
+			s[f'/Devices/{serial}/Ip'] = None
+			s[f'/Devices/{serial}/Mac'] = None
+			s[f'/Devices/{serial}/Model'] = None
+			s[f'/Devices/{serial}/Name'] = None
+			s[f'/Devices/{serial}/DiscoveryType'] = None
+			s[f'/Devices/{serial}/PasswordProtected'] = None
+			s[f'/Devices/{serial}/ConnectionStatus'] = None
+			s[f'/Devices/{serial}/Password'] = None
 		self._remove_device_channel_info(serial)
 
 	def _remove_device_channel_info(self, serial):
@@ -352,7 +352,7 @@ class ShellyManager(object):
 			# Only set the connection status when channel was succesfully started.
 			if ret:
 				with self.service as s:
-					s['/Devices/{}/ConnectionStatus'.format(serial)] = ShellyDeviceConnectionStatus.ENABLED
+					s[f'/Devices/{serial}/ConnectionStatus'] = ShellyDeviceConnectionStatus.ENABLED
 			return ret
 
 	def delete_shelly_device(self, serial, fut=None):
@@ -374,7 +374,7 @@ class ShellyManager(object):
 				await self.stop_shelly_device(serial)
 				# Set ConnectionStatus back to Ready to indicate the device is still there and can be enabled.
 				with self.service as s:
-					s['/Devices/{}/ConnectionStatus'.format(serial)] = ShellyDeviceConnectionStatus.READY
+					s[f'/Devices/{serial}/ConnectionStatus'] = ShellyDeviceConnectionStatus.READY
 			return True
 
 	async def stop_shelly_device(self, serial):
@@ -439,8 +439,8 @@ class ShellyManager(object):
 			if auth_en != (self.service.get_item(f'/Devices/{serial}/PasswordProtected').value == 1):
 				# Authentication changed; update the dbus paths accordingly.
 				with self.service as s:
-					s['/Devices/{}/Password'.format(serial)] = "*****" if auth_en else None
-					s['/Devices/{}/PasswordProtected'.format(serial)] = 1 if auth_en else 0
+					s[f'/Devices/{serial}/Password'] = "*****" if auth_en else None
+					s[f'/Devices/{serial}/PasswordProtected'] = 1 if auth_en else 0
 
 	async def stop_and_disable_all_channels(self, serial):
 		# Not only disables all channels, but also clears the Enabled setting.
@@ -482,7 +482,7 @@ class ShellyManager(object):
 			logger.error("Device not found for getting channels: %s", serial)
 			return ShellyDeviceConnectionResult.CONNECTION_ERROR, []
 
-		server = self.service.get_item('/Devices/{}/Ip'.format(serial)).value
+		server = self.service.get_item(f'/Devices/{serial}/Ip').value
 		password = await self._get_device_password_setting(serial)
 
 		shelly = ShellyDevice(
@@ -547,32 +547,32 @@ class ShellyManager(object):
 		name = device_info.get('name', None)
 
 		for p in ['Ip', 'Mac', 'Model', 'Name', 'DiscoveryType']:
-			if self.service.get_item('/Devices/{}/{}'.format(serial, p)) is None:
-				self.service.add_item(TextItem('/Devices/{}/{}'.format(serial, p), writeable=False))
+			if self.service.get_item(f'/Devices/{serial}/{p}') is None:
+				self.service.add_item(TextItem(f'/Devices/{serial}/{p}', writeable=False))
 
-		if self.service.get_item('/Devices/{}/ConnectionStatus'.format(serial)) is None:
-			self.service.add_item(IntegerItem('/Devices/{}/ConnectionStatus'.format(serial), writeable=False, text=lambda x: ShellyDeviceConnectionStatus(x).__str__()))
+		if self.service.get_item(f'/Devices/{serial}/ConnectionStatus') is None:
+			self.service.add_item(IntegerItem(f'/Devices/{serial}/ConnectionStatus', writeable=False, text=lambda x: ShellyDeviceConnectionStatus(x).__str__()))
 
-		if self.service.get_item('/Devices/{}/PasswordProtected'.format(serial)) is None:
-			self.service.add_item(IntegerItem('/Devices/{}/PasswordProtected'.format(serial), writeable=False))
+		if self.service.get_item(f'/Devices/{serial}/PasswordProtected') is None:
+			self.service.add_item(IntegerItem(f'/Devices/{serial}/PasswordProtected', writeable=False))
 
 		# Always add the password path, but only set it when the device is protected.
-		if self.service.get_item('/Devices/{}/Password'.format(serial)) is None:
-			self.service.add_item(TextItem('/Devices/{}/Password'.format(serial), value=None, writeable=True, onchange=partial(self._on_password_changed, serial)))
+		if self.service.get_item(f'/Devices/{serial}/Password') is None:
+			self.service.add_item(TextItem(f'/Devices/{serial}/Password', value=None, writeable=True, onchange=partial(self._on_password_changed, serial)))
 
 		auth_en = device_info.get('auth_en', False)
 		password = await self._get_device_password_setting(serial) if auth_en else ""
 
 		with self.service as s:
-			s['/Devices/{}/Ip'.format(serial)] = ip
-			s['/Devices/{}/Mac'.format(serial)] = serial
-			s['/Devices/{}/Model'.format(serial)] = model_name
-			s['/Devices/{}/Name'.format(serial)] = name
-			s['/Devices/{}/ConnectionStatus'.format(serial)] = ShellyDeviceConnectionStatus.DISCOVERED
-			s['/Devices/{}/PasswordProtected'.format(serial)] = 1 if auth_en else 0
-			s['/Devices/{}/Password'.format(serial)] = "*****" if auth_en else None
+			s[f'/Devices/{serial}/Ip'] = ip
+			s[f'/Devices/{serial}/Mac'] = serial
+			s[f'/Devices/{serial}/Model'] = model_name
+			s[f'/Devices/{serial}/Name'] = name
+			s[f'/Devices/{serial}/ConnectionStatus'] = ShellyDeviceConnectionStatus.DISCOVERED
+			s[f'/Devices/{serial}/PasswordProtected'] = 1 if auth_en else 0
+			s[f'/Devices/{serial}/Password'] = "*****" if auth_en else None
 			# DiscoveryType reflects current state: 'Manual' if in saved_devices, 'mDNS' if only in discovered_devices
-			s['/Devices/{}/DiscoveryType'.format(serial)] = 'Manual' if serial in self.saved_devices else 'mDNS'
+			s[f'/Devices/{serial}/DiscoveryType'] = 'Manual' if serial in self.saved_devices else 'mDNS'
 
 		# Fetch channel info for new devices or idle devices when authentication can be satisfied
 		if (not known or serial not in self.shellies) and (not auth_en or password):
@@ -584,7 +584,7 @@ class ShellyManager(object):
 		if status == ShellyDeviceConnectionResult.SUCCESS:
 
 			with self.service as s:
-				s['/Devices/{}/ConnectionStatus'.format(serial)] = ShellyDeviceConnectionStatus.READY
+				s[f'/Devices/{serial}/ConnectionStatus'] = ShellyDeviceConnectionStatus.READY
 
 			for i, ch_prop in channel_info.items():
 				ch_type = ch_prop['type']
@@ -616,8 +616,8 @@ class ShellyManager(object):
 		elif status == ShellyDeviceConnectionResult.INVALID_AUTH:
 			logger.error("Invalid authentication for shelly device %s", serial)
 			with self.service as s:
-				s['/Devices/{}/ConnectionStatus'.format(serial)] = ShellyDeviceConnectionStatus.AUTH_FAILED
-				s['/Devices/{}/PasswordProtected'.format(serial)] = 1
+				s[f'/Devices/{serial}/ConnectionStatus'] = ShellyDeviceConnectionStatus.AUTH_FAILED
+				s[f'/Devices/{serial}/PasswordProtected'] = 1
 			
 			await self.stop_shelly_device(serial)
 			self.delete_shelly_device(serial)
@@ -642,7 +642,7 @@ class ShellyManager(object):
 			return
 
 		if value == 1:
-			server = self.service['/Devices/{}/Ip'.format(serial)]
+			server = self.service[f'/Devices/{serial}/Ip']
 			# Start enabling a channel as a task, so multiple channels can be enabled simultaneously.
 			task = asyncio.create_task(self.enable_shelly_channel(serial, channel, server))
 			# Keep track of enabling tasks per device, so we can wait for them to finish when disabling channels.
