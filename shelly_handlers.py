@@ -769,6 +769,8 @@ class ShellyHandler_RGBW(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 	def _light_controls_text_callback(self, v):
 		if self._type == OutputType.RGBW:
 			return "H: %.1f, S: %.1f, B: %.1f, W: %.1f" % (v[0], v[1], v[2], v[3])
+		elif self._type == OutputType.CCT:
+			return "B: %.1f, CT: %dK" % (v[2], v[4])
 		return "H: %.1f, S: %.1f, B: %.1f" % (v[0], v[1], v[2])
 
 	def update(self, status_json, cap=None):
@@ -781,15 +783,19 @@ class ShellyHandler_RGBW(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 			with self.service as s:
 				brightness = status_json.get("brightness", 0)
 				white = status_json.get("white", 0) / 2.55 if self._type == OutputType.RGBW else 0.0
+				ct = status_json.get("ct", 0)
 				hue, sat, val = self._rgb2hsv(status_json.get("rgb", [0, 0, 0]))
-				s[switch_prefix + 'LightControls'] = [round(hue), round(sat), round(brightness), round(white), 0]
+				s[switch_prefix + 'LightControls'] = [round(hue), round(sat), round(brightness), round(white), ct]
 		except:
 			pass
 
 	def on_channel_type_changed(self, channel, value):
-		if value == OutputType.RGB:
+		item = self.service.get_item(f'/SwitchableOutput/{self._channel_id}/LightControls')
+		if item is None:
+			return
+		# TODO, since RGB and RGBW are no longer supported together, switching between the types will no longer occur.
+		if value == OutputType.RGB and ((1 << OutputType.RGBW.value) & self._valid_types_mask):
 			# Set white channel to 0 when switching to RGB
-			item = self.service.get_item(f'/SwitchableOutput/{self._channel_id}/LightControls')
 			v = list(item.value)
 			v[3] = 0
 			self._desired_value = v
@@ -870,3 +876,49 @@ class ShellyHandler_RGBW(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 class ShellyHandler_RGB(ShellyHandler_RGBW):
 	_default_output_type = OutputType.RGB
 	_valid_types_mask = int(1 << OutputType.RGB.value)
+
+@register_handler('RGBCCT', kind=HANDLER_KIND_SWITCH)
+class ShellyHandler_RGBCCT(ShellyHandler_RGBW):
+	_default_output_type = OutputType.RGB
+	_valid_types_mask = int((1 << OutputType.RGB.value) | (1 << OutputType.CCT.value))
+
+	# The RGBCCT RPC component has a "mode" property which is not allowed in the RGB and RGBW components,
+	# hence the specific override of the _set_light_controls method to map the RGBCCT component properly to the RGB and CCT controls.
+	async def _set_light_controls(self, item, value, force_white=False):
+		if not self._sanity_check_values(value):
+			return
+
+		params = {
+					"id": self._channel_id,
+					"brightness": value[2],
+					"mode": "rgb" if self._type == OutputType.RGB else "cct"
+				}
+
+		item.set_local_value(value) # Set the value here already to make the UI more responsive
+		if self._type == OutputType.RGB:
+			rgb = self._hsv2rgb(value, normalise=True)
+			params["rgb"] = rgb
+		else:	# Type is CCT
+			ct = value[4]
+			# Shelly devices have a minimum color temp of 2700K
+			if ct < 2700:
+				ct = 2700
+			params["ct"] = ct
+
+		await self.rpc_call(
+			'Set',
+			params
+		)
+
+	def update(self, status_json, cap=None):
+		super().update(status_json, cap)
+		if self._throttling_runner_lock.locked():
+			# A throttled update is in progress, don't override LightControls path
+			return
+		try:
+			# RGBCCT component report the mode it is in, so sync with that.
+			with self.service as s:
+				mode = status_json.get("mode", "rgb")
+				s[f'/SwitchableOutput/{self._channel_id}/Settings/Type'] = OutputType.RGB.value if mode == "rgb" else OutputType.CCT.value
+		except:
+			pass

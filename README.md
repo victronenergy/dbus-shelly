@@ -30,6 +30,7 @@ Since V2.00, dbus-shelly implements handlers for RPC components, which enables c
 | Light              | *.switch                         | Switch type: Dimmable                                                                      |
 | RGB                | *.switch                         | Switch type: RGB                                                                           |
 | RGBW               | *.switch                         | Switch type: RGBW                                                                          |
+| RGBCCT             | *.switch                         | Switch types: RGB and CCT                                                                  |
 
 If a device exposes x instances of an RPC component listed above, then x channels of that type will show up in the integration menu.
 

@@ -19,6 +19,7 @@ class OutputType(IntEnum):
 	DIMMABLE = 2
 	THREE_STATE_SWITCH = 9
 	RGB = 11
+	CCT = 12
 	TYPE_MAX = RGBW = 13
 
 class OutputFunction(IntEnum):
