@@ -369,55 +369,54 @@ class ShellyOMBC(OMBCControlType):
 		self._power_queue_stop = object()
 		self._power_worker_task = None
 
-	def _ensure_status_worker(self):
-		if self._status_worker_task is None or self._status_worker_task.done():
-			self._status_worker_task = asyncio.create_task(self._status_sender_worker())
+	def _start_worker(self, task_attr, worker_method_name):
+		"""Generic worker startup. Called only from awaited activate() context."""
+		task = getattr(self, task_attr)
+		if task is None or task.done():
+			worker_coro = getattr(self, worker_method_name)
+			setattr(self, task_attr, asyncio.create_task(worker_coro()))
+
+	def _start_status_worker(self):
+		self._start_worker('_status_worker_task', '_status_sender_worker')
+
+	def _start_power_worker(self):
+		self._start_worker('_power_worker_task', '_power_sender_worker')
+
+	async def _stop_worker(self, task_attr, queue_attr, stop_sentinel, worker_name):
+		"""Generic worker stopping. Called only from awaited deactivate() context."""
+		task = getattr(self, task_attr)
+		if task is None:
+			return
+
+		if not task.done():
+			queue = getattr(self, queue_attr)
+			queue.put_nowait(stop_sentinel)
+			try:
+				await task
+			except Exception as e:
+				logger.error("%s worker stopped with error: %s", worker_name, e)
+
+		setattr(self, task_attr, None)
 
 	async def _stop_status_worker(self):
-		if self._status_worker_task is None:
-			return
-
-		if not self._status_worker_task.done():
-			self._status_queue.put_nowait(self._status_queue_stop)
-			try:
-				await self._status_worker_task
-			except Exception as e:
-				logger.error("Status worker stopped with error: %s", e)
-
-		self._status_worker_task = None
-
-	async def _status_sender_worker(self):
-		while True:
-			status = await self._status_queue.get()
-			if status is self._status_queue_stop:
-				return
-
-			await self.send_status(status)
-
-	def _ensure_power_worker(self):
-		if self._power_worker_task is None or self._power_worker_task.done():
-			self._power_worker_task = asyncio.create_task(self._power_sender_worker())
+		await self._stop_worker('_status_worker_task', '_status_queue', self._status_queue_stop, 'Status')
 
 	async def _stop_power_worker(self):
-		if self._power_worker_task is None:
-			return
+		await self._stop_worker('_power_worker_task', '_power_queue', self._power_queue_stop, 'Power')
 
-		if not self._power_worker_task.done():
-			self._power_queue.put_nowait(self._power_queue_stop)
-			try:
-				await self._power_worker_task
-			except Exception as e:
-				logger.error("Power worker stopped with error: %s", e)
+	async def _sender_worker(self, queue, stop_sentinel, send_coro):
+		"""Generic sender worker that processes items from a queue."""
+		while True:
+			item = await queue.get()
+			if item is stop_sentinel:
+				return
+			await send_coro(item)
 
-		self._power_worker_task = None
+	async def _status_sender_worker(self):
+		await self._sender_worker(self._status_queue, self._status_queue_stop, self.send_status)
 
 	async def _power_sender_worker(self):
-		while True:
-			power = await self._power_queue.get()
-			if power is self._power_queue_stop:
-				return
-
-			await self.send_power_measurement(power)
+		await self._sender_worker(self._power_queue, self._power_queue_stop, self.send_power_measurement)
 
 	def _make_system_description(self):
 		#First, create the system description required. It contains 2 controltypes (On / Off)
@@ -557,9 +556,9 @@ class ShellyOMBC(OMBCControlType):
 		self._status = self._switch_item.status
 
 		# Start workers before setting _active
-		self._ensure_status_worker()
+		self._start_status_worker()
 		self._status_queue.put_nowait(self._status)
-		self._ensure_power_worker()
+		self._start_power_worker()
 		# Set _active only after workers are guaranteed to be running
 		self._active = True
 		
