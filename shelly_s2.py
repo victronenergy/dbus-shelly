@@ -99,6 +99,9 @@ class ShellyHandlerS2Mixin():
 		# Whether the OMBC control type is actually activated by the HEMS is determined by self._control_type_ombc.active.
 		self._rm_enabled = False
 
+		# Lock to serialize S2 message sends to CEM
+		self._s2_message_lock = asyncio.Lock()
+
 		# OpportunityLoads needs energy metering capability.
 		if await self.em_supported():
 			self._valid_functions_mask |= (1 << OutputFunction.OPPORTUNITY_LOAD)
@@ -208,7 +211,7 @@ class ShellyHandlerS2Mixin():
 		#        For now, let's simply completly disconnect and see if that works out fine.
 		try:
 			#make sure to send a 0 power measurement to EMS as well.
-			await self.rm_item.send_msg_and_await_reception_status(
+			await self._send_s2_message(
 				PowerMeasurement(
 					message_id=uuid.uuid4(),
 					measurement_timestamp=datetime.now(timezone.utc),
@@ -337,6 +340,11 @@ class ShellyHandlerS2Mixin():
 				await self.rm_item.send_resource_manager_details(control_types=[self._control_type_ombc, self._control_type_noctrl], asset_details=self._rm_details)
 			except Exception as e:
 				logger.error("Failed to send resource manager details: %s", e)
+
+	async def _send_s2_message(self, msg):
+		"""Send S2 message with lock to serialize concurrent sends to CEM."""
+		async with self._s2_message_lock:
+			return await self.rm_item.send_msg_and_await_reception_status(msg)
 
 class ShellyOMBC(OMBCControlType):
 
@@ -587,7 +595,7 @@ class ShellyOMBC(OMBCControlType):
 
 		self._make_system_description()
 		try:
-			return await self._switch_item.rm_item.send_msg_and_await_reception_status(self.system_description)
+			return await self._switch_item._send_s2_message(self.system_description)
 		except Exception as e:
 			logger.error("Failed to send OMBCSystemDescription: %s", e)
 			return
@@ -596,7 +604,7 @@ class ShellyOMBC(OMBCControlType):
 		logger.debug("Sending status for OMBCControlTypeSwitch, current status: %s", status)
 		operation_mode = self._id_on if status == STATUS_ON else self._id_off
 		try:
-			return await self._switch_item.rm_item.send_msg_and_await_reception_status(
+			return await self._switch_item._send_s2_message(
 				OMBCStatus(
 					message_id=uuid.uuid4(),
 					active_operation_mode_id=str(operation_mode),
@@ -613,7 +621,7 @@ class ShellyOMBC(OMBCControlType):
 	async def send_power_measurement(self, power):
 		try:
 			logger.debug("Sending Power Measurement {}={}W".format(self._switch_item.rm_item.asset_details.name, power))
-			await self._switch_item.rm_item.send_msg_and_await_reception_status(
+			await self._switch_item._send_s2_message(
 				PowerMeasurement(
 					message_id=uuid.uuid4(),
 					measurement_timestamp=datetime.now(timezone.utc),
