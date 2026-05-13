@@ -169,6 +169,11 @@ class ShellyHandler_channel_config_mixin():
 		self._custom_name_retries = 0
 		self._custom_name_retry_task = None
 
+	# Invoked when the custom name is changed on the shelly device.
+	# When the value on dbus is changed, the name is updated on the shelly and the hook is called as well.
+	def custom_name_changed(self, value):
+		pass
+
 	async def add_customname_path(self, path='/CustomName'):
 		if self.service.get_item(path) is None:
 			self.service.add_item(TextItem(path, "", writeable=True, onchange=self.set_custom_name))
@@ -199,10 +204,14 @@ class ShellyHandler_channel_config_mixin():
 			for path in self._custom_name_paths:
 				s[path] = name
 
+		# Call hook
+		self.custom_name_changed(name)
+
 	async def set_custom_name(self, item, value):
 		if value is not None:
-			item.set_local_value(value)
-			await self.set_channel_config({"name": value})
+			# Update the dbus path after succesfully setting the name on the shelly device.
+			if await self.set_channel_config({"name": value}) is not None:
+				item.set_local_value(value)
 
 	async def _get_channel_customname_retry(self, wait_time):
 		await asyncio.sleep(wait_time)

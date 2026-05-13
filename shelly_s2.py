@@ -142,6 +142,9 @@ class ShellyHandlerS2Mixin():
 		# Paths not yet present.
 		if not self.has_rm:
 			await self._add_rm_to_service(channel, control_types)
+		else:
+			# Update rm details
+			self._update_asset_details()
 
 		# Explicitly set initial values to force an items changed
 		power_setting = self.settings.get_value(self.settings.alias(f'PowerSetting_{self._serial}_{channel}'))
@@ -211,7 +214,7 @@ class ShellyHandlerS2Mixin():
 					measurement_timestamp=datetime.now(timezone.utc),
 					values=[
 						PowerValue(
-							commodity_quantity = phase_setting_to_commodity(self._phase),
+							commodity_quantity = phase_setting_to_commodity(self.phase),
 							value=0
 						)
 					]
@@ -249,6 +252,14 @@ class ShellyHandlerS2Mixin():
 		if path.endswith('/PhaseSetting') and ret and self._rm_enabled and self._control_type_ombc.active:
 			logger.info("Phase setting changed, updating OMBC system description")
 			task = asyncio.create_task(self._control_type_ombc.send_system_description())
+			background_tasks.add(task)
+			task.add_done_callback(background_tasks.discard)
+
+	def custom_name_changed(self, value):
+		# Update asset details when the RM is enabled, regardless of what control types are offered (i.e. /Auto is enabled or not).
+		if self.has_rm and self._rm_enabled:
+			self._update_asset_details(value)
+			task = asyncio.create_task(self.send_resource_manager_details())
 			background_tasks.add(task)
 			task.add_done_callback(background_tasks.discard)
 
@@ -292,23 +303,7 @@ class ShellyHandlerS2Mixin():
 		self.service.add_item(IntegerItem(path_base_settings + 'OnHysteresis', writeable=True, onchange=partial(self._s2_value_changed, path_base_settings + 'OnHysteresis')))
 		self.service.add_item(IntegerItem(path_base_settings + 'OffHysteresis', writeable=True, onchange=partial(self._s2_value_changed, path_base_settings + 'OffHysteresis')))
 
-		# Get channel custom name, if not available use the default name
-		name = self.service.get_item(f'/SwitchableOutput/{channel}/Settings/CustomName').value or \
-			self.service.get_item(f'/SwitchableOutput/{channel}/Name').value
-
-		# TODO: Update the asset details when the device custom name changes?
-		logger.info("Setting up phase as {}".format(self._phase))
-		self._rm_details = AssetDetails(
-			resource_id=uuid.uuid4(),
-			provides_forecast=False,
-			provides_power_measurements=[phase_setting_to_commodity(self._phase or 0)],
-			instruction_processing_delay=Duration(0),
-			roles=[Role(role=RoleType.ENERGY_CONSUMER, commodity='ELECTRICITY')],
-			name=name,
-			manufacturer="Shelly",
-			firmware_version=VERSION,
-			serial_number=self._serial
-		)
+		self._update_asset_details()
 
 		self.rm_item = S2ResourceManagerItem(
 			'/S2/0/Rm',
@@ -317,6 +312,31 @@ class ShellyHandlerS2Mixin():
 		)
 
 		self.service.add_item(self.rm_item)
+
+	def _update_asset_details(self, name=None):
+		if name is None:
+			# Get channel custom name, if not available use the default name
+			name = self.service.get_item(f'/SwitchableOutput/{self._channel_id}/Settings/CustomName').value or \
+				self.service.get_item(f'/SwitchableOutput/{self._channel_id}/Name').value
+
+		self._rm_details = AssetDetails(
+			resource_id=uuid.uuid4(),
+			provides_forecast=False,
+			provides_power_measurements=[phase_setting_to_commodity(self.phase or 0)],
+			instruction_processing_delay=Duration(0),
+			roles=[Role(role=RoleType.ENERGY_CONSUMER, commodity='ELECTRICITY')],
+			name=name,
+			manufacturer="Shelly",
+			firmware_version=VERSION,
+			serial_number=self._serial
+		)
+
+	async def send_resource_manager_details(self):
+		if self.rm_item and self.rm_item.is_connected:
+			try:
+				await self.rm_item.send_resource_manager_details(control_types=[self._control_type_ombc, self._control_type_noctrl], asset_details=self._rm_details)
+			except Exception as e:
+				logger.error("Failed to send resource manager details: %s", e)
 
 class ShellyOMBC(OMBCControlType):
 
