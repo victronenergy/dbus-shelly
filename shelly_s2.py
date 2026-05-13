@@ -486,8 +486,7 @@ class ShellyOMBC(OMBCControlType):
 		if 'Status' in values and (self._status != values['Status'] or not self._enabled):
 			# Status has changed, update the HEMS
 			self._status = values['Status']
-			if self._active:
-				self._status_queue.put_nowait(self._status)
+			self._status_queue.put_nowait(self._status)
 
 		if 'Power' in values:
 			# we cannot monitor for a significant power change here.
