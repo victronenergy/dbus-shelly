@@ -488,7 +488,6 @@ class ShellyOMBC(OMBCControlType):
 			# Status has changed, update the HEMS
 			self._status = values['Status']
 			if self._active:
-				self._ensure_status_worker()
 				self._status_queue.put_nowait(self._status)
 
 		if 'Power' in values:
@@ -497,7 +496,6 @@ class ShellyOMBC(OMBCControlType):
 			# this would then get "stuck", cause the 0 is no longer transfered.
 
 			# TODO: Reduce load by preventing (nearly) equal power measurements to be sent.
-			self._ensure_power_worker()
 			self._power_queue.put_nowait(values['Power'])
 
 	async def handle_instruction(self, conn, msg, send_okay):
@@ -554,32 +552,37 @@ class ShellyOMBC(OMBCControlType):
 			logger.error("Switch item does not have a Resource Manager item, cannot activate OMBCControlTypeSwitch")
 			return
 
-		self._active = True
 		self._switch_item.s2_active = 1
 		# Initialize status. further updates to _status will only be done by values_changed.
 		self._status = self._switch_item.status
 
-		# Send system description and status to the HEMS
+		# Start workers before setting _active
+		self._ensure_status_worker()
+		self._status_queue.put_nowait(self._status)
+		self._ensure_power_worker()
+		# Set _active only after workers are guaranteed to be running
+		self._active = True
+		
+		# Send system description after workers are running and _active is set
 		msg = await self.send_system_description()
 		if (msg is None) or (msg.status != ReceptionStatusValues.OK):
 			logger.error("Failed to activate OMBC control type, reception status message: %s", msg)
 			await self.deactivate(conn)
 			return
-		self._ensure_status_worker()
-		self._status_queue.put_nowait(self._status)
-		self._ensure_power_worker()
 
 	async def deactivate(self, conn):
 		if self._switch_item.rm_item is None:
 			logger.error("Switch item does not have a Resource Manager item, cannot deactivate OMBCControlTypeSwitch")
 			return
+		# Set _active to False immediately to stop new items being queued to workers
+		self._active = False
 		logger.debug("Deactivate OMBCControlTypeSwitch")
 		await self._stop_status_worker()
 		await self._stop_power_worker()
-		self._active = False
 		self._switch_item.s2_active = 0
 
 	async def send_system_description(self):
+		# Defensive check: background tasks may run after deactivation starts
 		if not self._active:
 			logger.warning("OMBCControlTypeSwitch is not active, cannot send system description")
 			return
