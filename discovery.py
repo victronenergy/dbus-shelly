@@ -554,6 +554,10 @@ class ShellyDiscovery(object):
 
 		# Set up the service
 		self.service = Service(self.bus, "com.victronenergy.shelly")
+
+		# Add DeviceInstance path set to 0 to avoid systemcalc legacy scanning
+		self.service.add_item(IntegerItem('/DeviceInstance', 0, writeable=False))
+
 		await self.settings.add_settings(Setting('/Settings/Shelly/IpAddresses', "", alias="ipaddresses"))
 
 		ip_addresses = self.settings.get_value(self.settings.alias('ipaddresses'))
