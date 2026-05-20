@@ -116,6 +116,13 @@ class ShellyHandlerS2Mixin():
 
 	async def _handle_channel_function_changed(self, channel, value):
 		if value == OutputFunction.OPPORTUNITY_LOAD:
+			# Check the /Group name. If it is empty, set it to "Opportunity Loads" by default.
+			# This does NOT write "Opportunity Loads" to localsettings, it only sets the value of the dbus item.
+			# When /Group is written from the GUI/dbus, it will be stored in localsettings and also to the dbus item.
+			group_item = self.service.get_item(f'/SwitchableOutput/{channel}/Settings/Group')
+			if group_item and not group_item.value:
+				group_item.set_local_value("Opportunity Loads")
+
 			# Set type to three-state switch
 			await self._set_type_to_three_state_switch(True)
 
@@ -127,6 +134,13 @@ class ShellyHandlerS2Mixin():
 			await self.enable_rm(channel, auto_value)
 
 		else:
+			# Restore group name from settings to be sure
+			# If the group name was empty before the function was set to OL, it will be restored to an empty string here.
+			group = self.settings.get_value(self.settings.alias(f'Group_{self._serial}_{self._channel_id}'))
+			group_item = self.service.get_item(f'/SwitchableOutput/{channel}/Settings/Group')
+			if group_item:
+				group_item.set_local_value(group)
+
 			# Disable RM if it was running
 			if self._rm_enabled:
 				await self.disable_rm()
