@@ -114,9 +114,10 @@ class ShellyHandler(object):
 	def set_service_name(self, type):
 		self.service.name = f"com.victronenergy.{type}.shelly_{self._serial}_{self._channel_id}"
 
-	async def rpc_call(self, method, params, fun=None):
-		is_single = isinstance(self._rpc_device_type, str)
-		rpc_types = [self._rpc_device_type] if is_single else self._rpc_device_type
+	async def rpc_call(self, method, params, rpc_device_types=[], fun=None):
+		rpc_types = rpc_device_types if rpc_device_types else self._rpc_device_type
+		is_single = isinstance(rpc_types, str)
+		rpc_types = [rpc_types] if is_single else rpc_types
 		results = {}
 		for rpc in rpc_types:
 			resp = await self._rpc_call(f"{rpc}.{method}", params)
@@ -144,6 +145,7 @@ class ShellyHandler(object):
 @register_handler('Temperature', kind=HANDLER_KIND_GENERIC)
 class ShellyHandler_temperature(ShellyHandler):
 	async def ainit(self):
+		await super().ainit()
 		# Temperature path must be updated.
 		self.service.add_item(DoubleItem(f'/Temperature', None, text=fmt['celsius']))
 
@@ -158,16 +160,27 @@ class ShellyHandler_temperature(ShellyHandler):
 @register_handler('Sys', kind=HANDLER_KIND_GENERIC)
 class ShellyHandler_sys(ShellyHandler):
 	async def ainit(self):
-		pass
+		await super().ainit()
 
 # Generic channel config mixin, adds support for custom channel names and requesting channel config. Used by multiple handlers.
 # Allows for synching the channel name to multiple paths on the service.
 class ShellyHandler_channel_config_mixin():
-	def __init__(self):
-		super().__init__()
+	async def ainit(self):
+		await super().ainit()
 		self._custom_name_paths = []
 		self._custom_name_retries = 0
 		self._custom_name_retry_task = None
+
+		# Find the first RPC component that has a config with a name and use that to sync to the custom name.
+		# This is needed to prevent attempting to set the name on a component that does not support it, in case of handlers that handle multiple RPC components (e.g. EM and EMData).
+		self._rpc_types_with_name_config = []
+		if isinstance(self._rpc_device_type, str):
+			self._rpc_types_with_name_config = [self._rpc_device_type]
+		else:
+			for rpc in self._rpc_device_type:
+				if await self.rpc_call('GetConfig', {"id": self._channel_id}, rpc_device_types=[rpc]) is not None:
+					self._rpc_types_with_name_config.append(rpc)
+					break
 
 	# Invoked when the custom name is changed on the shelly device.
 	# When the value on dbus is changed, the name is updated on the shelly and the hook is called as well.
@@ -181,10 +194,11 @@ class ShellyHandler_channel_config_mixin():
 			await self._get_channel_customname()
 
 	async def request_channel_config(self, _fun=None):
-		return await self.rpc_call('GetConfig', {"id": self._channel_id}, fun=_fun)
+		resp = await self.rpc_call('GetConfig', {"id": self._channel_id}, rpc_device_types=self._rpc_types_with_name_config, fun=_fun)
+		return resp
 
 	async def set_channel_config(self, config):
-		return await self.rpc_call('SetConfig', {"id": self._channel_id, "config": config})
+		return await self.rpc_call('SetConfig', {"id": self._channel_id, "config": config}, rpc_device_types=self._rpc_types_with_name_config)
 
 	async def _update_customname(self, config, cap=None):
 		name = None
@@ -363,6 +377,7 @@ class Shelly_EM_base(ShellyHandler_EM_paths_mixin):
 @register_handler('EM', 'EMData', kind=HANDLER_KIND_EM)
 class ShellyHandler_em(Shelly_EM_base, ShellyHandler_channel_config_mixin, ShellyHandler):
 	async def ainit(self):
+		await super().ainit()
 		self._num_phases = await self.get_num_phases()
 		await self.add_customname_path()
 		role = await self.init_em(self._num_phases)
@@ -411,6 +426,7 @@ class ShellyHandler_em(Shelly_EM_base, ShellyHandler_channel_config_mixin, Shell
 @register_handler('EM1', 'EM1Data', 'PM1', kind=HANDLER_KIND_EM1)
 class ShellyHandler_em1(Shelly_EM_base, ShellyHandler_channel_config_mixin, ShellyHandler):
 	async def ainit(self):
+		await super().ainit()
 		self._num_phases = 1
 		await self.add_customname_path()
 		role = await self.init_em(self._num_phases)
@@ -470,6 +486,7 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 		self.service.get_item(f'/SwitchableOutput/{self._channel_id}/State')._set_value(value)
 
 	async def ainit(self, allow_em=True):
+		await super().ainit()
 		base = self._settings_base + '%s/' % self._channel_id
 		self._function = OutputFunction.MANUAL
 		self._has_em = False
