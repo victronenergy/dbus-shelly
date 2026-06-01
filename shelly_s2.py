@@ -180,37 +180,11 @@ class ShellyHandlerS2Mixin():
 
 		self._rm_enabled = True
 
-	async def _auto_changed(self, item, value):
-		# Store setting
-		setting = f'Auto_{self._serial}_{self._channel_id}'
-		try:
-			await self.settings.set_value(self.settings.alias(setting), value)
-			await self.enable_rm(self._channel_id, value)
-		except:
-			return
-		item.set_local_value(value)
+	async def on_auto_changed(self, channel, value):
+		await self.enable_rm(channel, value)
+
 
 	async def _set_type_to_three_state_switch(self, enabled):
-		if enabled:
-			if self.settings.alias(f'Auto_{self._serial}_{self._channel_id}') is None:
-				await self.settings.add_settings(Setting(f'{self._settings_base}{self._channel_id}/Auto', 0,
-											 _min=0, _max=1, alias=f"Auto_{self._serial}_{self._channel_id}"))
-			if self.service.get_item(f'/SwitchableOutput/{self._channel_id}/Auto') is None:
-				# Add Auto item
-				self.service.add_item(IntegerItem(f'/SwitchableOutput/{self._channel_id}/Auto', None, writeable=True, onchange=self._auto_changed))
-
-			init_val = self.settings.get_value(self.settings.alias(f'Auto_{self._serial}_{self._channel_id}')) or 0
-			# This sends an itemschanged, to make the GUI aware of it.
-			with self.service as s:
-				s[f'/SwitchableOutput/{self._channel_id}/Auto'] = init_val
-		else:
-			try:
-				with self.service as s:
-					s[f'/SwitchableOutput/{self._channel_id}/Auto'] = None
-			except KeyError:
-				# Item did not exist, ignore
-				pass
-
 		with self.service as s:
 			s[f'/SwitchableOutput/{self._channel_id}/Settings/ValidTypes'] = (1 << OutputType.THREE_STATE_SWITCH) if enabled else self._valid_types_mask
 
