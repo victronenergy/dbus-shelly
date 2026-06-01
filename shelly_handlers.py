@@ -566,7 +566,7 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 		self.set_service_name(role if self._has_em else 'switch')
 
 		# Initialize channel type and function
-		self._set_channel_type(str(self._channel_id), self._type)
+		await self._set_channel_type(str(self._channel_id), self._type)
 		self._set_channel_function(str(self._channel_id), self._function)
 
 	async def em_supported(self):
@@ -619,7 +619,7 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 		if len(split) > 3 and split[3] == 'Settings':
 			if split[-1] == 'Type':
 				value = int(value)
-				if not self._set_channel_type(split[-3], value):
+				if not await self._set_channel_type(split[-3], value):
 					return
 			elif split[-1] == 'Function':
 				value = int(value)
@@ -636,11 +636,41 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 				return
 			item.set_local_value(value)
 
-	def _set_channel_type(self, channel, value):
+	async def _auto_changed(self, item, value):
+		# Store setting
+		setting = f'Auto_{self._serial}_{self._channel_id}'
+		try:
+			await self.settings.set_value(self.settings.alias(setting), value)
+		except:
+			return
+		item.set_local_value(value)
+		await self.on_auto_changed(self._channel_id, value)
+
+	async def _set_channel_type(self, channel, value):
 		if value < 0 or value > OutputType.TYPE_MAX:
 			return False
 		ret = (1 << value) & self.service.get_item("/SwitchableOutput/%s/Settings/ValidTypes" % channel).value
 		if ret:
+			if value == OutputType.THREE_STATE_SWITCH.value:
+				if self.settings.alias(f'Auto_{self._serial}_{self._channel_id}') is None:
+					await self.settings.add_settings(Setting(f'{self._settings_base}{self._channel_id}/Auto', 0,
+												_min=0, _max=1, alias=f"Auto_{self._serial}_{self._channel_id}"))
+				if self.service.get_item(f'/SwitchableOutput/{self._channel_id}/Auto') is None:
+					# Add Auto item
+					self.service.add_item(IntegerItem(f'/SwitchableOutput/{self._channel_id}/Auto', None, writeable=True, onchange=self._auto_changed))
+
+				init_val = self.settings.get_value(self.settings.alias(f'Auto_{self._serial}_{self._channel_id}')) or 0
+				# This sends an itemschanged, to make the GUI aware of it.
+				with self.service as s:
+					s[f'/SwitchableOutput/{self._channel_id}/Auto'] = init_val
+
+			else:
+				try:
+					with self.service as s:
+						s[f'/SwitchableOutput/{self._channel_id}/Auto'] = None
+				except KeyError:
+					# Item did not exist, ignore
+					pass
 			self.on_channel_type_changed(channel, value)
 			self._type = value
 		return ret
@@ -724,6 +754,9 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 		pass
 
 	def on_channel_function_changed(self, channel, value):
+		pass
+
+	def on_auto_changed(self, channel, value):
 		pass
 
 	async def set_state(self, item, value):
