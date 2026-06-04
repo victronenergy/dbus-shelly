@@ -322,6 +322,9 @@ class Shelly_EM_base(ShellyHandler_EM_paths_mixin):
 		# is actually mapped to.
 		await self.add_em_paths(3)
 
+		# Populate the EM paths with initial values
+		await self.force_update()
+
 		return self._em_role
 
 	def store_energies(self, forward, reverse, prefix=''):
@@ -400,7 +403,6 @@ class ShellyHandler_em(Shelly_EM_base, ShellyHandler_channel_config_mixin, Shell
 		await self.add_customname_path()
 		role = await self.init_em(self._num_phases)
 		self.set_service_name(role)
-		await self.force_update()
 
 	async def get_num_phases(self):
 		status = await self.rpc_call('GetStatus', {"id": self._channel_id})
@@ -447,7 +449,6 @@ class ShellyHandler_em1(Shelly_EM_base, ShellyHandler_channel_config_mixin, Shel
 		await self.add_customname_path()
 		role = await self.init_em(self._num_phases)
 		self.set_service_name(role)
-		await self.force_update()
 
 	def update(self, status_json, cap=None):
 		if status_json is None:
@@ -544,9 +545,9 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 							text=self._valid_functions_text_callback))
 
 		if allow_em and await self.em_supported():
+			self._has_em = True
 			# Add energy metering paths
 			role = await self.init_em(1, ['acload', 'pvinverter', 'heatpump'])
-			self._has_em = True
 		# Set service name based on role if EM is supported, otherwise default to switch.
 		self.set_service_name(role if self._has_em else 'switch')
 
