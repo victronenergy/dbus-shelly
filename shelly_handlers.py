@@ -283,15 +283,15 @@ class ShellyHandler_EM_paths_mixin():
 class Shelly_EM_base(ShellyHandler_EM_paths_mixin):
 	async def init_em(self, num_phases, allowed_roles=['acload', 'pvinverter', 'genset', 'heatpump']):
 		# Determine role and instance
-		_em_role, instance = self.role_instance(
+		self._em_role, instance = self.role_instance(
 			self.settings.get_value(self.settings.alias('instance_{}_{}'.format(self._serial, self._channel_id))))
 
 		self.allowed_em_roles = allowed_roles
-		if _em_role not in allowed_roles:
-			_em_role = allowed_roles[0]
-			await self.settings.set_value(self.settings.alias('instance_{}_{}'.format(self._serial, self._channel_id)), "{}:{}".format(_em_role, instance))
+		if self._em_role not in allowed_roles:
+			self._em_role = allowed_roles[0]
+			await self.settings.set_value(self.settings.alias('instance_{}_{}'.format(self._serial, self._channel_id)), "{}:{}".format(self._em_role, instance))
 
-		self.service.add_item(TextItem('/Role', _em_role, writeable=True,
+		self.service.add_item(TextItem('/Role', self._em_role, writeable=True,
 			onchange=self.role_changed))
 		self.service.add_item(TextArrayItem('/AllowedRoles', allowed_roles, writeable=False))
 
@@ -311,7 +311,7 @@ class Shelly_EM_base(ShellyHandler_EM_paths_mixin):
 			self.service.add_item(IntegerItem('/PhaseSetting', self._phase, writeable=True, onchange=self.phase_changed))
 
 		# For PV inverters, a /StatusCode path is expected, but shelly does not support this. So, add the path with value 99, indicating "not supported".
-		if _em_role == 'pvinverter':
+		if self._em_role == 'pvinverter':
 			self.service.add_item(IntegerItem('/StatusCode', 99, writeable=False, text=lambda v: "Not supported" if v == 99 else "Unknown status code"))
 
 		# Indicate when we're masquerading for another device
@@ -322,7 +322,25 @@ class Shelly_EM_base(ShellyHandler_EM_paths_mixin):
 		# is actually mapped to.
 		await self.add_em_paths(3)
 
-		return _em_role
+		return self._em_role
+
+	def store_energies(self, forward, reverse, prefix=''):
+		# Do not update the paths when the energy counter is exactly zero as that is likely an incorrect value and will confuse VRM.
+		# Sometimes the shelly invalidly reports an energy counter of 0 while booting before initializing it to the value from memory.
+		# If this value were to be reported, it would lead to a sudden drop and spike on the VRM graphs.
+		# When the counter is intentionally reset to 0 by the user, it will be reported as soon as the value is no longer exactly 0.
+
+		# The shelly reports the measured PV energy in the reverse energy counter, but on the GX we need to report this in the forward energy counter.
+		# The GX uses the role/service type to determine the direction of the energy flow.
+		if self._em_role == 'pvinverter' and reverse != 0:
+			with self.service as s:
+				s[prefix + 'Energy/Forward'] = reverse
+				s[prefix + 'Energy/Reverse'] = forward
+
+		elif self._em_role != 'pvinverter' and forward != 0:
+			with self.service as s:
+				s[prefix + 'Energy/Forward'] = forward
+				s[prefix + 'Energy/Reverse'] = reverse
 
 	async def phase_changed(self, item, value):
 		if not 1 <= value <= 3:
@@ -407,16 +425,14 @@ class ShellyHandler_em(Shelly_EM_base, ShellyHandler_channel_config_mixin, Shell
 
 				if cap == 'emdata':
 					for l in range(1, self._num_phases + 1):
-						with self.service as s:
-							p = {1:'a', 2:'b', 3:'c'}.get(l)
-							if status_json[f"{p}_total_act_energy"] != 0:
-								em_prefix = f'/Ac/L{l}/'
-								s[em_prefix + 'Energy/Forward'] = status_json[f"{p}_total_act_energy"] / 1000
-								s[em_prefix + 'Energy/Reverse'] = status_json[f"{p}_total_act_ret_energy"] / 1000
-					with self.service as s:
-						if status_json["total_act"] != 0:
-							s['/Ac/Energy/Forward'] = status_json["total_act"] / 1000
-							s['/Ac/Energy/Reverse'] = status_json["total_act_ret"] / 1000
+						p = {1:'a', 2:'b', 3:'c'}.get(l)
+						eforward = status_json[f"{p}_total_act_energy"] / 1000 if f"{p}_total_act_energy" in status_json else 0
+						ereverse = status_json[f"{p}_total_act_ret_energy"] / 1000 if f"{p}_total_act_ret_energy" in status_json else 0
+						self.store_energies(eforward, ereverse, prefix=f'/Ac/L{l}/')
+					eforward = status_json["total_act"] / 1000 if "total_act" in status_json else 0
+					ereverse = status_json["total_act_ret"] / 1000 if "total_act_ret" in status_json else 0
+					self.store_energies(eforward, ereverse, prefix='/Ac/')
+
 		except KeyError as e:
 			logger.error("KeyError in update: %s", e)
 			pass
@@ -446,18 +462,22 @@ class ShellyHandler_em1(Shelly_EM_base, ShellyHandler_channel_config_mixin, Shel
 					s[em_prefix + 'PowerFactor'] = status_json["pf"] if 'pf' in status_json else None
 					s['/Ac/Power'] = abs(status_json["act_power"])
 				elif cap == 'em1data':
-					if status_json["total_act_energy"] != 0:
-						s['/Ac/Energy/Forward'] = s[em_prefix + 'Energy/Forward'] = status_json["total_act_energy"] / 1000
-						s['/Ac/Energy/Reverse'] = s[em_prefix + 'Energy/Reverse'] = status_json["total_act_ret_energy"] / 1000
+					eforward = status_json["total_act_energy"] / 1000 if "total_act_energy" in status_json else 0
+					ereverse = status_json["total_act_ret_energy"] / 1000 if "total_act_ret_energy" in status_json else 0
+					self.store_energies(eforward, ereverse, prefix=em_prefix)
+					self.store_energies(eforward, ereverse, prefix='/Ac/')
 				elif cap == 'pm1':
 					s[em_prefix + 'Voltage'] = status_json["voltage"]
 					s[em_prefix + 'Current'] = abs(status_json["current"])
 					s[em_prefix + 'Power'] = abs(status_json["apower"])
 					s[em_prefix + 'PowerFactor'] = status_json["pf"] if 'pf' in status_json else None
 					s['/Ac/Power'] = abs(status_json["apower"])
-					if status_json["aenergy"]["total"] != 0:
-						s['/Ac/Energy/Forward'] = s[em_prefix + 'Energy/Forward'] = status_json["aenergy"]["total"] / 1000
-						s['/Ac/Energy/Reverse'] = s[em_prefix + 'Energy/Reverse'] = status_json["ret_aenergy"]["total"] / 1000
+
+					eforward = status_json["aenergy"]["total"] / 1000 if "aenergy" in status_json else 0
+					ereverse = status_json["ret_aenergy"]["total"] / 1000 if "ret_aenergy" in status_json else 0
+					self.store_energies(eforward, ereverse, prefix=em_prefix)
+					self.store_energies(eforward, ereverse, prefix='/Ac/')
+
 		except KeyError as e:
 			logger.error("KeyError in update: %s", e)
 			pass
@@ -559,15 +579,12 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 					s[em_prefix + 'Power'] = abs(status_json["apower"])
 					s[em_prefix + 'PowerFactor'] = status_json["pf"] if 'pf' in status_json else None
 					s['/Ac/Power'] = abs(status_json["apower"])
-					# Shelly reports energy in Wh, so convert to kWh
-					if "aenergy" in status_json and status_json["aenergy"]["total"] != 0:
-						eforward = status_json["aenergy"]["total"] / 1000
-						s[em_prefix + 'Energy/Forward'] = eforward
-						s['/Ac/Energy/Forward'] = eforward
-					if "ret_aenergy" in status_json:
-						ereverse = status_json["ret_aenergy"]["total"] / 1000
-						s[em_prefix + 'Energy/Reverse'] = ereverse
-						s['/Ac/Energy/Reverse'] = ereverse
+
+					eforward = status_json["aenergy"]["total"] / 1000 if "aenergy" in status_json else 0
+					ereverse = status_json["ret_aenergy"]["total"] / 1000 if "ret_aenergy" in status_json else 0
+
+					self.store_energies(eforward, ereverse, prefix=em_prefix)
+					self.store_energies(eforward, ereverse, prefix='/Ac/')
 
 			except KeyError as e:
 				logger.error("KeyError in update: %s", e)
