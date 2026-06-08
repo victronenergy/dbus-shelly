@@ -335,6 +335,8 @@ class Shelly_EM_base(ShellyHandler_EM_paths_mixin):
 
 		# The shelly reports the measured PV energy in the reverse energy counter, but on the GX we need to report this in the forward energy counter.
 		# The GX uses the role/service type to determine the direction of the energy flow.
+		forward = float(forward)
+		reverse = float(reverse)
 		if self._em_role == 'pvinverter' and reverse != 0:
 			with self.service as s:
 				s[prefix + 'Energy/Forward'] = reverse
@@ -428,11 +430,11 @@ class ShellyHandler_em(Shelly_EM_base, ShellyHandler_channel_config_mixin, Shell
 				if cap == 'emdata':
 					for l in range(1, self._num_phases + 1):
 						p = {1:'a', 2:'b', 3:'c'}.get(l)
-						eforward = status_json[f"{p}_total_act_energy"] / 1000 if f"{p}_total_act_energy" in status_json else 0
-						ereverse = status_json[f"{p}_total_act_ret_energy"] / 1000 if f"{p}_total_act_ret_energy" in status_json else 0
+						eforward = status_json[f"{p}_total_act_energy"] / 1000 if f"{p}_total_act_energy" in status_json else 0.0
+						ereverse = status_json[f"{p}_total_act_ret_energy"] / 1000 if f"{p}_total_act_ret_energy" in status_json else 0.0
 						self.store_energies(eforward, ereverse, prefix=f'/Ac/L{l}/')
-					eforward = status_json["total_act"] / 1000 if "total_act" in status_json else 0
-					ereverse = status_json["total_act_ret"] / 1000 if "total_act_ret" in status_json else 0
+					eforward = status_json["total_act"] / 1000 if "total_act" in status_json else 0.0
+					ereverse = status_json["total_act_ret"] / 1000 if "total_act_ret" in status_json else 0.0
 					self.store_energies(eforward, ereverse, prefix='/Ac/')
 
 		except KeyError as e:
@@ -463,8 +465,8 @@ class ShellyHandler_em1(Shelly_EM_base, ShellyHandler_channel_config_mixin, Shel
 					s[em_prefix + 'PowerFactor'] = status_json["pf"] if 'pf' in status_json else None
 					s['/Ac/Power'] = abs(status_json["act_power"])
 				elif cap == 'em1data':
-					eforward = status_json["total_act_energy"] / 1000 if "total_act_energy" in status_json else 0
-					ereverse = status_json["total_act_ret_energy"] / 1000 if "total_act_ret_energy" in status_json else 0
+					eforward = status_json["total_act_energy"] / 1000 if "total_act_energy" in status_json else 0.0
+					ereverse = status_json["total_act_ret_energy"] / 1000 if "total_act_ret_energy" in status_json else 0.0
 					self.store_energies(eforward, ereverse, prefix=em_prefix)
 					self.store_energies(eforward, ereverse, prefix='/Ac/')
 				elif cap == 'pm1':
@@ -474,8 +476,8 @@ class ShellyHandler_em1(Shelly_EM_base, ShellyHandler_channel_config_mixin, Shel
 					s[em_prefix + 'PowerFactor'] = status_json["pf"] if 'pf' in status_json else None
 					s['/Ac/Power'] = abs(status_json["apower"])
 
-					eforward = status_json["aenergy"]["total"] / 1000 if "aenergy" in status_json else 0
-					ereverse = status_json["ret_aenergy"]["total"] / 1000 if "ret_aenergy" in status_json else 0
+					eforward = status_json["aenergy"]["total"] / 1000 if "aenergy" in status_json else 0.0
+					ereverse = status_json["ret_aenergy"]["total"] / 1000 if "ret_aenergy" in status_json else 0.0
 					self.store_energies(eforward, ereverse, prefix=em_prefix)
 					self.store_energies(eforward, ereverse, prefix='/Ac/')
 
@@ -520,7 +522,7 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 			Setting(base + 'Group', "", alias=f'Group_{self._serial}_{self._channel_id}'),
 			Setting(base + 'ShowUIControl', 1, _min=0, _max=6, alias=f'ShowUIControl_{self._serial}_{self._channel_id}'),
 			Setting(base + 'Function', int(OutputFunction.MANUAL), _min=0, _max=6, alias=f'Function_{self._serial}_{self._channel_id}'),
-			Setting(base + 'Type', self._default_output_type, _min=0, _max=OutputType.TYPE_MAX, alias=f'Type_{self._serial}_{self._channel_id}'),
+			Setting(base + 'Type', int(self._default_output_type), _min=0, _max=int(OutputType.TYPE_MAX), alias=f'Type_{self._serial}_{self._channel_id}'),
 		)
 
 		self._type = self.settings.get_value(self.settings.alias(f'Type_{self._serial}_{self._channel_id}'))
