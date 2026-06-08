@@ -494,6 +494,7 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 	_default_function = OutputFunction.MANUAL
 	_valid_types_mask = int((1 << OutputType.TOGGLE.value) | (1 << OutputType.MOMENTARY.value))
 	_valid_functions_mask = int(1 << OutputFunction.MANUAL)
+	_allowed_em_roles = ['acload', 'pvinverter', 'heatpump']
 
 	@property
 	def status(self):
@@ -549,7 +550,7 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 		if allow_em and await self.em_supported():
 			self._has_em = True
 			# Add energy metering paths
-			role = await self.init_em(1, ['acload', 'pvinverter', 'heatpump'])
+			role = await self.init_em(1, self._allowed_em_roles)
 		# Set service name based on role if EM is supported, otherwise default to switch.
 		self.set_service_name(role if self._has_em else 'switch')
 
@@ -758,6 +759,7 @@ class ThrottledUpdaterMixin:
 class ShellyHandler_light(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 	_default_output_type = OutputType.DIMMABLE
 	_valid_types_mask = int(1 << OutputType.DIMMABLE.value)
+	_allowed_em_roles = ['acload', 'heatpump'] # pvinverter makes no sense on a dimmable output. heatpump is also arguable but it shouldn't hurt.
 
 	async def ainit(self):
 		self._desired_value = 0
@@ -803,6 +805,9 @@ class ShellyHandler_light(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 class ShellyHandler_RGBW(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 	_default_output_type = OutputType.RGBW
 	_valid_types_mask = int(1 << OutputType.RGBW.value)
+
+	# Note: EM functionality is disabled on the RGB(W) handlers, but set the default roles anyways to prevent problems when it is allowed later.
+	_allowed_em_roles = ['acload'] # pvinverter and heatpump make no sense on a RGBW output.
 
 	async def ainit(self):
 		self._desired_value = 0
