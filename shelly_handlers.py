@@ -760,7 +760,6 @@ class ShellyHandler_light(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 	_valid_types_mask = int(1 << OutputType.DIMMABLE.value)
 
 	async def ainit(self):
-		await super().ainit()
 		self._desired_value = 0
 		self._throttling_lock = asyncio.Lock()
 		self._throttling_runner_lock = asyncio.Lock()
@@ -769,6 +768,9 @@ class ShellyHandler_light(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 		self.service.add_item(IntegerItem(path_base + 'Dimming', 0, writeable=True,
 			onchange=partial(self.throttled_updater, self._set_dimming_value),
 			text=lambda y: str(y) + '%'))
+
+		# ainit may do a force update which will call update, so make sure the paths are there.
+		await super().ainit()
 
 	def update(self, status_json, cap=None):
 		super().update(status_json, cap)
@@ -803,7 +805,6 @@ class ShellyHandler_RGBW(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 	_valid_types_mask = int(1 << OutputType.RGBW.value)
 
 	async def ainit(self):
-		await super().ainit(allow_em=False)
 		self._desired_value = 0
 		self._throttling_lock = asyncio.Lock()
 		self._throttling_runner_lock = asyncio.Lock()
@@ -811,6 +812,9 @@ class ShellyHandler_RGBW(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 		path_base  = '/SwitchableOutput/%s/' % self._channel_id
 		self.service.add_item(IntegerArrayItem(path_base + 'LightControls',value=[0, 0, 0, 0, 0], writeable=True,
 				onchange=partial(self.throttled_updater, self._set_light_controls), text=self._light_controls_text_callback))
+
+		# ainit may do a force update which will call update, so make sure the paths are there.
+		await super().ainit(allow_em=False)
 
 	def _light_controls_text_callback(self, v):
 		if self._type == OutputType.RGBW:
