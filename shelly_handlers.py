@@ -338,6 +338,11 @@ class Shelly_EM_base(ShellyHandler_EM_paths_mixin):
 
 		return self._em_role
 
+	def set_allowed_roles(self, allowed_roles):
+		self.allowed_em_roles = allowed_roles
+		with self.service as s:
+			s['/AllowedRoles'] = allowed_roles
+
 	def store_energies(self, forward, reverse, prefix=''):
 		# Do not update the paths when the energy counter is exactly zero as that is likely an incorrect value and will confuse VRM.
 		# Sometimes the shelly invalidly reports an energy counter of 0 while booting before initializing it to the value from memory.
@@ -357,6 +362,9 @@ class Shelly_EM_base(ShellyHandler_EM_paths_mixin):
 			with self.service as s:
 				s[prefix + 'Energy/Forward'] = forward
 				s[prefix + 'Energy/Reverse'] = reverse
+
+	def get_em_role(self):
+		return self._em_role
 
 	async def phase_changed(self, item, value):
 		if not 1 <= value <= 3:
