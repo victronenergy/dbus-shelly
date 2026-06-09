@@ -93,6 +93,8 @@ class ShellyHandlerS2Mixin():
 	async def ainit(self):
 		self._ol_supported = False
 		await super().ainit()
+
+	async def after_switch_capabilities_discovered(self):
 		self.rm_item = None
 		self._ol_supported = self._has_em and self._em_role != 'pvinverter'
 
@@ -113,16 +115,10 @@ class ShellyHandlerS2Mixin():
 		with self.service as s:
 			s[f'/SwitchableOutput/{self._channel_id}/Settings/ValidFunctions'] = self._valid_functions_mask
 
-		# Setup channel function
-		self.on_channel_function_changed(self._channel_id, self._function)
-
-	def on_channel_function_changed(self, channel, value):
+	async def on_channel_function_changed(self, channel, value):
 		if not self._ol_supported:
 			return
-		self._function = value
-		asyncio.create_task(self._handle_channel_function_changed(channel, value))
 
-	async def _handle_channel_function_changed(self, channel, value):
 		if value == OutputFunction.OPPORTUNITY_LOAD:
 			# Disallow the 'pvinverter' role when the function is set to OL.
 			self.set_allowed_roles([role for role in self.allowed_em_roles if role != 'pvinverter'])

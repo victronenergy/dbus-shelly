@@ -62,7 +62,7 @@ class ShellyHandler(object):
 	_rpc_device_type = ""
 
 	@classmethod
-	async def create(cls, cap, rpc_callback=None, restart_callback=None, shelly_channel=None):
+	async def create(cls, cap, rpc_callback=None, restart_callback=None, shelly_channel=None, pv_disabled=0):
 		handler_cls = get_handler_class(cap)
 		if handler_cls is None:
 			return None
@@ -76,12 +76,14 @@ class ShellyHandler(object):
 		c.settings = getattr(shelly_channel, "settings", None)
 		c._serial = getattr(shelly_channel, "_serial", None)
 		c._settings_base = f'/Settings/Devices/shelly_{c._serial}_{c._channel_id}/'
+		c._pv_disabled = pv_disabled
 		await c.ainit()
 
 		return c
 
 	def __init__(self):
 		self._channel_id = 0
+		self._pv_disabled = 0
 		self._rpc_call = None
 		self.restart = None
 		self._type = None
@@ -100,6 +102,9 @@ class ShellyHandler(object):
 
 	async def restart(self):
 		pass
+
+	def set_pv_disabled(self, value):
+		self._pv_disabled = int(value)
 
 	async def force_update(self):
 		await self.rpc_call('GetStatus', {"id": self._channel_id}, fun=self.update)
@@ -338,6 +343,11 @@ class Shelly_EM_base(ShellyHandler_EM_paths_mixin):
 
 		return self._em_role
 
+	def set_allowed_roles(self, allowed_roles):
+		self.allowed_em_roles = allowed_roles
+		with self.service as s:
+			s['/AllowedRoles'] = allowed_roles
+
 	def store_energies(self, forward, reverse, prefix=''):
 		# Do not update the paths when the energy counter is exactly zero as that is likely an incorrect value and will confuse VRM.
 		# Sometimes the shelly invalidly reports an energy counter of 0 while booting before initializing it to the value from memory.
@@ -518,6 +528,10 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 	def state(self):
 		return self.service.get_item(f'/SwitchableOutput/{self._channel_id}/State').value
 
+	@property
+	def auto(self):
+		return self.service.get_item(f'/SwitchableOutput/{self._channel_id}/Auto').value if self.service.get_item(f'/SwitchableOutput/{self._channel_id}/Auto') else None
+
 	@state.setter
 	def state(self, value):
 		""" Set the state of the switch. """
@@ -528,6 +542,7 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 		base = self._settings_base + '%s/' % self._channel_id
 		self._function = OutputFunction.MANUAL
 		self._has_em = False
+		role = None
 
 		path_base  = '/SwitchableOutput/%s/' % self._channel_id
 		await self.add_customname_path()
@@ -543,8 +558,8 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 		self._type = self.settings.get_value(self.settings.alias(f'Type_{self._serial}_{self._channel_id}'))
 		self._function = self.settings.get_value(self.settings.alias(f'Function_{self._serial}_{self._channel_id}'))
 
-		self.service.add_item(IntegerItem(path_base + 'State', 0, writeable=True, onchange=self.set_state))
-		self.service.add_item(IntegerItem(path_base + 'Status', 0, writeable=False, text=self._status_text_callback))
+		self.service.add_item(IntegerItem(path_base + 'State', None, writeable=True, onchange=self.set_state))
+		self.service.add_item(IntegerItem(path_base + 'Status', None, writeable=False, text=self._status_text_callback))
 		self.service.add_item(TextItem(path_base + 'Name', f'Channel {self._channel_id}', writeable=False))
 
 		group = self.settings.get_value(self.settings.alias(f'Group_{self._serial}_{self._channel_id}'))
@@ -561,16 +576,39 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 		self.service.add_item(IntegerItem(path_base + 'Settings/ValidFunctions', int(self._valid_functions_mask), writeable=False,
 							text=self._valid_functions_text_callback))
 
+		# Discover EM capabilities first so mixins can extend masks before persisted type/function are applied.
 		if allow_em and await self.em_supported():
 			self._has_em = True
 			# Add energy metering paths
 			role = await self.init_em(1, self._allowed_em_roles)
+
+			# If role is pvinverter, also allow the three-state switch type, so the user can choose to have the system automatically disable PV when the system is requesting so.
+			# If Auto is disabled or a different type of switch is used, the PV won't be disabled automatically.
+			if role == 'pvinverter':
+				self._valid_types_mask |= (1 << OutputType.THREE_STATE_SWITCH.value)
+				self.service.add_item(IntegerItem('/Pv/Disabled', None, writeable=False))
+				# Update valid types
+				with self.service as s:
+					s[path_base + 'Settings/ValidTypes'] = self._valid_types_mask
+
 		# Set service name based on role if EM is supported, otherwise default to switch.
 		self.set_service_name(role if self._has_em else 'switch')
 
-		# Initialize channel type and function
+		# Allow derived handlers/mixins to adjust masks and capabilities before applying persisted state.
+		await self.after_switch_capabilities_discovered()
+
+		# Initialize channel type and function after all valid masks have been finalized.
+		await self.apply_initial_channel_config()
+
+		if self._has_em and self.get_em_role() == 'pvinverter':
+			self.set_pv_disabled(self._pv_disabled)
+
+	async def after_switch_capabilities_discovered(self):
+		pass
+
+	async def apply_initial_channel_config(self):
+		await self._set_channel_function(str(self._channel_id), self._function)
 		await self._set_channel_type(str(self._channel_id), self._type)
-		self._set_channel_function(str(self._channel_id), self._function)
 
 	async def em_supported(self):
 		status = await self.request_channel_status()
@@ -608,9 +646,30 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 				logger.error("KeyError in update: %s", e)
 				pass
 
+	def set_pv_disabled(self, disabled):
+		# Sanity checks to ensure PV can be disabled
+		if not self._has_em or self._function != OutputFunction.MANUAL or self._type != OutputType.THREE_STATE_SWITCH or self.get_em_role() != 'pvinverter':
+			return 0
+
+		# Store desired PV disabled state.
+		self._pv_disabled = int(disabled)
+
+		try:
+			with self.service as s:
+				s['/Pv/Disabled'] = self._pv_disabled if self.auto else 0
+		except KeyError:
+			# Item did not exist, ignore
+			pass
+
+		# Ignore request if Auto is disabled
+		if not self.auto:
+			return 0
+
+		self.state = 0 if self._pv_disabled else 1
+		return self._pv_disabled
+
 	async def set_channel_name(self, item, value):
 		if value is not None:
-			logger.debug("Setting channel name for shelly device %s channel %d to: %s", self._serial, self._channel_id, value)
 			await self.rpc_call("SetConfig", {"id": self._channel_id, "config": {"name": value}})
 			item.set_local_value(value)
 
@@ -624,7 +683,7 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 				if not await self._set_channel_type(split[-3], value):
 					return
 			elif split[-1] == 'Function':
-				if not self._set_channel_function(split[-3], value):
+				if not await self._set_channel_function(split[-3], value):
 					return
 			elif split[-1] == 'ShowUIControl':
 				if value > 6 or value < 0:
@@ -644,6 +703,7 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 		except:
 			return
 		item.set_local_value(value)
+		self.set_pv_disabled(self._pv_disabled)
 		await self.on_auto_changed(self._channel_id, value)
 
 	async def _set_channel_type(self, channel, value):
@@ -651,6 +711,9 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 			return False
 		ret = (1 << value) & self.service.get_item("/SwitchableOutput/%s/Settings/ValidTypes" % channel).value
 		if ret:
+			# Set type early so further processing using this value is correct.
+			self._type = value
+
 			if value == OutputType.THREE_STATE_SWITCH.value:
 				if self.settings.alias(f'Auto_{self._serial}_{self._channel_id}') is None:
 					await self.settings.add_settings(Setting(f'{self._settings_base}{self._channel_id}/Auto', 0,
@@ -664,21 +727,23 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 				with self.service as s:
 					s[f'/SwitchableOutput/{self._channel_id}/Auto'] = init_val
 
+				# Check if PV should be disabled.
+				self.set_pv_disabled(self._pv_disabled)
+
 			else:
 				try:
 					with self.service as s:
 						s[f'/SwitchableOutput/{self._channel_id}/Auto'] = None
+						s['/Pv/Disabled'] = 0	# This item may not be there, ignore if it does not exist
 				except KeyError:
-					# Item did not exist, ignore
 					pass
-			self.on_channel_type_changed(channel, value)
-			self._type = value
+			await self.on_channel_type_changed(channel, value)
 		return ret
 
-	def _set_channel_function(self, channel, value):
+	async def _set_channel_function(self, channel, value):
 		ret = (1 << value) & self.service.get_item("/SwitchableOutput/%s/Settings/ValidFunctions" % channel).value
 		if ret:
-			self.on_channel_function_changed(channel, value)
+			await self.on_channel_function_changed(channel, value)
 			self._function = value
 		return ret
 
@@ -748,10 +813,10 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 		]
 		return self._bitmask_text(value, entries)
 
-	def on_channel_type_changed(self, channel, value):
+	async def on_channel_type_changed(self, channel, value):
 		pass
 
-	def on_channel_function_changed(self, channel, value):
+	async def on_channel_function_changed(self, channel, value):
 		pass
 
 	def on_auto_changed(self, channel, value):
