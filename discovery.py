@@ -247,15 +247,21 @@ class ShellyManager(object):
 	and controls device/channel lifecycle operations.
 	"""
 
-	def __init__(self, bus_type, service, settings):
+	def __init__(self, bus_type, service, settings, pv_disabled=0):
 		self.bus_type = bus_type
 		self.service = service
 		self.settings = settings
+		self._pv_disabled = pv_disabled
 		self.discovered_devices = [] 	# Devices found via mDNS but not manually added
 		self.saved_devices = []			# Devices manually added via IP that should be retained even if not found via mDNS
 		self.shellies = {}
 		self._shelly_lock = asyncio.Lock()
 		self._enable_tasks = {}
+
+	def set_pv_disabled(self, disabled):
+		for _, shelly_data in self.shellies.items():
+			shelly = shelly_data['device']
+			shelly.set_pv_disabled(disabled)
 
 	async def add_device(self, server, serial=None, manual=False):
 		await self._add_device(server, serial, manual)
@@ -296,7 +302,8 @@ class ShellyManager(object):
 			bus_type=self.bus_type,
 			serial=serial,
 			server=server,
-			event=event
+			event=event,
+			pv_disabled=self._pv_disabled
 		)
 
 		e = asyncio.create_task(
@@ -571,15 +578,22 @@ class ShellyDiscovery(object):
 		self.service.add_item(IntegerItem('/DeviceInstance', 0, writeable=False))
 
 		await self.settings.add_settings(Setting('/Settings/Shelly/IpAddresses', "", alias="ipaddresses"))
+		await self.settings.add_settings(Setting('/Settings/Shelly/PvDisable', 0, _min=0, _max=1, alias="pvdisable"))
 
 		ip_addresses = self.settings.get_value(self.settings.alias('ipaddresses'))
 
 		self.service.add_item(IntegerItem('/Refresh', 0, writeable=True,
 			onchange=self.start_refresh_task))
+
+		pv_disabled = self.settings.get_value(self.settings.alias('pvdisable'))
+		self.service.add_item(IntegerItem('/Pv/Disable', pv_disabled,
+									 writeable=True, onchange=self.pv_disable_setting_changed))
+
 		self.manager = ShellyManager(
 			bus_type=self.bus_type,
 			service=self.service,
 			settings=self.settings,
+			pv_disabled=pv_disabled
 		)
 
 		self.manual_ip_discovery = ManualIpDiscovery(
@@ -604,6 +618,15 @@ class ShellyDiscovery(object):
 		self.manual_ip_discovery.start_if_needed(ip_addresses)
 
 		await self.bus.wait_for_disconnect()
+
+	async def pv_disable_setting_changed(self, item, value):
+		if value not in (0, 1) or self.manager is None:
+			return
+
+		self.manager.set_pv_disabled(value)
+
+		item.set_local_value(value)
+		await self.settings.set_value(self.settings.alias('pvdisable'), value)
 
 	async def start_refresh_task(self, item, value):
 		if value != 1 or self.manager is None:

@@ -93,6 +93,8 @@ class ShellyHandlerS2Mixin():
 	async def ainit(self):
 		self._ol_supported = False
 		await super().ainit()
+
+	async def after_switch_capabilities_discovered(self):
 		self.rm_item = None
 		self._ol_supported = self._has_em and self._em_role != 'pvinverter'
 
@@ -113,16 +115,10 @@ class ShellyHandlerS2Mixin():
 		with self.service as s:
 			s[f'/SwitchableOutput/{self._channel_id}/Settings/ValidFunctions'] = self._valid_functions_mask
 
-		# Setup channel function
-		self.on_channel_function_changed(self._channel_id, self._function)
-
-	def on_channel_function_changed(self, channel, value):
+	async def on_channel_function_changed(self, channel, value):
 		if not self._ol_supported:
 			return
-		self._function = value
-		asyncio.create_task(self._handle_channel_function_changed(channel, value))
 
-	async def _handle_channel_function_changed(self, channel, value):
 		if value == OutputFunction.OPPORTUNITY_LOAD:
 			# Disallow the 'pvinverter' role when the function is set to OL.
 			self.set_allowed_roles([role for role in self.allowed_em_roles if role != 'pvinverter'])
@@ -136,13 +132,6 @@ class ShellyHandlerS2Mixin():
 
 			# Set type to three-state switch
 			await self._set_type_to_three_state_switch(True)
-
-			# Get current value of the /Auto path
-			auto_item = self.service.get_item(f'/SwitchableOutput/{channel}/Auto')
-			auto_value = auto_item.value if auto_item else 0
-
-			logger.info(f"Enabling S2 Resource Manager for device {self._serial}, channel {channel}")
-			await self.enable_rm(channel, auto_value)
 
 		else:
 			# Restore allowed EM roles when the function is no longer OL.
@@ -194,11 +183,10 @@ class ShellyHandlerS2Mixin():
 		self._rm_enabled = True
 
 	async def on_auto_changed(self, channel, value):
-		if not self._ol_supported:
+		if not self._ol_supported or self._function != OutputFunction.OPPORTUNITY_LOAD:
 			return
 
-		if self._function == OutputFunction.OPPORTUNITY_LOAD:
-			await self.enable_rm(channel, value)
+		await self.enable_rm(channel, value)
 
 	async def _set_type_to_three_state_switch(self, enabled):
 		with self.service as s:
