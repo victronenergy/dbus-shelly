@@ -91,7 +91,14 @@ class ShellyHandlerS2Mixin():
 		return self.service.get_item("/S2/0/Rm") is not None
 
 	async def ainit(self):
+		self._ol_supported = False
+		await super().ainit()
 		self.rm_item = None
+		self._ol_supported = self._has_em and self._em_role != 'pvinverter'
+
+		if not self._ol_supported:
+			return
+
 		self._control_type_ombc = ShellyOMBC(self)
 		self._control_type_noctrl = ShellyNOCTRL(self)
 
@@ -102,20 +109,24 @@ class ShellyHandlerS2Mixin():
 		# Lock to serialize S2 message sends to CEM
 		self._s2_message_lock = asyncio.Lock()
 
-		# OpportunityLoads needs energy metering capability.
-		if await self.em_supported():
-			self._valid_functions_mask |= (1 << OutputFunction.OPPORTUNITY_LOAD)
-		else:
-			self._valid_functions_mask &= ~(1 << OutputFunction.OPPORTUNITY_LOAD)
+		self._valid_functions_mask |= (1 << OutputFunction.OPPORTUNITY_LOAD)
+		with self.service as s:
+			s[f'/SwitchableOutput/{self._channel_id}/Settings/ValidFunctions'] = self._valid_functions_mask
 
-		await super().ainit()
+		# Setup channel function
+		self.on_channel_function_changed(self._channel_id, self._function)
 
 	def on_channel_function_changed(self, channel, value):
+		if not self._ol_supported:
+			return
 		self._function = value
 		asyncio.create_task(self._handle_channel_function_changed(channel, value))
 
 	async def _handle_channel_function_changed(self, channel, value):
 		if value == OutputFunction.OPPORTUNITY_LOAD:
+			# Disallow the 'pvinverter' role when the function is set to OL.
+			self.set_allowed_roles([role for role in self.allowed_em_roles if role != 'pvinverter'])
+
 			# Check the /Group name. If it is empty, set it to "Opportunity Loads" by default.
 			# This does NOT write "Opportunity Loads" to localsettings, it only sets the value of the dbus item.
 			# When /Group is written from the GUI/dbus, it will be stored in localsettings and also to the dbus item.
@@ -134,6 +145,8 @@ class ShellyHandlerS2Mixin():
 			await self.enable_rm(channel, auto_value)
 
 		else:
+			# Restore allowed EM roles when the function is no longer OL.
+			self.set_allowed_roles(self.allowed_em_roles + (['pvinverter'] if 'pvinverter' not in self.allowed_em_roles else []))
 			# Restore group name from settings to be sure
 			# If the group name was empty before the function was set to OL, it will be restored to an empty string here.
 			group = self.settings.get_value(self.settings.alias(f'Group_{self._serial}_{self._channel_id}'))
@@ -181,8 +194,11 @@ class ShellyHandlerS2Mixin():
 		self._rm_enabled = True
 
 	async def on_auto_changed(self, channel, value):
-		await self.enable_rm(channel, value)
+		if not self._ol_supported:
+			return
 
+		if self._function == OutputFunction.OPPORTUNITY_LOAD:
+			await self.enable_rm(channel, value)
 
 	async def _set_type_to_three_state_switch(self, enabled):
 		with self.service as s:
@@ -233,6 +249,8 @@ class ShellyHandlerS2Mixin():
 
 	def update(self, status_json, cap=None):
 		super().update(status_json, cap)
+		if not self._ol_supported:
+			return
 		if self._rm_enabled and self._control_type_ombc is not None and self._control_type_ombc.active:
 			# Pull relevant values from the device and forward to the control type
 			self._control_type_ombc.values_changed({'Status': self.status,'Power': self.power,})
@@ -240,6 +258,8 @@ class ShellyHandlerS2Mixin():
 	async def _value_changed(self, path, item, value):
 		ret = await super()._value_changed(path, item, value)
 
+		if not self._ol_supported:
+			return
 		if path.endswith('/PhaseSetting') and ret and self._rm_enabled and self._control_type_ombc.active:
 			logger.info("Phase setting changed, updating OMBC system description")
 			task = asyncio.create_task(self._control_type_ombc.send_system_description())

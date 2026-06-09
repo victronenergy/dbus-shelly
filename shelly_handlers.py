@@ -358,6 +358,9 @@ class Shelly_EM_base(ShellyHandler_EM_paths_mixin):
 				s[prefix + 'Energy/Forward'] = forward
 				s[prefix + 'Energy/Reverse'] = reverse
 
+	def get_em_role(self):
+		return self._em_role
+
 	async def phase_changed(self, item, value):
 		if not 1 <= value <= 3:
 			return False
