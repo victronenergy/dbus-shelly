@@ -1,9 +1,10 @@
 import aiohttp
 from functools import partial
 
-from aioshelly.common import ConnectionOptions
+from aioshelly.common import ConnectionOptions, get_info
 from aioshelly.rpc_device import RpcDevice, RpcUpdateType, WsServer
-from aioshelly.exceptions import DeviceConnectionError
+from aioshelly.exceptions import DeviceConnectionError, InvalidAuthError
+from enum import Enum
 import asyncio
 import async_timeout
 try:
@@ -24,6 +25,13 @@ PRODUCT_ID_SHELLY_EM = 0xB034
 PRODUCT_ID_SHELLY_SWITCH = 0xB075
 CONNECTION_RETRIES = 10
 background_tasks = set()
+
+class ShellyDeviceConnectionResult(int, Enum):
+	SUCCESS = 0
+	CONNECTION_ERROR = 1
+	INVALID_AUTH = 2
+	UNSUPPORTED_DEVICE = 3
+
 
 class ShellyConnectionError(Exception):
 	pass
@@ -103,7 +111,7 @@ class ShellyChannel(object):
 # Creates an instance of ShellyChannel for each enabled channel.
 class ShellyDevice(object):
 
-	def __init__(self, bus_type=None, serial=None, server=None, event=None):
+	def __init__(self, bus_type=None, serial=None, password="", server=None, event=None):
 		self._bus_type= bus_type
 		self._serial = serial
 		self._event_obj = event
@@ -119,6 +127,7 @@ class ShellyDevice(object):
 		self._channel_info = []
 		self._capabilities = []
 		self._event = None
+		self._password = password or ""	# Set default to empty string instead of None to avoid issues with ConnectionOptions which expects a string for password.
 
 	@property
 	def event(self):
@@ -196,14 +205,26 @@ class ShellyDevice(object):
 					return host, port
 		return self._server, None
 
+	async def get_device_info(self):
+		host, port = self._parse_server()
+		aiohttp_session = aiohttp.ClientSession()
+		info = None
+		if host is None:
+			return False
+		options = ConnectionOptions(host, username="admin", password=self._password, port=port)
+		try:
+			info = await get_info(aiohttp_session, options.ip_address, port=options.port)
+		except Exception as e:
+			logger.error("Failed to check if shelly device at %s requires authentication: %s", self.server, e)
+		finally:
+			await aiohttp_session.close()
+		return info
+
 	async def connect(self):
 		host, port = self._parse_server()
 		if host is None:
-			return False
-		if port is None:
-			options = ConnectionOptions(host, "", "")
-		else:
-			options = ConnectionOptions(host, "", "", port=port)
+			return ShellyDeviceConnectionResult.CONNECTION_ERROR
+		options = ConnectionOptions(host, username="admin", password=self._password, port=port)
 		self._aiohttp_session = aiohttp.ClientSession()
 		self._ws_context = WsServer()
 
@@ -218,6 +239,8 @@ class ShellyDevice(object):
 				# Let aioshelly manage RPC call timeouts internally to avoid
 				# cancelling in-flight RPC futures from an outer timeout wrapper.
 				await self._shelly_device.initialize()
+			except InvalidAuthError:
+				raise
 			except Exception:
 				logger.warning("Failed to initialize shelly device %s", self.serial_or_server)
 				raise ShellyConnectionError()
@@ -261,14 +284,21 @@ class ShellyDevice(object):
 
 			self._channel_info = await self._get_channels_info()
 
-			return True
+			return ShellyDeviceConnectionResult.SUCCESS
+		except InvalidAuthError:
+			if self._shelly_device:
+				await self._shelly_device.shutdown()
+			if self._aiohttp_session:
+				await self._aiohttp_session.close()
+			self._shelly_device = None
+			return ShellyDeviceConnectionResult.INVALID_AUTH
 		except Exception:
 			if self._shelly_device:
 				await self._shelly_device.shutdown()
 			if self._aiohttp_session:
 				await self._aiohttp_session.close()
 			self._shelly_device = None
-			return False
+			return ShellyDeviceConnectionResult.CONNECTION_ERROR
 
 	def do_reconnect(self):
 		if self._reconnecting:
@@ -304,12 +334,13 @@ class ShellyDevice(object):
 			if await self.start():
 				break
 
-		logger.info("Reconnected to shelly device %s", self.serial_or_server)
-
 		if not (await self.ping_shelly() and self._shelly_device.initialized):
 			logger.error("Failed to reconnect to shelly device %s", self.serial_or_server)
 			self.set_event("disconnected")
 			return False
+
+		logger.info("Reconnected to shelly device %s", self.serial_or_server)
+
 		# Reinit all channels
 		await asyncio.gather(*(self._reinit_channel_and_handlers(ch) for ch in self._channels))
 		return True
@@ -367,18 +398,18 @@ class ShellyDevice(object):
 
 	async def start(self):
 		async with self._device_lock:
-			if not (await self.ping_shelly()):
-				if not await self.connect():
-					return False
+			if not await self.ping_shelly():
+				if ret:= await self.connect() != ShellyDeviceConnectionResult.SUCCESS:
+					return ret
 
 			logger.info(f"Starting shelly device {self.serial_or_server}")
 
 			if not shelly_handlers.has_functional_handler(self._capabilities):
 				logger.error("Unsupported Shelly device %s", self._serial)
-				return False
+				return ShellyDeviceConnectionResult.UNSUPPORTED_DEVICE
 
 			self._shelly_device.subscribe_updates(self.device_updated)
-			return True
+			return ShellyDeviceConnectionResult.SUCCESS
 
 	async def start_channel(self, channel):
 		async with self._device_lock:
@@ -479,7 +510,7 @@ class ShellyDevice(object):
 					((method, params),), timeout=4
 				)
 				resp = resp_list[0] if resp_list else None
-		except (DeviceConnectionError, TimeoutError):
+		except (DeviceConnectionError, TimeoutError, InvalidAuthError):
 			logger.error("Failed to call RPC method on shelly device %s", self.serial_or_server)
 			self.do_reconnect()
 			return None
@@ -513,6 +544,8 @@ class ShellyDevice(object):
 
 		elif update_type == RpcUpdateType.EVENT:
 			for event in cb_device.event['events']:
+				if event['event'] == 'config_changed' and event['component'] == 'sys':
+					self.set_event("config_changed")
 				for channel in self._channels.keys():
 					entry = self._channels[channel]
 					handlers = entry.get("handlers", {})
