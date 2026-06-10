@@ -130,10 +130,10 @@ class ShellyDevice(object):
 
 	@property
 	def server(self):
-		if self._server:
-			return self._server
 		if self._shelly_device:
 			return self._shelly_device.ip_address
+		if self._server:
+			return self._server
 		return None
 
 	@property
