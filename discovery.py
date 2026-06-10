@@ -324,6 +324,10 @@ class ShellyManager(object):
 
 	def delete_shelly_device(self, serial, fut=None):
 		if serial in self.shellies:
+			# Cancel the event monitor task if it exists and hasn't finished
+			event_mon = self.shellies[serial].get('event_mon')
+			if event_mon and not event_mon.done():
+				event_mon.cancel()
 			del self.shellies[serial]
 
 	async def disable_shelly_channel(self, serial, channel):
