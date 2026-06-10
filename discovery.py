@@ -479,28 +479,32 @@ class ShellyManager(object):
 		if known:
 			return
 
-		for i, ch in enumerate(channel_info):
-			ch_type = ch.split('_')[0] # 'switch', 'em'
+		for i, ch_prop in channel_info.items():
+			ch_type = ch_prop['type']
+			ch_name = ch_prop['name']
 
 			# Don't encode the channel type in the setting path to remain compatible with older versions.
 			# There are two types of channels: 'switch' and 'em'. Switch channels are enumerated first, then em channels.
 			# Note, settings are stored 0-indexed, while the channels on dbus are 1 indexed.
-			await self.settings.add_settings(Setting(f'/Settings/Devices/shelly_{serial}/{i}/Enabled', 0, alias=f"enabled_{serial}_{ch}"))
-			enabled = self.settings.get_value(self.settings.alias(f"enabled_{serial}_{ch}"))
+			await self.settings.add_settings(Setting(f'/Settings/Devices/shelly_{serial}/{i}/Enabled', 0, alias=f"enabled_{serial}_{i}"))
+			enabled = self.settings.get_value(self.settings.alias(f"enabled_{serial}_{i}"))
 
 			if self.service.get_item(f'/Devices/{serial}/{i + 1}/Enabled') is None:
 				self.service.add_item(IntegerItem(f'/Devices/{serial}/{i + 1}/Enabled',
-									  writeable=True, onchange=partial(self._on_enabled_changed, serial, ch)))
+									  writeable=True, onchange=partial(self._on_enabled_changed, serial, i)))
 			if self.service.get_item(f'/Devices/{serial}/{i + 1}/Type') is None:
 				self.service.add_item(TextItem(f'/Devices/{serial}/{i + 1}/Type', writeable=False))
+			if self.service.get_item(f'/Devices/{serial}/{i + 1}/Name') is None:
+				self.service.add_item(TextItem(f'/Devices/{serial}/{i + 1}/Name', value='', writeable=False))
 
 			with self.service as s:
 				s[f'/Devices/{serial}/{i + 1}/Type'] = ch_type
 				s[f'/Devices/{serial}/{i + 1}/Enabled'] = enabled
+				s[f'/Devices/{serial}/{i + 1}/Name'] = ch_name
 
 			if enabled:
 				enabled_item = self.service.get_item(f'/Devices/{serial}/{i + 1}/Enabled')
-				await self._on_enabled_changed(serial, ch, enabled_item, enabled)
+				await self._on_enabled_changed(serial, i, enabled_item, enabled)
 
 	async def _on_enabled_changed(self, serial, channel, item, value):
 		if value not in (0, 1) or item.service is None:

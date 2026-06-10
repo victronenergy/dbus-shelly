@@ -340,18 +340,20 @@ class ShellyDevice(object):
 
 	# Get the number of switching and/or metering channels.
 	async def _get_channels_info(self):
-		channels = []
+		channels = {}
 
 		async def add_channels(ch_type, capabilities):
 			ch = 0
 			while True:
 				found = False
 				for cap in (c for c in capabilities if c in self._capabilities):
-					resp = await self.rpc_call(f"{cap}.GetStatus", {"id": ch})
+					resp = await self.rpc_call(f"{cap}.GetConfig", {"id": ch})
 					if resp is None:
 						continue
 					found = True
-					channels.append(f"{ch_type}_{ch}")
+					name = resp.get("name", None)
+					index = len(channels)	# The discovery service relies on a unique incremental index for each channel
+					channels[index] = {"type": ch_type, "name": name, "id": f'{ch_type}_{ch}'}
 					ch += 1
 				if not found:
 					# No capabilities on this channel number, or the channel doesn't exist at all. Done.
@@ -387,7 +389,9 @@ class ShellyDevice(object):
 				logger.error(f"Invalid channel {channel} for shelly device {self.serial_or_server}, which has channels: {self._channel_info}")
 				return False
 
-			is_switch = 'switch' in channel
+			ch_type = self._channel_info[channel]['type']
+			ch_type_id = self._channel_info[channel]['id']
+			is_switch = ch_type == 'switch'
 			name = f"Shelly {'Switch' if is_switch else 'EM'}"
 			id = PRODUCT_ID_SHELLY_SWITCH if is_switch else PRODUCT_ID_SHELLY_EM
 
@@ -395,7 +399,7 @@ class ShellyDevice(object):
 			ch = await ShellyChannel.create(
 				bus_type=self._bus_type,
 				serial=self._serial,
-				channel_type_id=channel,
+				channel_type_id=ch_type_id,
 				productid=id,
 				productName=name,
 				server=self._shelly_device.ip_address or self._server,
@@ -405,7 +409,7 @@ class ShellyDevice(object):
 			# Create handlers for the generic + switching OR EM capabilities
 			handlers = {}
 			for cap in self._capabilities:
-				cls = shelly_handlers.get_handler_class(cap, channel.split('_')[0])
+				cls = shelly_handlers.get_handler_class(cap, ch_type)
 				if cls is None:
 					continue
 				create_new = True
@@ -426,7 +430,7 @@ class ShellyDevice(object):
 				
 			await ch.start_service()
 
-			self._channels[channel] = {"channel": ch, "handlers": handlers}
+			self._channels[channel] = {"channel": ch, "handlers": handlers, "ch_num": ch_type_id.split('_')[-1]}
 			return True
 
 	async def restart_channel(self, channel):
@@ -492,8 +496,8 @@ class ShellyDevice(object):
 	def device_updated(self, cb_device, update_type):
 		if update_type == RpcUpdateType.STATUS:
 			for ch in self._channels.keys():
-				channel = ch.split('_')[1]
 				entry = self._channels[ch]
+				channel = entry.get("ch_num")
 				handlers = entry.get("handlers", {})
 				for cap, handler in handlers.items():
 					cap = cap.lower()
