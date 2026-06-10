@@ -1,8 +1,10 @@
 import aiohttp
 from functools import partial
+import string
 
 from aioshelly.common import ConnectionOptions, get_info
 from aioshelly.rpc_device import RpcDevice, RpcUpdateType, WsServer
+from aioshelly.rpc_device.wsrpc import AuthData
 from aioshelly.exceptions import DeviceConnectionError, InvalidAuthError
 from enum import Enum
 import asyncio
@@ -20,6 +22,37 @@ import shelly_handlers
 
 from utils import logger
 from __main__ import VERSION, __file__ as processName
+
+HA1_PREFIX = "sha256:"
+
+
+def _is_sha256_hex(value):
+	return len(value) == 64 and all(c in string.hexdigits for c in value)
+
+
+def _enable_aioshelly_ha1_password_support():
+	"""Allow passing precomputed HA1 via password as 'sha256:<64 hex>'"""
+	if getattr(AuthData, "_dbus_shelly_ha1_support", False):
+		return
+
+	original_post_init = AuthData.__post_init__
+
+	def patched_post_init(self):
+		password = self.password if isinstance(self.password, str) else ""
+		if password.lower().startswith(HA1_PREFIX):
+			ha1 = password[len(HA1_PREFIX):].strip()
+			if _is_sha256_hex(ha1):
+				# aioshelly expects this precomputed HA1 for RPC digest auth.
+				self.ha1 = ha1.lower()
+				return
+
+		original_post_init(self)
+
+	AuthData.__post_init__ = patched_post_init
+	AuthData._dbus_shelly_ha1_support = True
+
+
+_enable_aioshelly_ha1_password_support()
 
 PRODUCT_ID_SHELLY_EM = 0xB034
 PRODUCT_ID_SHELLY_SWITCH = 0xB075
@@ -219,6 +252,31 @@ class ShellyDevice(object):
 		finally:
 			await aiohttp_session.close()
 		return info
+
+	async def get_auth_realm(self):
+		"""Return Shelly auth realm (auth_domain or id) via unauthenticated RPC call."""
+		host, port = self._parse_server()
+		if host is None:
+			return None
+
+		aiohttp_session = aiohttp.ClientSession()
+		ws_context = WsServer()
+		realm = None
+
+		try:
+			options = ConnectionOptions(host, port=port)
+			rpc_device = await RpcDevice.create(aiohttp_session, ws_context, options)
+			# Shelly.GetDeviceInfo does not require auth and contains auth_domain/id.
+			await rpc_device._wsrpc.connect(aiohttp_session)
+			shelly_info = await rpc_device.call_rpc("Shelly.GetDeviceInfo")
+			realm = shelly_info.get("auth_domain") or shelly_info.get("id")
+		except Exception as e:
+			logger.error("Failed to obtain auth realm for shelly device at %s: %s", self.server, e)
+		finally:
+			ws_context.close()
+			await aiohttp_session.close()
+
+		return realm
 
 	async def connect(self):
 		host, port = self._parse_server()

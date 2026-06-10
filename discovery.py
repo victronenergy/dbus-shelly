@@ -5,6 +5,8 @@ import sys
 import os
 import asyncio
 import re
+import hashlib
+import string
 from functools import partial
 from enum import Enum
 
@@ -31,6 +33,11 @@ from utils import logger, wait_for_settings
 
 background_tasks = set()
 ADD_BY_IP_RECHECK_SECONDS = 15 * 60
+HA1_PREFIX = "sha256:"
+
+
+def _is_sha256_hex(value):
+	return len(value) == 64 and all(c in string.hexdigits for c in value)
 
 class ShellyDeviceConnectionStatus(int, Enum):
 	DISCOVERED = 0		# Device can be found via mDNS or is manually added. This is the initial state when a device is added.
@@ -436,9 +443,10 @@ class ShellyManager(object):
 		if device_info is not None:
 			auth_en = device_info.get('auth_en', False)
 			if auth_en != (self.service.get_item(f'/Devices/{serial}/PasswordProtected').value == 1):
+				password_setting = await self._get_device_password_setting(serial)
 				# Authentication changed; update the dbus paths accordingly.
 				with self.service as s:
-					s[f'/Devices/{serial}/Password'] = "*****" if auth_en else None
+					s[f'/Devices/{serial}/Password'] = "*****" if auth_en and password_setting else ""
 					s[f'/Devices/{serial}/PasswordProtected'] = 1 if auth_en else 0
 
 	async def stop_and_disable_all_channels(self, serial):
@@ -570,7 +578,7 @@ class ShellyManager(object):
 			s[f'/Devices/{serial}/Name'] = name
 			s[f'/Devices/{serial}/ConnectionStatus'] = ShellyDeviceConnectionStatus.DISCOVERED
 			s[f'/Devices/{serial}/PasswordProtected'] = 1 if auth_en else 0
-			s[f'/Devices/{serial}/Password'] = "*****" if auth_en else None
+			s[f'/Devices/{serial}/Password'] = "*****" if auth_en and password else ""
 			# DiscoveryType reflects current state: 'Manual' if in saved_devices, 'mDNS' if only in discovered_devices
 			s[f'/Devices/{serial}/DiscoveryType'] = 'Manual' if serial in self.saved_devices else 'mDNS'
 
@@ -625,14 +633,36 @@ class ShellyManager(object):
 		return status
 
 	async def _on_password_changed(self, serial, item, value):
-		logger.info("Password for device %s changed to %s, updating connection info", serial, value)
 		password_protected = self.service.get_item(f'/Devices/{serial}/PasswordProtected').value
-
 		if value == "":
 			value = None
 
+		# No password is passed but the device is protected, so reject this value.
+		# In case no password is passed and the device is not protected, the stored SHA256 will be cleared.
+		if value is None and password_protected == 1:
+			return
+
+		logger.info("Password for device %s changed, updating connection info", serial)
+
+		stored_value = ""
+		if value:
+			if isinstance(value, str) and value.lower().startswith(HA1_PREFIX):
+				ha1 = value[len(HA1_PREFIX):].strip().lower()
+				if not _is_sha256_hex(ha1):
+					logger.error("Invalid SHA256 digest format for device %s", serial)
+					return
+				stored_value = f"{HA1_PREFIX}{ha1}"
+			else:
+				# Treat submitted value as plaintext and persist only HA1 digest.
+				realm = await ShellyDevice(server=self.service.get_item(f'/Devices/{serial}/Ip').value, serial=serial).get_auth_realm()
+				if not realm:
+					logger.error("Failed to update password for %s: could not determine auth realm", serial)
+					return
+				ha1 = hashlib.sha256(f"admin:{realm}:{value}".encode("utf-8")).hexdigest()
+				stored_value = f"{HA1_PREFIX}{ha1}"
+
 		item.set_local_value("*****" if value else None)
-		await self.settings.set_value(self.settings.alias(f'password_{serial}'), value)
+		await self.settings.set_value(self.settings.alias(f'password_{serial}'), stored_value)
 
 		if value or password_protected == 0:
 			await self._add_device_channel_info(serial)
