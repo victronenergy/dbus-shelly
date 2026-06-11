@@ -489,8 +489,8 @@ class ShellyManager(object):
 
 			# Don't encode the channel type in the setting path to remain compatible with older versions.
 			# There are two types of channels: 'switch' and 'em'. Switch channels are enumerated first, then em channels.
-			# Note, settings are stored 0-indexed, while the channels on dbus are 1 indexed.
-			await self.settings.add_settings(Setting(f'/Settings/Devices/shelly_{serial}/{i}/Enabled', 0, alias=f"enabled_{serial}_{i}"))
+			# Note: the channels and settings are 1-indexed.
+			await self.settings.add_settings(Setting(f'/Settings/Devices/shelly_{serial}/{i + 1}/Enabled', 0, alias=f"enabled_{serial}_{i}"))
 			enabled = self.settings.get_value(self.settings.alias(f"enabled_{serial}_{i}"))
 
 			if self.service.get_item(f'/Devices/{serial}/{i + 1}/Enabled') is None:
