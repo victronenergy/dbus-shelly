@@ -618,12 +618,15 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 		split = path.split('/')
 		if len(split) > 3 and split[3] == 'Settings':
 			if split[-1] == 'Type':
+				value = int(value)
 				if not self._set_channel_type(split[-3], value):
 					return
 			elif split[-1] == 'Function':
+				value = int(value)
 				if not self._set_channel_function(split[-3], value):
 					return
 			elif split[-1] == 'ShowUIControl':
+				value = int(value)
 				if value > 6 or value < 0:
 					return
 			setting = split[-1] + '_' + self._serial + '_' + split[-3]
