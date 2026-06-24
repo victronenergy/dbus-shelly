@@ -86,8 +86,9 @@ class ShellyChannel(object):
 	async def start_service(self):
 		if self.service.name is None:
 			logger.error("No service name set for shelly device %s channel %d", self._serial, self._channel_id)
-			return
+			return False
 		await self.service.register()
+		return True
 
 	async def stop(self):
 		await self.service.close()
@@ -396,40 +397,61 @@ class ShellyDevice(object):
 			name = f"Shelly {'Switch' if is_switch else 'EM'}"
 			id = PRODUCT_ID_SHELLY_SWITCH if is_switch else PRODUCT_ID_SHELLY_EM
 
-			# Create channel object. The dbus service lives here.
-			ch = await ShellyChannel.create(
-				bus_type=self._bus_type,
-				serial=self._serial,
-				channel_type_id=ch_type_id,
-				productid=id,
-				productName=name,
-				server=self._shelly_device.ip_address or self._server,
-				shellyModel=self._shelly_info.get('model', 'Unknown')
-			)
-
-			# Create handlers for the generic + switching OR EM capabilities
+			ch = None
 			handlers = {}
-			for cap in self._capabilities:
-				cls = shelly_handlers.get_handler_class(cap, ch_type)
-				if cls is None:
-					continue
-				create_new = True
+			try:
+				# Create channel object. The dbus service lives here.
+				ch = await ShellyChannel.create(
+					bus_type=self._bus_type,
+					serial=self._serial,
+					channel_type_id=ch_type_id,
+					productid=id,
+					productName=name,
+					server=self._shelly_device.ip_address or self._server,
+					shellyModel=self._shelly_info.get('model', 'Unknown')
+				)
 
-				# Reuse existing handler if the same handler class is used for more capabilities (e.g. EM1 and EM1Data)
-				for c in handlers.values():
-					if cls == type(c):
-						handlers[cap] = c
-						create_new = False
-						break
-				if create_new:
-					handlers[cap] = await shelly_handlers.ShellyHandler.create(
-						cap,
-						rpc_callback=self.rpc_call,
-						restart_callback=partial(self.restart_channel, channel),
-					shelly_channel=ch
-					)
-				
-			await ch.start_service()
+				# Create handlers for the generic + switching OR EM capabilities
+				for cap in self._capabilities:
+					cls = shelly_handlers.get_handler_class(cap, ch_type)
+					if cls is None:
+						continue
+					create_new = True
+
+					# Reuse existing handler if the same handler class is used for more capabilities (e.g. EM1 and EM1Data)
+					for c in handlers.values():
+						if cls == type(c):
+							handlers[cap] = c
+							create_new = False
+							break
+					if create_new:
+						handlers[cap] = await shelly_handlers.ShellyHandler.create(
+							cap,
+							rpc_callback=self.rpc_call,
+							restart_callback=partial(self.restart_channel, channel),
+							shelly_channel=ch
+						)
+
+				if not await ch.start_service():
+					return False
+			except Exception as e:
+				logger.error(
+					"Failed to start channel %s for shelly device %s: %s",
+					channel,
+					self.serial_or_server,
+					e,
+				)
+				for handler in set(handlers.values()):
+					try:
+						await handler.stop()
+					except Exception:
+						pass
+				if ch is not None:
+					try:
+						await ch.stop()
+					except Exception:
+						pass
+				return False
 
 			self._channels[channel] = {"channel": ch, "handlers": handlers, "ch_num": ch_type_id.split('_')[-1]}
 			return True

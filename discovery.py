@@ -523,7 +523,11 @@ class ShellyManager(object):
 				self._enable_tasks[serial] = set()
 			self._enable_tasks[serial].add(task)
 			task.add_done_callback(self._enable_tasks[serial].discard)
-			ret = True
+			try:
+				ret = await task
+			except Exception as e:
+				logger.error("Failed to enable channel %s for shelly device %s: %s", channel, serial, e)
+				ret = False
 		else:
 			if serial in self._enable_tasks:
 				# Wait for any ongoing enable task on this device to finish before disabling
