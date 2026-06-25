@@ -319,6 +319,7 @@ class ShellyDevice(object):
 		# Check if capabilities changed
 		cap_changed = False
 		handlers = self._channels[ch].get("handlers", {})
+		ch_type = self._channels[ch].get("ch_type", None)
 		# Capability removed
 		for cap in list(handlers.keys()):
 			if cap not in self._capabilities:
@@ -326,7 +327,7 @@ class ShellyDevice(object):
 				break
 		# Capability added for which we have a handler
 		for cap in self._capabilities:
-			if cap not in handlers and shelly_handlers.get_handler_class(cap, ch.split('_')[0]) is not None:
+			if cap not in handlers and shelly_handlers.get_handler_class(cap, ch_type) is not None:
 				cap_changed = True
 				break
 
@@ -453,7 +454,7 @@ class ShellyDevice(object):
 						pass
 				return False
 
-			self._channels[channel] = {"channel": ch, "handlers": handlers, "ch_num": ch_type_id.split('_')[-1]}
+			self._channels[channel] = {"channel": ch, "handlers": handlers, "ch_type": ch_type, "ch_num": ch_type_id.split('_')[-1]}
 			return True
 
 	async def restart_channel(self, channel):
