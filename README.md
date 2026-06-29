@@ -30,6 +30,7 @@ Since V2.00, dbus-shelly implements handlers for RPC components, which enables c
 | Light              | *.switch                         | Switch type: Dimmable                                                                      |
 | RGB                | *.switch                         | Switch type: RGB                                                                           |
 | RGBW               | *.switch                         | Switch type: RGBW                                                                          |
+| CCT                | *.switch                         | Switch type: CCT                                                                           |
 
 If a device exposes x instances of an RPC component listed above, then x channels of that type will show up in the integration menu.
 
@@ -50,6 +51,7 @@ The following shelly devices have been verified to work correctly:
 - Shelly Powerstrip gen4 (4x SW)
 - Shelly PM mini gen3 (1x PM)
 - Shelly Pro 1
+- Shelly Duo Bulb Gen3 (CCT)
 
 # Shelly settings
 This driver will only control runtime values like the on/off state and brightness. The settings of the shelly device will not be touched. There are some settings that may affect the behavior of your shelly device when controlled through the GX device:

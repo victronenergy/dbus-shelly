@@ -672,6 +672,7 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 			OutputType.DIMMABLE: "Dimmable",
 			OutputType.THREE_STATE_SWITCH: "Three-state switch",
 			OutputType.RGB: "RGB",
+			OutputType.CCT: "CCT",
 			OutputType.RGBW: "RGBW",
 		}
 		return type_map.get(value, "Unknown")
@@ -715,6 +716,7 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 			(OutputType.THREE_STATE_SWITCH, "Three-state switch"),
 			(OutputType.RGB, "RGB"),
 			(OutputType.RGBW, "RGBW"),
+			(OutputType.CCT, "CCT"),
 		]
 		return self._bitmask_text(value, entries)
 
@@ -851,7 +853,8 @@ class ShellyHandler_RGBW(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 				brightness = status_json.get("brightness", 0)
 				white = status_json.get("white", 0) / 2.55 if self._type == OutputType.RGBW else 0.0
 				hue, sat, val = self._rgb2hsv(status_json.get("rgb", [0, 0, 0]))
-				s[switch_prefix + 'LightControls'] = [round(hue), round(sat), round(brightness), round(white), 0]
+				ct = status_json.get("ct", 0)
+				s[switch_prefix + 'LightControls'] = [round(hue), round(sat), round(brightness), round(white), round(ct)]
 		except:
 			pass
 
@@ -939,3 +942,25 @@ class ShellyHandler_RGBW(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 class ShellyHandler_RGB(ShellyHandler_RGBW):
 	_default_output_type = OutputType.RGB
 	_valid_types_mask = int(1 << OutputType.RGB.value)
+
+@register_handler('CCT', kind=HANDLER_KIND_SWITCH)
+class ShellyHandler_CCT(ShellyHandler_RGBW):
+	_default_output_type = OutputType.CCT
+	_valid_types_mask = int(1 << OutputType.CCT.value)
+
+	async def _set_light_controls(self, item, value, force_white=False):
+		if not self._sanity_check_values(value):
+			return
+
+		item.set_local_value(value) # Set the value here already to make the UI more responsive
+
+		params = {
+					"id": self._channel_id,
+					"ct": value[4],
+					"brightness": value[2]
+				}
+
+		await self.rpc_call(
+			'Set',
+			params
+		)
