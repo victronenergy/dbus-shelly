@@ -104,7 +104,7 @@ class ShellyChannel(object):
 # Creates an instance of ShellyChannel for each enabled channel.
 class ShellyDevice(object):
 
-	def __init__(self, bus_type=None, serial=None, server=None, event=None):
+	def __init__(self, bus_type=None, serial=None, server=None, event=None, pv_disabled=0):
 		self._bus_type= bus_type
 		self._serial = serial
 		self._event_obj = event
@@ -120,6 +120,7 @@ class ShellyDevice(object):
 		self._channel_info = []
 		self._capabilities = []
 		self._event = None
+		self._pv_disabled = pv_disabled
 
 	@property
 	def event(self):
@@ -157,7 +158,14 @@ class ShellyDevice(object):
 	@property
 	def active_channels(self):
 		return list(self._channels.keys())
-	
+
+	def set_pv_disabled(self, value):
+		self._pv_disabled = value
+		for _, shelly_data in self._channels.items():
+			handlers = shelly_data.get("handlers", {})
+			for handler in handlers.values():
+				handler.set_pv_disabled(value)
+
 	def is_supported(self):
 		return shelly_handlers.has_functional_handler(self._capabilities)
 
@@ -430,11 +438,13 @@ class ShellyDevice(object):
 							cap,
 							rpc_callback=self.rpc_call,
 							restart_callback=partial(self.restart_channel, channel),
-							shelly_channel=ch
+							shelly_channel=ch,
+							pv_disabled=self._pv_disabled
 						)
 
 				if not await ch.start_service():
 					return False
+
 			except Exception as e:
 				logger.error(
 					"Failed to start channel %s for shelly device %s: %s",
