@@ -6,7 +6,8 @@ import asyncio
 import logging
 from functools import partial
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+import time
 
 #aiovelib
 sys.path.insert(1, os.path.join(os.path.dirname(__file__), 'ext', 'aiovelib'))
@@ -34,6 +35,7 @@ from s2python.ombc import (
 	OMBCOperationMode,
 	OMBCStatus,
 	OMBCSystemDescription,
+	OMBCTimerStatus,
 )
 
 from __main__ import VERSION
@@ -393,6 +395,16 @@ class ShellyOMBC(OMBCControlType):
 	def active(self):
 		return self._active
 
+	@property
+	def _can_send_ombc_timer_status(self) -> bool:
+		return bool(
+			self._active and
+			self._switch_item is not None and
+			self._switch_item.rm_item is not None and
+			self._switch_item.rm_item.is_ready and
+			self._switch_item.rm_item.is_connected
+		)
+
 	def __init__(self, switch_item):
 		self._id_off = uuid.uuid4()
 		self._id_on = uuid.uuid4()
@@ -409,6 +421,8 @@ class ShellyOMBC(OMBCControlType):
 		self._power_queue = asyncio.Queue()
 		self._power_queue_stop = object()
 		self._power_worker_task = None
+		self._last_switched_on_ts = 0.0
+		self._last_switched_off_ts = 0.0
 
 	def _start_worker(self, task_attr, worker_method_name):
 		"""Generic worker startup. Called only from awaited activate() context."""
@@ -549,6 +563,7 @@ class ShellyOMBC(OMBCControlType):
 		if op_id not in (self._id_off, self._id_on):
 			logger.error("Received unknown operation mode ID: %s", op_id)
 			return
+		on = (op_id == self._id_on)
 
 		if not self._enabled:
 			# OMBC control type is not enabled, but HEMS may not be aware of that. Keep S2 message flow going but do not change the state.
@@ -556,32 +571,96 @@ class ShellyOMBC(OMBCControlType):
 			logger.warning("Received OMBCInstruction while control type is not enabled, state transition will be ignored")
 
 		seconds = (msg.execution_time - datetime.now(timezone.utc)).total_seconds()
-		task = asyncio.create_task(self._set_operation_mode(op_id, max(0, seconds)))
+		task = asyncio.create_task(self._set_operation_mode(on, max(0, seconds)))
 		background_tasks.add(task)
 		task.add_done_callback(background_tasks.discard)
 		await send_okay
 
-	async def _set_operation_mode(self, op_id, wait):
-		if (wait):
-			logger.debug("Waiting for %f seconds before setting operation mode to %s", wait, "on" if op_id == self._id_on else "off")
+	async def _set_operation_mode(self, on, wait):
+		if wait:
+			logger.debug("Waiting for %f seconds before setting operation mode to %s", wait, "on" if on else "off")
 			await asyncio.sleep(wait)
 
-		self._switch_item.state = (1 if op_id == self._id_on else 0)
-		logger.debug("Set operation mode to %s", "on" if op_id == self._id_on else "off")
-		# Don't set _status here. It will be updated by values_changed when its done. Status message will then also be sent to HEMS.
+		try:
+			# Enforce hysteresis windows for ON/OFF transitions.
+			prev_on = self._switch_item.state == 1
+			if prev_on != on:
+				now = time.monotonic()
 
-		async def _force_delayed_update_after_mode_change():
-			# Make sure the update is done before the next iteration of OL (5 seconds)
-			await asyncio.sleep(2)
-			await self._switch_item.force_update()
+				if on and self._last_switched_off_ts is not None:
+					diff = now - self._last_switched_off_ts
+					if diff < self._switch_item.on_hysteresis:
+						remaining = int(self._switch_item.on_hysteresis - diff)
+						logger.warning(
+							"Blocking ON: switched OFF only %d s ago, %d s remaining for on hysteresis",
+							int(diff), remaining,
+						)
 
-		# Refresh device status after each mode change so update() can publish a measurement when needed.
-		# After turning on/off the output, the Shelly will send a status update immediately, but with the old power measurement.
-		# This will lead OL to believe the load isn't consuming its nominal power, while the multi will report the increased consumption.
-		# To solve this, manually request a status update after 2 seconds.
-		task = asyncio.create_task(_force_delayed_update_after_mode_change())
-		background_tasks.add(task)
-		task.add_done_callback(background_tasks.discard)
+						if self._can_send_ombc_timer_status:
+							try:
+								finished_at = datetime.now(timezone.utc) + timedelta(seconds=remaining)
+								await self._switch_item.rm_item.send_msg_and_await_reception_status(
+									OMBCTimerStatus(
+										message_id=uuid.uuid4(),
+										timer_id=self.off_timer.id,
+										finished_at=finished_at
+									)
+								)
+							except Exception as e:
+								logger.warning("Failed to send OMBCTimerStatus: %s", e)
+
+						return
+
+				if (not on) and self._last_switched_on_ts is not None:
+					diff = now - self._last_switched_on_ts
+					if diff < self._switch_item.off_hysteresis:
+						remaining = int(self._switch_item.off_hysteresis - diff)
+						logger.warning(
+							"Blocking OFF: switched ON only %d s ago, %d s remaining for off hysteresis",
+							int(diff), remaining,
+						)
+
+						if self._can_send_ombc_timer_status:
+							try:
+								finished_at = datetime.now(timezone.utc) + timedelta(seconds=remaining)
+								await self._switch_item.rm_item.send_msg_and_await_reception_status(
+									OMBCTimerStatus(
+										message_id=uuid.uuid4(),
+										timer_id=self.on_timer.id,
+										finished_at=finished_at
+									)
+								)
+							except Exception as e:
+								logger.warning("Failed to send OMBCTimerStatus: %s", e)
+
+						return
+
+				logger.debug(f"Switching relay to { 'ON' if on else 'OFF' }")
+
+			# Set switch state
+			self._switch_item.state = 1 if on else 0
+
+			async def _force_delayed_update_after_mode_change():
+				# Make sure the update is done before the next iteration of OL (5 seconds)
+				await asyncio.sleep(2)
+				await self._switch_item.force_update()
+
+			# Refresh device status after each mode change so update() can publish a measurement when needed.
+			# After turning on/off the output, the Shelly will send a status update immediately, but with the old power measurement.
+			# This will lead OL to believe the load isn't consuming its nominal power, while the multi will report the increased consumption.
+			# To solve this, manually request a status update after 2 seconds.
+			task = asyncio.create_task(_force_delayed_update_after_mode_change())
+			background_tasks.add(task)
+			task.add_done_callback(background_tasks.discard)
+
+			if prev_on != on:
+				ts = time.monotonic()
+				if on:
+					self._last_switched_on_ts = ts
+				else:
+					self._last_switched_off_ts = ts
+		except Exception as e:
+			logger.exception("Switch control failed: %s", e)
 
 	async def activate(self, conn):
 		logger.debug("Activate OMBCControlTypeSwitch")
