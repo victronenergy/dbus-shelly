@@ -550,9 +550,7 @@ class ShellyOMBC(OMBCControlType):
 			logger.error("Received unknown operation mode ID: %s", op_id)
 			return
 
-		if self._enabled:
-			logger.info("Op-Id selected by EMS: {}".format(op_id))
-		else:
+		if not self._enabled:
 			# OMBC control type is not enabled, but HEMS may not be aware of that. Keep S2 message flow going but do not change the state.
 			op_id = self._id_on if self._switch_item.state == 1 else self._id_off
 			logger.warning("Received OMBCInstruction while control type is not enabled, state transition will be ignored")
