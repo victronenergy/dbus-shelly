@@ -602,7 +602,7 @@ class ShellyOMBC(OMBCControlType):
 								await self._switch_item.rm_item.send_msg_and_await_reception_status(
 									OMBCTimerStatus(
 										message_id=uuid.uuid4(),
-										timer_id=self.off_timer.id,
+										timer_id=self.on_timer.id,
 										finished_at=finished_at
 									)
 								)
@@ -626,7 +626,7 @@ class ShellyOMBC(OMBCControlType):
 								await self._switch_item.rm_item.send_msg_and_await_reception_status(
 									OMBCTimerStatus(
 										message_id=uuid.uuid4(),
-										timer_id=self.on_timer.id,
+										timer_id=self.off_timer.id,
 										finished_at=finished_at
 									)
 								)
