@@ -94,6 +94,9 @@ def main():
 
 	logging.basicConfig(format='%(levelname)-8s %(message)s',
 			level=(logging.DEBUG if args.debug else logging.INFO))
+	# Keep application logs at INFO, but reduce verbosity from aioshelly.
+	# This prevents aioshelly from logging "Connected to <host>".
+	logging.getLogger('aioshelly').setLevel(logging.WARNING)
 
 	logging.info("Using dbus lib {}".format(
 		BusType.__module__.split('.')[0]))
