@@ -90,10 +90,14 @@ def main():
 		const='__default__',
 		help='Start mock Shelly devices (optionally provide config path)',
 	)
+	parser.add_argument('--print-cache', help='Print the Shelly device cache to a file', default="shelly_cache.txt")
 	args = parser.parse_args()
 
 	logging.basicConfig(format='%(levelname)-8s %(message)s',
 			level=(logging.DEBUG if args.debug else logging.INFO))
+	# Keep application logs at INFO, but reduce verbosity from aioshelly.
+	# This prevents aioshelly from logging "Connected to <host>".
+	logging.getLogger('aioshelly').setLevel(logging.WARNING)
 
 	logging.info("Using dbus lib {}".format(
 		BusType.__module__.split('.')[0]))
@@ -103,7 +107,7 @@ def main():
 		"session": BusType.SESSION
 	}.get(args.dbus, BusType.SESSION)
 
-	shellyDiscovery = ShellyDiscovery(bus_type)
+	shellyDiscovery = ShellyDiscovery(bus_type, print_cache_file=args.print_cache)
 	mock_proc = None
 
 	if args.mock is not None:
