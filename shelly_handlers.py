@@ -76,7 +76,6 @@ class ShellyHandler(object):
 		c.settings = getattr(shelly_channel, "settings", None)
 		c._serial = getattr(shelly_channel, "_serial", None)
 		c._settings_base = f'/Settings/Devices/shelly_{c._serial}_{c._channel_id}/'
-		await c.ainit()
 
 		return c
 
