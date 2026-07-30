@@ -220,7 +220,8 @@ class ShellyDevice(object):
 				# cancelling in-flight RPC futures from an outer timeout wrapper.
 				await self._shelly_device.initialize()
 			except Exception:
-				logger.warning("Failed to initialize shelly device %s", self.serial_or_server)
+				# Prevent flooding the log
+				logger.debug("Failed to initialize shelly device %s", self.serial_or_server)
 				raise ShellyConnectionError()
 
 			if not (self._shelly_device.connected and self._shelly_device.initialized):
@@ -232,7 +233,7 @@ class ShellyDevice(object):
 			if not self._shelly_info:
 				logger.warning("Failed to get shelly device info for device at %s", self.server)
 				raise ShellyConnectionError()
-			logger.info("Connected to shelly device %s model %s", self._serial, self._shelly_info.get('model', 'Unknown'))
+			logger.debug("Connected to shelly device %s model %s", self._serial, self._shelly_info.get('model', 'Unknown'))
 
 			# List shelly methods
 			methods = await self.list_methods()
@@ -242,13 +243,6 @@ class ShellyDevice(object):
 
 			# Will be a list of capabilities, e.g. ['Switch', 'EM', 'Sys']
 			reported_capabilities = list(set([m.split('.')[0] for m in methods]))
-			if not shelly_handlers.has_functional_handler(reported_capabilities):
-				logger.debug(
-					"Shelly device %s with capabilities: %s is not supported",
-					self._serial,
-					reported_capabilities,
-				)
-				raise ShellyConnectionError()
 			self._capabilities = reported_capabilities
 
 			# Fetch device's serial if not known yet
@@ -260,7 +254,10 @@ class ShellyDevice(object):
 					logger.warning("Failed to get serial number for shelly device at %s", self.server)
 					raise ShellyConnectionError()
 
-			self._channel_info = await self._get_channels_info()
+			# When a device is not supported, do raise and quit. Instead, set the device info so the discovery service can know it is unsupported.
+			# The discovery service will then avoid reconnecting to the device.
+			if self.is_supported():
+				self._channel_info = await self._get_channels_info()
 
 			return True
 		except Exception:
@@ -271,6 +268,9 @@ class ShellyDevice(object):
 			self._shelly_device = None
 			return False
 
+	# Basic reconnect logic: if the device is disconnected, try to reconnect a few times before stopping the dbus service.
+	# If the device is reconnected, reinitialize all channels and handlers without restarting the dbus service.
+	# If reconnection fails, set the event to "disconnected" so that the discovery service can try to re-establish communication later.
 	def do_reconnect(self):
 		if self._reconnecting:
 			return False
