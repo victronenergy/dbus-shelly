@@ -114,9 +114,12 @@ class ShellyDevice(object):
 		self._aiohttp_session = None
 		self._server = server
 		self._rpc_lock = asyncio.Lock()
+		self._rpc_with_reconnect_lock = asyncio.Lock() # Protects the rpc_call_with_reconnect from being called concurrently
 		self._device_lock = asyncio.Lock() # Protects device operations, enabling/disabling channels etc.
+		self._init_channel_tasks = {}
 		self._reconnecting = False
 		self._channels = {}
+		self._reconnect_task = None
 		self._channel_info = []
 		self._capabilities = []
 		self._event = None
@@ -181,6 +184,8 @@ class ShellyDevice(object):
 		async with self._device_lock:
 			logger.warning(f"Stopping channel {ch} for shelly device {self._serial}")
 			if ch in self._channels:
+				# Start channel will await the init task, but outside of the device_lock, so the init task can be active when stop_channel is called.
+				await self._cancel_init_channel_task(ch)
 				entry = self._channels[ch]
 				handlers = entry.get("handlers", {})
 				for handler in handlers.values():
@@ -239,7 +244,7 @@ class ShellyDevice(object):
 			logger.info("Connected to shelly device %s model %s", self._serial, self._shelly_info.get('model', 'Unknown'))
 
 			# List shelly methods
-			methods = await self.list_methods()
+			methods = await self.list_methods_with_reconnect()
 			if len(methods) == 0:
 				logger.warning("Failed to list shelly methods")
 				raise ShellyConnectionError()
@@ -265,7 +270,10 @@ class ShellyDevice(object):
 					logger.warning("Failed to get serial number for shelly device at %s", self.server)
 					raise ShellyConnectionError()
 
-			self._channel_info = await self._get_channels_info()
+			# When a device is not supported, do not raise and quit. Instead, set the device info so the discovery service can know it is unsupported.
+			# The discovery service will then avoid reconnecting to the device.
+			if self.is_supported():
+				self._channel_info = await self._get_channels_info()
 
 			return True
 		except Exception:
@@ -276,16 +284,23 @@ class ShellyDevice(object):
 			self._shelly_device = None
 			return False
 
+	async def wait_for_reconnect(self):
+		if self._reconnect_task:
+			# Avoid self-deadlock if called from inside the reconnect task itself.
+			if self._reconnect_task is asyncio.current_task():
+				return
+			await self._reconnect_task
+
 	def do_reconnect(self):
 		if self._reconnecting:
 			return False
 		self._reconnecting = True
-		task = asyncio.create_task(self._reconnect())
-		background_tasks.add(task)
-		task.add_done_callback(background_tasks.discard)
+		self._reconnect_task = asyncio.create_task(self._reconnect())
+		background_tasks.add(self._reconnect_task)
+		self._reconnect_task.add_done_callback(background_tasks.discard)
 		def clear_reconnecting(fut):
 			self._reconnecting = False
-		task.add_done_callback(clear_reconnecting)
+		self._reconnect_task.add_done_callback(clear_reconnecting)
 
 	async def _reconnect(self):
 		logger.info("Reconnecting to shelly device %s", self.serial_or_server)
@@ -310,12 +325,11 @@ class ShellyDevice(object):
 			if await self.start():
 				break
 
-		logger.info("Reconnected to shelly device %s", self.serial_or_server)
-
-		if not (await self.ping_shelly() and self._shelly_device.initialized):
+		if not self.is_connected:
 			logger.error("Failed to reconnect to shelly device %s", self.serial_or_server)
 			self.set_event("disconnected")
 			return False
+		logger.info("Reconnected to shelly device %s", self.serial_or_server)
 		# Reinit all channels
 		await asyncio.gather(*(self._reinit_channel_and_handlers(ch) for ch in self._channels))
 		return True
@@ -342,9 +356,13 @@ class ShellyDevice(object):
 		else:
 			# No capability change, just reinitialize the existing handlers with the new RPC connection.
 			channel_obj = self._channels[ch].get("channel")
-			await channel_obj.reinit(self.rpc_call, partial(self.restart_channel, ch))
-			# Use set here to avoid refreshing the same handler multiple times if it handles multiple capabilities.
-			await asyncio.gather(*(handler.refresh() for handler in set(handlers.values())))
+			await channel_obj.reinit(self.rpc_call_with_reconnect, partial(self.restart_channel, ch))
+
+			# No need to wait for the handlers refresh task.
+			for handler in set(handlers.values()):
+				task = asyncio.create_task(handler.refresh())
+				background_tasks.add(task)
+				task.add_done_callback(background_tasks.discard)
 
 	# Get the number of switching and/or metering channels.
 	async def _get_channels_info(self):
@@ -388,11 +406,21 @@ class ShellyDevice(object):
 			return True
 
 	async def start_channel(self, channel):
+		ch = None
+		handlers = {}
 		async with self._device_lock:
-			logger.info(f"Starting channel {channel} for shelly device {self.serial_or_server}")
+			if not self.is_connected:
+				# Not connected or in the process of reconnecting.
+				return False
 			if channel in self._channels:
 				# Channel is already active; avoid creating/registering a duplicate service.
 				return True
+			if channel in self._init_channel_tasks and self._init_channel_tasks[channel] is not None:
+				# Should not happen.
+				await self._cancel_init_channel_task(channel)
+				return False
+
+			logger.info(f"Starting channel {channel} for shelly device {self.serial_or_server}")
 			if channel not in self._channel_info:
 				logger.error(f"Invalid channel {channel} for shelly device {self.serial_or_server}, which has channels: {self._channel_info}")
 				return False
@@ -403,8 +431,6 @@ class ShellyDevice(object):
 			name = f"Shelly {'Switch' if is_switch else 'EM'}"
 			id = PRODUCT_ID_SHELLY_SWITCH if is_switch else PRODUCT_ID_SHELLY_EM
 
-			ch = None
-			handlers = {}
 			try:
 				# Create channel object. The dbus service lives here.
 				ch = await ShellyChannel.create(
@@ -433,15 +459,13 @@ class ShellyDevice(object):
 					if create_new:
 						handler = await shelly_handlers.ShellyHandler.create(
 							cap,
-							rpc_callback=self.rpc_call,
+							rpc_callback=self.rpc_call_with_reconnect,
 							restart_callback=partial(self.restart_channel, channel),
 							shelly_channel=ch
 						)
 						if handler is not None:
 							handlers[cap] = handler
 
-				if not await ch.start_service():
-					return False
 			except Exception as e:
 				logger.error(
 					"Failed to start channel %s for shelly device %s: %s",
@@ -462,7 +486,37 @@ class ShellyDevice(object):
 				return False
 
 			self._channels[channel] = {"channel": ch, "handlers": handlers, "ch_type": ch_type, "ch_num": ch_type_id.split('_')[-1]}
-			return True
+
+			self._init_channel_tasks[channel] = asyncio.create_task(self._init_channel_and_handlers(channel))
+			def clear_start_channel_task(fut):
+				self._init_channel_tasks[channel] = None
+			self._init_channel_tasks[channel].add_done_callback(clear_start_channel_task)
+
+		# Await the init task outside of the device lock. If the device connection is lost during the init, the reconnect task will call start(), which acquires the device lock.
+		# Note that reconnect will not call start_channel().
+		return await self._init_channel_tasks.get(channel)
+
+	async def _init_channel_and_handlers(self, channel):
+		if channel in self._channels:
+			handlers = self._channels[channel].get("handlers", {})
+			channel_obj = self._channels[channel].get("channel")
+			if channel_obj and handlers:
+				try:
+					await asyncio.gather(*(handler.ainit() for handler in set(handlers.values())))
+					return await channel_obj.start_service()
+				except Exception as e:
+					logger.error("Failed to initialize channel %s and its handlers: %s", channel, e)
+		return False
+
+	async def _cancel_init_channel_task(self, channel):
+		if channel in self._init_channel_tasks and self._init_channel_tasks[channel] is not None and not self._init_channel_tasks[channel].done():
+			self._init_channel_tasks[channel].cancel()
+			try:
+				await self._init_channel_tasks[channel]
+			except asyncio.CancelledError:
+				pass
+			except Exception as e:
+				logger.error(f"Error while waiting for init_channel task to finish for channel {channel}: {e}")
 
 	async def restart_channel(self, channel):
 		await self.stop_channel(channel)
@@ -497,18 +551,37 @@ class ShellyDevice(object):
 			return False
 		return False
 
+	# RPC call routine that will wait on the reconnect task when the RPC call fails, and will retry the RPC call after reconnection.
+	async def rpc_call_with_reconnect(self, method, params=None):
+		# Serialize RPC calls from the handlers
+		async with self._rpc_with_reconnect_lock:
+			resp = None
+			if not self.is_connected:
+				return None
+			while True:
+				try:
+					resp = await self._rpc_call(method, params)
+				except (DeviceConnectionError, TimeoutError):
+					logger.error("Failed to call RPC method on shelly device %s", self.serial_or_server)
+					self.do_reconnect()
+					try:
+						# Reconnection may take a while.
+						await asyncio.wait_for(self.wait_for_reconnect(), timeout=120)
+					except TimeoutError:
+						return None
+					if not self.is_connected:
+						return None
+				except:
+					return None
+				else:
+					return resp
+
 	async def rpc_call(self, method, params=None):
 		resp = None
 		if not self.is_connected:
 			return None
 		try:
-			async with self._rpc_lock:
-				# Use aioshelly's own timeout handling to avoid cancelling
-				# in-flight per-call futures from an outer timeout context.
-				resp_list = await self._shelly_device.call_rpc_multiple(
-					((method, params),), timeout=4
-				)
-				resp = resp_list[0] if resp_list else None
+			resp = await self._rpc_call(method, params)
 		except (DeviceConnectionError, TimeoutError):
 			logger.error("Failed to call RPC method on shelly device %s", self.serial_or_server)
 			self.do_reconnect()
@@ -517,11 +590,24 @@ class ShellyDevice(object):
 			return None
 		return resp
 
+	async def _rpc_call(self, method, params=None):
+		async with self._rpc_lock:
+			# Use aioshelly's own timeout handling to avoid cancelling
+			# in-flight per-call futures from an outer timeout context.
+			resp_list = await self._shelly_device.call_rpc_multiple(
+				((method, params),), timeout=4
+			)
+			return resp_list[0] if resp_list else None
+
 	async def _get_device_info(self):
 		return await self.rpc_call("Shelly.GetDeviceInfo")
 
 	async def list_methods(self):
 		resp = await self.rpc_call("Shelly.ListMethods")
+		return resp['methods'] if resp and 'methods' in resp else []
+
+	async def list_methods_with_reconnect(self):
+		resp = await self.rpc_call_with_reconnect("Shelly.ListMethods")
 		return resp['methods'] if resp and 'methods' in resp else []
 
 	def device_updated(self, cb_device, update_type):

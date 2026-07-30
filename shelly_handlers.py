@@ -76,13 +76,9 @@ class ShellyHandler(object):
 		c.settings = getattr(shelly_channel, "settings", None)
 		c._serial = getattr(shelly_channel, "_serial", None)
 		c._settings_base = f'/Settings/Devices/shelly_{c._serial}_{c._channel_id}/'
-		try:
-			# Sanity check: ensure the channel is responsive and returns a valid status before proceeding.
-			if await c.request_channel_status() is None:
-				return None
-			await c.ainit()
-		except Exception as e:
-			logger.error("Failed to initialize handler: %s", e)
+
+		# Sanity check: ensure the channel is responsive and returns a valid status before proceeding.
+		if await c.request_channel_status() is None:
 			return None
 
 		return c
