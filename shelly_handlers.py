@@ -85,6 +85,7 @@ class ShellyHandler(object):
 
 	def __init__(self):
 		self._channel_id = 0
+		self._init_done = False
 		self._rpc_call = None
 		self.restart = None
 		self._type = None
@@ -101,6 +102,10 @@ class ShellyHandler(object):
 	async def ainit(self):
 		pass
 
+	@property
+	def init_done(self):
+		return self._init_done
+
 	async def stop(self):
 		pass
 
@@ -115,7 +120,8 @@ class ShellyHandler(object):
 	# The default behavior is to re-fetch the status and pass it to update.
 	# The handler can decide to just refresh the data without restarting the service.
 	async def refresh(self):
-		await self.force_update()
+		if self._init_done:
+			await self.force_update()
 
 	def set_service_name(self, type):
 		self.service.name = f"com.victronenergy.{type}.shelly_{self._serial}_{self._channel_id}"
@@ -154,6 +160,7 @@ class ShellyHandler_temperature(ShellyHandler):
 		await super().ainit()
 		# Temperature path must be updated.
 		self.service.add_item(DoubleItem(f'/Temperature', None, text=fmt['celsius']))
+		self._init_done = True
 
 	def update(self, status_json, cap=None):
 		try:
@@ -167,6 +174,7 @@ class ShellyHandler_temperature(ShellyHandler):
 class ShellyHandler_sys(ShellyHandler):
 	async def ainit(self):
 		await super().ainit()
+		self._init_done = True
 
 # Generic channel config mixin, adds support for custom channel names and requesting channel config. Used by multiple handlers.
 # Allows for synching the channel name to multiple paths on the service.
@@ -430,6 +438,7 @@ class ShellyHandler_em(Shelly_EM_base, ShellyHandler_channel_config_mixin, Shell
 		await self.add_customname_path()
 		role = await self.init_em(self._num_phases)
 		self.set_service_name(role)
+		self._init_done = True
 
 	async def get_num_phases(self):
 		status = await self.rpc_call('GetStatus', {"id": self._channel_id})
@@ -476,6 +485,7 @@ class ShellyHandler_em1(Shelly_EM_base, ShellyHandler_channel_config_mixin, Shel
 		await self.add_customname_path()
 		role = await self.init_em(self._num_phases)
 		self.set_service_name(role)
+		self._init_done = True
 
 	def update(self, status_json, cap=None):
 		if status_json is None:
@@ -756,10 +766,18 @@ if _S2_MIXIN_AVAILABLE:
 	@register_handler('Switch', kind=HANDLER_KIND_SWITCH)
 	class ShellyHandler_switch(_ShellyHandlerS2Mixin, ShellyHandler_switch_base):
 		pass
+
+	async def ainit(self):
+		await super().ainit()
+		self._init_done = True
 else:
 	@register_handler('Switch', kind=HANDLER_KIND_SWITCH)
 	class ShellyHandler_switch(ShellyHandler_switch_base):
 		pass
+
+	async def ainit(self):
+		await super().ainit()
+		self._init_done = True
 
 
 class ThrottledUpdaterMixin:
@@ -800,6 +818,7 @@ class ShellyHandler_light(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 
 		# ainit may do a force update which will call update, so make sure the paths are there.
 		await super().ainit()
+		self._init_done = True
 
 	def update(self, status_json, cap=None):
 		super().update(status_json, cap)
@@ -847,6 +866,7 @@ class ShellyHandler_RGBW(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 
 		# ainit may do a force update which will call update, so make sure the paths are there.
 		await super().ainit(allow_em=False)
+		self._init_done = True
 
 	def _light_controls_text_callback(self, v):
 		if self._type == OutputType.RGBW:
