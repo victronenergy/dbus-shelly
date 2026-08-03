@@ -122,6 +122,7 @@ class ShellyDevice(object):
 		self._reconnect_task = None
 		self._channel_info = []
 		self._capabilities = []
+		self._subscribed = None
 		self._event = None
 
 	@property
@@ -392,6 +393,9 @@ class ShellyDevice(object):
 
 	async def start(self):
 		async with self._device_lock:
+			if self._shelly_device is not None and self._subscribed is self._shelly_device:
+				return True
+
 			if not (await self.ping_shelly()):
 				if not await self.connect():
 					return False
@@ -403,6 +407,7 @@ class ShellyDevice(object):
 				return False
 
 			self._shelly_device.subscribe_updates(self.device_updated)
+			self._subscribed = self._shelly_device
 			return True
 
 	async def start_channel(self, channel):
@@ -534,6 +539,7 @@ class ShellyDevice(object):
 
 			self._ws_context = None
 			self._shelly_device = None
+			self._subscribed = None
 			self._aiohttp_session = None
 			self.set_event("stopped")
 
