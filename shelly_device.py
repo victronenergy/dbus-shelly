@@ -133,7 +133,11 @@ class ShellyDevice(object):
 	@property
 	def server(self):
 		if self._shelly_device:
-			return self._shelly_device.ip_address
+			ip = self._shelly_device.ip_address
+			_, port = self._parse_server()
+			if port is not None:
+				return f"{ip}:{port}"
+			return ip
 		if self._server:
 			return self._server
 		return None
