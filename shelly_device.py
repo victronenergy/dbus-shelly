@@ -22,7 +22,8 @@ from __main__ import VERSION, __file__ as processName
 
 PRODUCT_ID_SHELLY_EM = 0xB034
 PRODUCT_ID_SHELLY_SWITCH = 0xB075
-CONNECTION_RETRIES = 10
+PING_RETRIES = 3
+CONNECTION_RETRIES = 5
 background_tasks = set()
 
 class ShellyConnectionError(Exception):
@@ -304,8 +305,20 @@ class ShellyDevice(object):
 		self._reconnect_task.add_done_callback(clear_reconnecting)
 
 	async def _reconnect(self):
-		logger.info("Reconnecting to shelly device %s", self.serial_or_server)
+		logger.debug("Reconnecting to shelly device %s", self.serial_or_server)
 		if self._shelly_device:
+			# Try to ping it a few times first as a quick check.
+			# If ping is succesful, there is no need to reinit/refresh the handlers.
+			try:
+				for i in range(PING_RETRIES):
+					if await self.ping_shelly() and self._shelly_device.initialized:
+						logger.debug("Ping to shelly device %s successful, no need to reconnect", self.serial_or_server)
+						return True
+					await asyncio.sleep(1)
+			except Exception:
+				pass
+
+			# If that fails, shutdown the device, close the http session and try to reconnect.
 			try:
 				for ch in self._channels.keys():
 					channel_obj = self._channels[ch].get("channel")
@@ -568,7 +581,7 @@ class ShellyDevice(object):
 				try:
 					resp = await self._rpc_call(method, params)
 				except (DeviceConnectionError, TimeoutError):
-					logger.error("Failed to call RPC method on shelly device %s", self.serial_or_server)
+					logger.debug("Failed to call RPC method on shelly device %s", self.serial_or_server)
 					self.do_reconnect()
 					try:
 						# Reconnection may take a while.
