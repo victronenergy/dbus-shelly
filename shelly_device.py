@@ -329,8 +329,6 @@ class ShellyDevice(object):
 		self._shelly_device = None
 		# Try reconnecting a few times
 		for i in range(CONNECTION_RETRIES):
-			if await self.ping_shelly() and self._shelly_device.initialized:
-				break
 			logger.info("Attempting to reconnect to shelly device %s (%d/%d)", self.serial_or_server, i + 1, CONNECTION_RETRIES)
 
 			if await self.start():
