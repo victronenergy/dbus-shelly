@@ -560,8 +560,7 @@ class ShellyDevice(object):
 					(("Shelly.GetDeviceInfo", None),), timeout=2
 				)
 				return len(resp) > 0 and resp[0] is not None
-		except Exception as e:
-			logger.error("Ping to shelly device %s failed: %s", self.serial_or_server, e)
+		except:
 			return False
 		return False
 
