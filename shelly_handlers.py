@@ -100,7 +100,20 @@ class ShellyHandler(object):
 		return await self.rpc_call('GetStatus' , {"id": self._channel_id})
 
 	async def ainit(self):
-		pass
+		await self._check_rpc_type_supported()
+
+	# For handlers that can be used for multiple RPC components, this function checks which of the
+	# RPC components are supported by the device and removes unsupported ones from the list.
+	async def _check_rpc_type_supported(self):
+		if isinstance(self._rpc_device_type, list):
+			for rpc in self._rpc_device_type:
+				resp = await self.rpc_call('GetStatus', {"id": self._channel_id}, rpc_device_types=rpc)
+				if resp is None:
+					self._rpc_device_type.remove(rpc)
+
+			# Turn it into a single RPC component handler if only one is left.
+			if len(self._rpc_device_type) == 1:
+				self._rpc_device_type = self._rpc_device_type[0]
 
 	@property
 	def init_done(self):
