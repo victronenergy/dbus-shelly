@@ -631,6 +631,8 @@ class ShellyDevice(object):
 				channel = entry.get("ch_num")
 				handlers = entry.get("handlers", {})
 				for cap, handler in handlers.items():
+					if not handler.init_done:
+						continue
 					cap = cap.lower()
 					key = f'{cap}:{channel}'
 					if key in cb_device.status:
