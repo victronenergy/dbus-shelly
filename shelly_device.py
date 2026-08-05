@@ -216,6 +216,11 @@ class ShellyDevice(object):
 			options = ConnectionOptions(host, "", "")
 		else:
 			options = ConnectionOptions(host, "", "", port=port)
+		if self._aiohttp_session is not None:
+			try:
+				await self._aiohttp_session.close()
+			except:
+				pass
 		self._aiohttp_session = aiohttp.ClientSession()
 		self._ws_context = WsServer()
 
@@ -324,6 +329,7 @@ class ShellyDevice(object):
 				async with async_timeout.timeout(2):
 					await self._shelly_device.shutdown()
 					await self._aiohttp_session.close()
+					self._aiohttp_session = None
 			except Exception:
 				pass
 		self._shelly_device = None
