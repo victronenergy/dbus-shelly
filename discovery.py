@@ -47,9 +47,10 @@ cache_lock = asyncio.Lock()
 
 # ProbeStatus is used to indicate the result of a connection attempt to a Shelly device.
 class ProbeStatus(str, Enum):
-	REACHABLE = "reachable" # Used for devices that are both reachable and supported.
-	UNSUPPORTED = "unsupported"
-	UNREACHABLE = "unreachable"
+	REACHABLE = "reachable" # Device is reachable and supported
+	RECONNECTING = "reconnecting" # Device was reachable before and was active, but is now unreachable and is being retried by the ShellyDevice reconnect logic.
+	UNSUPPORTED = "unsupported" # Device is reachable but not supported
+	UNREACHABLE = "unreachable" # Device is unreachable, but may be retried later
 	ERROR = "error"
 
 	def __str__(self) -> str:
@@ -77,7 +78,7 @@ class ShellyEndpoint:
 @dataclass
 class ConnectMeta:
 	created_at: float = field(default_factory=time.time)
-	next_retry_at: float = field(default_factory=time.time)
+	next_retry_at: float | None = field(default_factory=time.time)
 	attempts: int = 0
 	success: bool = False
 	deadline_at: float | None = None  # None => retry forever
@@ -122,6 +123,8 @@ class ConnectMeta:
 		self.attempts = 0
 
 	def due(self, now: float | None = None) -> bool:
+		if self.next_retry_at is None:
+			return False
 		now = time.time() if now is None else now
 		return now >= self.next_retry_at
 
@@ -130,6 +133,13 @@ class ConnectMeta:
 			return False
 		now = time.time() if now is None else now
 		return now >= self.deadline_at
+
+	# Not reachable, but the ShellyDevice will try to reconnect.
+	# No need for the ShellyConnectionManager to retry just yet.
+	# If the ShellyDevice fails to reconnect, it will emit "disconnected" which will disable the device and trigger the ShellyConnectionManager to retry after the backoff delay.
+	def mark_reconnecting(self) -> None:
+		self.next_retry_at = None
+		self.success = False
 
 	def mark_failure(self, now: float | None = None) -> None:
 		now = time.time() if now is None else now
@@ -220,7 +230,7 @@ class ShellyDeviceCache:
 					source = state.endpoint.source
 					last_seen = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(state.connect.last_seen)) if state.connect and state.connect.last_seen else "N/A"
 					connecting = "Yes" if state.is_connecting else "No"
-					next_retry_at = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(state.connect.next_retry_at)) if state.connect else "N/A"
+					next_retry_at = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(state.connect.next_retry_at)) if state.connect and state.connect.next_retry_at else "N/A"
 					supported = "Unknown" if state.endpoint.supported is None else "Yes" if state.endpoint.supported else "No"
 					model = state.endpoint.model or "N/A"
 					f.write(f"{serial:<15}{host:<40}{model:<15}{source:<10}{supported:<10}{last_seen:<20}{connecting:<12}{next_retry_at:<20}\n")
@@ -459,13 +469,14 @@ class ShellyConnectionManager:
 								ep_state.endpoint.model = result.info.get('app', result.info.get('model', 'unknown'))
 							ep_state.endpoint.supported = True
 						ep_state.connect.mark_success(now)
-
+					elif result.status == ProbeStatus.RECONNECTING:
+						ep_state.connect.mark_reconnecting()
 					# Unsupported device -> stop retrying and mark as unsupported
 					elif result.status == ProbeStatus.UNSUPPORTED:
 						ep_state.stop_connect()
 						ep_state.endpoint.supported = False
 						logger.info("Shelly device %s at %s is unsupported, will not retry", ep_state.endpoint.serial, ep_state.endpoint.host)
-					else: # Unreachable
+					elif result.status == ProbeStatus.UNREACHABLE:
 						ep_state.connect.mark_failure(now)
 						logger.info("Failed to connect to shelly device %s at %s, retrying in %d seconds", ep_state.endpoint.serial, ep_state.endpoint.host, ep_state.connect.next_retry_at - now)
 						if ep_state.connect.expired(now):
@@ -640,8 +651,14 @@ class ShellyManager(object):
 			with self.service as s:
 				s['/Devices/{}/LastSeen'.format(serial)] = last_seen
 
+		elif action == ProbeStatus.RECONNECTING.value:
+			with self.service as s:
+				s['/Devices/{}/Reachable'.format(serial)] = 0
+
+		# Shelly device unreachable, mark as unreachable in the DBus inventory.
+		# If it was active, ShellyDevice will try to reconnect which will result in either the connection being restored or
+		# the device being marked as disconnected which will trigger the ConnectionManager to retry the connection after a while.
 		elif action == ProbeStatus.UNREACHABLE.value:
-			await self.stop_shelly_device(serial)
 			with self.service as s:
 				s['/Devices/{}/Reachable'.format(serial)] = 0
 
@@ -748,8 +765,6 @@ class ShellyManager(object):
 	async def stop_shelly_device(self, serial):
 		if serial in self.shellies:
 			await self.shellies[serial]['device'].stop()
-		else:
-			logger.warning("Device not found: %s", serial)
 
 	async def _shelly_event_monitor(self, event, shelly):
 		serial = shelly.serial
@@ -765,6 +780,10 @@ class ShellyManager(object):
 					self.clear_discovered_device_paths(serial)
 					await self.shelly_device_cache.start_connect(serial)
 					return
+
+				# TODO: Evaluate if this is the correct way. This will invoke another connection attempt right away which may not be necessary.
+				if e == "reconnected":
+					await self.shelly_device_cache.start_connect(serial)
 
 				elif e == "stopped":
 					return
@@ -840,6 +859,19 @@ class ShellyManager(object):
 		return result
 
 	async def _probe_device(self, server, serial=None):
+		if serial is not None and serial in self.shellies:
+			shelly = self.shellies[serial]['device']
+			result = DeviceProbeResult()
+			result.info = shelly.shelly_info
+			result.ip = shelly.server
+			result.channel_info = shelly.channel_info
+			if await shelly.ping_shelly():
+				result.status = ProbeStatus.REACHABLE
+			else:
+				shelly.do_reconnect()
+				result.status = ProbeStatus.RECONNECTING
+			return result
+
 		result = await self._get_device_info(server, serial)
 		return result
 
@@ -853,7 +885,8 @@ class ShellyManager(object):
 
 		# A known device can have updated info, so we always update the device info in the service, but skip channel setup for known devices.
 		# If the number of channels or its capabilities have changed, the device will emit a "capabilities_changed" event, which will trigger a refresh of the device info and channel setup.
-		known = self.service.get_item('/Devices/{}/Name'.format(serial)) is not None
+		item = self.service.get_item('/Devices/{}/Reachable'.format(serial))
+		skip_channel_setup = item is not None and item.value == 1
 
 		# 'app' is a more user-friendly name for the model. Use that if available.
 		# Shelly plus plug S example: 'app': 'PlusPlugS', 'model': 'SNPL-00112EU'
@@ -878,7 +911,7 @@ class ShellyManager(object):
 			s['/Devices/{}/Reachable'.format(serial)] = 1 if state.is_reachable else 0
 
 		# Skip channel setup for already-known devices; their dbus items and settings are already configured
-		if known:
+		if skip_channel_setup:
 			return
 
 		for i, ch_prop in channel_info.items():
