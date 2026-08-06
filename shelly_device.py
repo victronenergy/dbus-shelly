@@ -305,6 +305,7 @@ class ShellyDevice(object):
 		def clear_reconnecting(fut):
 			self._reconnecting = False
 		self._reconnect_task.add_done_callback(clear_reconnecting)
+		return True
 
 	async def _reconnect(self):
 		logger.debug("Reconnecting to shelly device %s", self.serial_or_server)
@@ -315,6 +316,7 @@ class ShellyDevice(object):
 				for i in range(PING_RETRIES):
 					if await self.ping_shelly() and self._shelly_device.initialized:
 						logger.debug("Ping to shelly device %s successful, no need to reconnect", self.serial_or_server)
+						self.set_event("reconnected")
 						return True
 					await asyncio.sleep(1)
 			except Exception:
@@ -347,6 +349,7 @@ class ShellyDevice(object):
 		logger.info("Reconnected to shelly device %s", self.serial_or_server)
 		# Reinit all channels
 		await asyncio.gather(*(self._reinit_channel_and_handlers(ch) for ch in self._channels))
+		self.set_event("reconnected")
 		return True
 
 	async def _reinit_channel_and_handlers(self, ch):
