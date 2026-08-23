@@ -303,13 +303,18 @@ class ShellyManager(object):
 			self._shelly_event_monitor(event, s)
 		)
 		try:
-			await s.start()
-		except Exception as e:
-			logger.error("Failed to start shelly device %s: %s", serial, e)
+			started = await s.start()
+		except Exception as ex:
+			logger.error("Failed to start shelly device %s: %s", serial, ex)
+			started = False
+
+		if not started:
 			await s.stop()
-			return
+			return False
+
 		e.add_done_callback(partial(self.delete_shelly_device, serial))
 		self.shellies[serial] = {'device': s, 'event_mon': e}
+		return True
 
 	async def enable_shelly_channel(self, serial, channel, server):
 		""" Enable a shelly channel. """
@@ -318,7 +323,8 @@ class ShellyManager(object):
 		# when enabling multiple channels at once.
 		async with self._shelly_lock:
 			if serial not in self.shellies:
-				await self.add_shelly_device(serial, server)
+				if not await self.add_shelly_device(serial, server):
+					return False
 
 			return await self.shellies[serial]['device'].start_channel(channel)
 
