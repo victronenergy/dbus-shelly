@@ -18,6 +18,9 @@ class MockShellyDevice:
 		voltage=230.0,
 		apower=120.0,
 		pf=0.98,
+		smoke=False,
+		battery_percent=100.0,
+		battery_voltage=3.0,
 	):
 		self.name = device_name
 		self.channel_name = channel_name
@@ -28,6 +31,11 @@ class MockShellyDevice:
 		self.voltage = float(voltage)
 		self.default_apower = float(apower)
 		self.pf = float(pf)
+		self.smoke = smoke
+		self._smoke_alarm = False
+		self._smoke_mute = False
+		self._battery_percent = float(battery_percent)
+		self._battery_voltage = float(battery_voltage)
 		self._start = time.time()
 
 		self._switch_outputs = [False] * switch_channels
@@ -107,6 +115,9 @@ class MockShellyDevice:
 		}
 		for i in range(self.switch_channels):
 			status[f"switch:{i}"] = self._switch_status(i)
+		if self.smoke:
+			status["smoke:0"] = self.smoke_get_status({"id": 0})
+			status["devicepower:0"] = self.devicepower_get_status({"id": 0})
 		return status
 
 	def shelly_get_config(self):
@@ -156,6 +167,43 @@ class MockShellyDevice:
 				pass
 		return {"id": channel, "on": self._switch_outputs[channel]}
 
+	def smoke_get_status(self, params):
+		channel = int(params.get("id", 0))
+		if channel != 0 or not self.smoke:
+			return None
+		return {"id": channel, "alarm": self._smoke_alarm, "mute": self._smoke_mute}
+
+	def smoke_get_config(self, params):
+		channel = int(params.get("id", 0))
+		if channel != 0 or not self.smoke:
+			return None
+		return {"id": channel, "name": None}
+
+	def smoke_set_config(self, params):
+		channel = int(params.get("id", 0))
+		if channel != 0 or not self.smoke:
+			return None
+		return {"id": channel, "name": None}
+
+	def smoke_mute(self, params):
+		channel = int(params.get("id", 0))
+		if channel != 0 or not self.smoke:
+			return None
+		self._smoke_mute = True
+		return {}
+
+	def devicepower_get_status(self, params):
+		channel = int(params.get("id", 0))
+		if channel != 0 or not self.smoke:
+			return None
+		return {"id": channel, "battery": {"V": self._battery_voltage, "percent": self._battery_percent}}
+
+	def devicepower_get_config(self, params):
+		channel = int(params.get("id", 0))
+		if channel != 0 or not self.smoke:
+			return None
+		return {}
+
 	def list_methods(self):
 		return [
 			"Shelly.GetDeviceInfo",
@@ -168,6 +216,12 @@ class MockShellyDevice:
 			"Switch.GetConfig",
 			"Switch.SetConfig",
 			"Switch.Set",
+			"Smoke.GetStatus",
+			"Smoke.GetConfig",
+			"Smoke.SetConfig",
+			"Smoke.Mute",
+			"DevicePower.GetStatus",
+			"DevicePower.GetConfig",
 		]
 
 	async def notify_full_status(self):
@@ -260,6 +314,30 @@ async def handle_rpc(device, frame, *, verbose=False):
 		resp = _json_response(device.switch_set(params), request_id)
 		resp["src"] = f"shelly-{device.mac}"
 		return resp
+	if method == "Smoke.GetStatus":
+		resp = _json_response(device.smoke_get_status(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "Smoke.GetConfig":
+		resp = _json_response(device.smoke_get_config(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "Smoke.SetConfig":
+		resp = _json_response(device.smoke_set_config(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "Smoke.Mute":
+		resp = _json_response(device.smoke_mute(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "DevicePower.GetStatus":
+		resp = _json_response(device.devicepower_get_status(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "DevicePower.GetConfig":
+		resp = _json_response(device.devicepower_get_config(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
 	resp = _json_error(f"Unknown method: {method}", request_id)
 	resp["src"] = f"shelly-{device.mac}"
 	return resp
@@ -317,6 +395,9 @@ def parse_args():
 	parser.add_argument("--voltage", type=float, default=230.0)
 	parser.add_argument("--apower", type=float, default=1000.0)
 	parser.add_argument("--pf", type=float, default=0.98)
+	parser.add_argument("--smoke", action="store_true")
+	parser.add_argument("--battery-percent", type=float, default=100.0)
+	parser.add_argument("--battery-voltage", type=float, default=3.0)
 	parser.add_argument("--notify-interval", type=float, default=5)
 	parser.add_argument("--verbose", action="store_true")
 	return parser.parse_args()
@@ -334,6 +415,9 @@ async def main():
 		voltage=args.voltage,
 		apower=args.apower,
 		pf=args.pf,
+		smoke=args.smoke,
+		battery_percent=args.battery_percent,
+		battery_voltage=args.battery_voltage,
 	)
 
 	app = web.Application()

@@ -40,7 +40,13 @@ def build_cmd(script_path, device, verbose):
 		device["mac"],
 		"--apower",
 		str(device.get("apower", 1000.0)),
+		"--switch-channels",
+		str(device.get("switch-channels", 1)),
 	]
+	if device.get("smoke", False):
+		cmd.append("--smoke")
+		cmd += ["--battery-percent", str(device.get("battery-percent", 100.0))]
+		cmd += ["--battery-voltage", str(device.get("battery-voltage", 3.0))]
 	if verbose:
 		cmd.append("--verbose")
 	return cmd
