@@ -38,6 +38,7 @@ formatters = {
 	'amp': lambda v: "{:.1f}A".format(v),
 	'celsius': lambda v: "{:.1f}°C".format(v),
 	'kwh': lambda v: "{:.2f}kWh".format(v),
+	'percent': lambda v: "{:.0f}%".format(v),
 	'productid': lambda v: "0x{:X}".format(v)
 }
 
