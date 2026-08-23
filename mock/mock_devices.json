@@ -31,6 +31,17 @@
       "mac": "aabbccddeef4",
       "port": 8025,
       "apower": 1000.0
+    },
+    {
+      "device-name": "Mock Shelly Smoke",
+      "channel-name": "Mock shelly smoke - Channel 1",
+      "app": "MockSmoke",
+      "mac": "aabbccddeef5",
+      "port": 8026,
+      "switch-channels": 0,
+      "smoke": true,
+      "battery-percent": 100.0,
+      "battery-voltage": 3.0
     }
   ]
 }
