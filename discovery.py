@@ -803,8 +803,7 @@ class ShellyManager(object):
 				if e == ShellyEvent.DISCONNECTED:
 					if shelly.is_sleepy:
 						logger.info("Sleepy shelly device %s went to sleep, keeping it visible with its last known values", serial)
-						# TODO: How to handle this with the cache
-						#shelly.mark_disconnected()
+						shelly.mark_disconnected()
 					else:
 						logger.warning("Shelly device %s disconnected", serial)
 						# Do not clear discovered paths here.
