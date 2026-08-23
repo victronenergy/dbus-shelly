@@ -20,10 +20,11 @@ background_tasks = set()
 HANDLER_KIND_SWITCH = "switch"
 HANDLER_KIND_EM1 = "em1"
 HANDLER_KIND_EM = "em"
+HANDLER_KIND_DIGITALINPUT = "digitalinput"
 HANDLER_KIND_GENERIC = "generic"
 
 # Handler type generic is not included here because a channel which only has generic capabilities (or unsupported ones) should not be listed.
-FUNCTIONAL_HANDLERS = [HANDLER_KIND_SWITCH, HANDLER_KIND_EM1, HANDLER_KIND_EM]
+FUNCTIONAL_HANDLERS = [HANDLER_KIND_SWITCH, HANDLER_KIND_EM1, HANDLER_KIND_EM, HANDLER_KIND_DIGITALINPUT]
 
 _HANDLER_REGISTRY = {}
 _CAPS_BY_KIND = {kind: [] for kind in FUNCTIONAL_HANDLERS}
@@ -155,6 +156,27 @@ class ShellyHandler_temperature(ShellyHandler):
 				s[f'/Temperature'] = status_json["tC"]
 		except:
 			pass
+
+# DevicePower handler, puts battery voltage/percentage readings on dbus.
+# Tacks onto whichever channel the component is found on, same as the Temperature handler.
+@register_handler('DevicePower', kind=HANDLER_KIND_GENERIC)
+class ShellyHandler_devicepower(ShellyHandler):
+	async def ainit(self):
+		await super().ainit()
+		self.service.add_item(DoubleItem('/BatteryVoltage', None, text=fmt['volt']))
+		self.service.add_item(DoubleItem('/BatteryPercent', None, text=fmt['percent']))
+		# Unlike always-on switch/EM devices, a sleepy battery device may go back to sleep
+		# before the next live status push arrives, so fetch the initial reading proactively.
+		await self.force_update()
+
+	def update(self, status_json, cap=None):
+		try:
+			battery = status_json.get("battery", {})
+			with self.service as s:
+				s['/BatteryVoltage'] = battery.get("V")
+				s['/BatteryPercent'] = battery.get("percent")
+		except (AttributeError, KeyError) as e:
+			logger.error("Error in update: %s", e)
 
 # System handler placeholder
 @register_handler('Sys', kind=HANDLER_KIND_GENERIC)
@@ -506,6 +528,81 @@ class ShellyHandler_em1(Shelly_EM_base, ShellyHandler_channel_config_mixin, Shel
 		except Exception as e:
 			logger.error("Exception in update: %s", e)
 			pass
+
+
+# Smoke handler, registers as a com.victronenergy.digitalinput service (Type: Smoke alarm),
+# tying into Venus OS's existing digital input alarm/notification handling.
+@register_handler('Smoke', kind=HANDLER_KIND_DIGITALINPUT)
+class ShellyHandler_smoke(ShellyHandler_channel_config_mixin, ShellyHandler):
+	# See https://github.com/victronenergy/dbus-digitalinputs for the /Type and /State enums.
+	DIGITALINPUT_TYPE_SMOKE_ALARM = 6
+	STATE_OK = 8
+	STATE_ALARM = 9
+
+	async def ainit(self):
+		await super().ainit()
+		await self.add_customname_path()
+
+		self._alarm_setting_alias = f'AlarmSetting_{self._serial}_{self._channel_id}'
+		await self.settings.add_settings(
+			Setting(self._settings_base + 'AlarmSetting', 1, 0, 1, alias=self._alarm_setting_alias)
+		)
+		alarm_enabled = self.settings.get_value(self.settings.alias(self._alarm_setting_alias))
+
+		self.service.add_item(IntegerItem('/Type', self.DIGITALINPUT_TYPE_SMOKE_ALARM, text=lambda v: "Smoke alarm"))
+		self.service.add_item(IntegerItem('/State', self.STATE_OK, text=self._state_text_callback))
+		self.service.add_item(IntegerItem('/Alarm', 0, text=self._alarm_text_callback))
+		self.service.add_item(IntegerItem('/Mute', 0, writeable=True, onchange=self.set_mute))
+		self.service.add_item(IntegerItem('/Settings/AlarmSetting', alarm_enabled, writeable=True, onchange=self.set_alarm_setting))
+		# There's no raw GPIO level to invert for an RPC-reported alarm state, and letting a
+		# safety device's alarm polarity be flipped is a real hazard rather than a convenience,
+		# so these are fixed read-only placeholders -- present only so the Setup page's generic
+		# digitalinput template renders correctly instead of showing unbound-looking switches.
+		self.service.add_item(IntegerItem('/Settings/InvertTranslation', 0, writeable=False))
+		self.service.add_item(IntegerItem('/Settings/InvertAlarm', 0, writeable=False))
+		self.set_service_name('digitalinput')
+		await self.force_update()
+
+	def _state_text_callback(self, value):
+		return "Alarm" if value == self.STATE_ALARM else "Ok"
+
+	def _alarm_text_callback(self, value):
+		return "Alarm" if value else "Ok"
+
+	def update(self, status_json, cap=None):
+		if status_json is None:
+			return
+		try:
+			alarm = bool(status_json["alarm"])
+			mute = bool(status_json.get("mute", False))
+			alarm_enabled = self.service.get_item('/Settings/AlarmSetting').value
+			with self.service as s:
+				s['/State'] = self.STATE_ALARM if alarm else self.STATE_OK
+				s['/Alarm'] = 2 if (alarm and alarm_enabled) else 0
+				s['/Mute'] = 1 if mute else 0
+		except KeyError as e:
+			logger.error("KeyError in update: %s", e)
+
+	async def set_alarm_setting(self, item, value):
+		if value not in (0, 1):
+			return
+		await self.settings.set_value(self.settings.alias(self._alarm_setting_alias), value)
+		item.set_local_value(value)
+		# Recompute /Alarm immediately from the last known state -- the device may currently be
+		# asleep, so we can't just wait for a fresh status read to reflect the change.
+		state_item = self.service.get_item('/State')
+		is_alarm = state_item is not None and state_item.value == self.STATE_ALARM
+		with self.service as s:
+			s['/Alarm'] = 2 if (is_alarm and value) else 0
+
+	async def set_mute(self, item, value):
+		# The Smoke component only exposes a Mute call, there is no way to unmute on demand:
+		# the device clears the mute state itself, which is picked up on the next update().
+		if value != 1:
+			return
+		resp = await self.rpc_call('Mute', {"id": self._channel_id})
+		if resp is not None:
+			item.set_local_value(1)
 
 
 class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_base, ShellyHandler):

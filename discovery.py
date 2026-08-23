@@ -264,6 +264,10 @@ class ShellyManager(object):
 		if serial not in self.discovered_devices + self.saved_devices:
 			logger.info("Found shelly device: %s", serial)
 			await self._add_device(server, serial)
+		elif serial in self.shellies and not self.shellies[serial]['device'].is_connected:
+			# A known device (e.g. a sleepy smoke detector) is reachable again after being asleep.
+			logger.info("Shelly device %s woke up, reconnecting", serial)
+			self.shellies[serial]['device'].do_reconnect()
 
 	async def on_mdns_removed(self, serial):
 		if serial in self.discovered_devices:
@@ -362,10 +366,14 @@ class ShellyManager(object):
 				e = shelly.event
 
 				if e == "disconnected":
-					logger.warning("Shelly device %s disconnected", serial)
-					await self.stop_shelly_device(serial)
-					self.remove_discovered_device(serial)
-					return
+					if shelly.is_sleepy:
+						logger.info("Sleepy shelly device %s went to sleep, keeping it visible with its last known values", serial)
+						shelly.mark_disconnected()
+					else:
+						logger.warning("Shelly device %s disconnected", serial)
+						await self.stop_shelly_device(serial)
+						self.remove_discovered_device(serial)
+						return
 
 				elif e == "stopped":
 					return

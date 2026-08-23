@@ -22,6 +22,7 @@ from __main__ import VERSION, __file__ as processName
 
 PRODUCT_ID_SHELLY_EM = 0xB034
 PRODUCT_ID_SHELLY_SWITCH = 0xB075
+PRODUCT_ID_SHELLY_SMOKE = 0xB0A0
 CONNECTION_RETRIES = 10
 background_tasks = set()
 
@@ -37,8 +38,11 @@ class ShellyChannel(object):
 		c.settings = await wait_for_settings(bus, itemsChanged=c.itemsChanged)
 
 		settings_base = f'/Settings/Devices/shelly_{serial}_{c._channel_id}/'
+		# The class prefix only matters as an initial default: EM-capable channels immediately
+		# overwrite it with the selected role (see Shelly_EM_base.init_em), but a digitalinput
+		# channel has no such role to pick, so its class needs to already be correct here.
 		await c.settings.add_settings(
-			Setting(settings_base + 'ClassAndVrmInstance', 'switch:50', alias=f'instance_{c._serial}_{c._channel_id}')
+			Setting(settings_base + 'ClassAndVrmInstance', f'{c._ch_type}:50', alias=f'instance_{c._serial}_{c._channel_id}')
 		)
 
 		await c.ainit()
@@ -50,6 +54,7 @@ class ShellyChannel(object):
 		self.channel_custom_name = ""
 		self._productId = productid
 		self._serial = serial
+		self._ch_type = channel_type_id.split('_')[0]
 		self._channel_id = int(channel_type_id.split('_')[1])
 		self.bus_type = bus_type
 		self.bus = bus
@@ -80,7 +85,10 @@ class ShellyChannel(object):
 		self.service.add_item(TextItem('/ProductName', self.productName))
 		self.service.add_item(IntegerItem('/Connected', 1))
 		self.service.add_item(TextItem('/Serial', self._serial))
-		self.service.add_item(IntegerItem('/State', 0x100)) # Connected
+		# /State has a spec-defined, type-specific meaning on digitalinput services
+		# (owned by ShellyHandler_smoke); elsewhere it's just this generic "connected" placeholder.
+		if self._ch_type != 'digitalinput':
+			self.service.add_item(IntegerItem('/State', 0x100)) # Connected
 		self.service.add_item(TextItem('/ShellyModel', self.shellyModel))
 
 	async def start_service(self):
@@ -147,6 +155,12 @@ class ShellyDevice(object):
 		return self._shelly_device and self._shelly_device.connected
 
 	@property
+	def is_sleepy(self):
+		# Battery-powered devices (e.g. a smoke detector) spend most of their time in deep sleep
+		# with WiFi off, so losing the connection is expected and not a sign of a real failure.
+		return any(ch.get('type') == 'digitalinput' for ch in self._channel_info.values())
+
+	@property
 	def serial(self):
 		return self._serial
 
@@ -176,6 +190,16 @@ class ShellyDevice(object):
 	@property
 	def serial_or_server(self):
 		return self._serial if self._serial else self.server
+
+	def mark_disconnected(self):
+		# For a sleepy device, going offline is a normal part of its lifecycle: keep its dbus
+		# services (and their last known values) around instead of tearing them down, so it
+		# stays visible until it reconnects on its next wake-up.
+		for entry in self._channels.values():
+			channel_obj = entry.get("channel")
+			if channel_obj is not None and channel_obj.service is not None:
+				with channel_obj.service as s:
+					s['/Connected'] = 0
 
 	async def stop_channel(self, ch):
 		async with self._device_lock:
@@ -342,6 +366,9 @@ class ShellyDevice(object):
 			# No capability change, just reinitialize the existing handlers with the new RPC connection.
 			channel_obj = self._channels[ch].get("channel")
 			await channel_obj.reinit(self.rpc_call, partial(self.restart_channel, ch))
+			if channel_obj.service is not None:
+				with channel_obj.service as s:
+					s['/Connected'] = 1
 			# Use set here to avoid refreshing the same handler multiple times if it handles multiple capabilities.
 			await asyncio.gather(*(handler.refresh() for handler in set(handlers.values())))
 
@@ -398,9 +425,15 @@ class ShellyDevice(object):
 
 			ch_type = self._channel_info[channel]['type']
 			ch_type_id = self._channel_info[channel]['id']
-			is_switch = ch_type == 'switch'
-			name = f"Shelly {'Switch' if is_switch else 'EM'}"
-			id = PRODUCT_ID_SHELLY_SWITCH if is_switch else PRODUCT_ID_SHELLY_EM
+			if ch_type == 'switch':
+				name = "Shelly Switch"
+				id = PRODUCT_ID_SHELLY_SWITCH
+			elif ch_type == 'digitalinput':
+				name = "Shelly Smoke"
+				id = PRODUCT_ID_SHELLY_SMOKE
+			else:
+				name = "Shelly EM"
+				id = PRODUCT_ID_SHELLY_EM
 
 			ch = None
 			handlers = {}
