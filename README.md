@@ -5,6 +5,8 @@ This is a VenusOS driver for Gen2+ Shelly switches and energy meters.
 # Connection
 The shelly and the GX should be in the same network. The GX device discovers the shelly over mDNS. Found shelly devices are listed under the service `com.victronenergy.shelly/Devices/`. Each channel can be enabled individually. After enabling a channel by setting the `/Enabled` path to 1, a dedicated service will be registered on dbus. The type of service depends on the capabilities of the shelly.
 
+Switch and energy metering channels default to disabled and require an explicit opt-in, since enabling them can drive real loads. Smoke and Flood channels default to enabled on first discovery instead: they can't actuate anything, and enabling them right away -- while the device is confirmed awake from the discovery probe -- avoids having to catch a battery-powered sensor during one of its brief wake windows just to turn it on.
+
 - Shelly smart plugs with energy metering capabilities will be registered as `com.victronenergy.<role>`. Allowed roles for this type of device are: 'acload', 'pvinverter' and 'heatpump', defaulting to 'acload'. Controls for the switchable output are found under this service as well, compliant to the [SwitchableOutput API](https://github.com/victronenergy/venus/wiki/dbus#switch).
 - Shelly smart plugs without energy metering capabilities will be registered as `com.victronenergy.switch`.
 - Shelly energy metering devices without a switchable output (so energy meters to be installed at an input or an output position) are registered as a standard grid meter. `com.victronenergy.<role>` with role equal to 'genset', 'pvinverter', 'acload' or 'heatpump', depending on the setting and defaulting to 'acload'.
