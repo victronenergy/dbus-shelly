@@ -23,15 +23,12 @@ from __main__ import VERSION, __file__ as processName
 
 PRODUCT_ID_SHELLY_EM = 0xB034
 PRODUCT_ID_SHELLY_SWITCH = 0xB075
-<<<<<<< HEAD
 PING_RETRIES = 3
 CONNECTION_RETRIES = 5
-=======
 PRODUCT_ID_SHELLY_SMOKE = 0xB0A0
 # No product ID has been assigned for the Flood sensor yet; reusing Smoke's until one is.
 PRODUCT_ID_SHELLY_FLOOD = 0xB0A0
 CONNECTION_RETRIES = 10
->>>>>>> 4d15f13 (Add support for the Shelly Plus Smoke detector)
 background_tasks = set()
 
 class ShellyEvent(IntEnum):
@@ -284,9 +281,8 @@ class ShellyDevice(object):
 				# Let aioshelly manage RPC call timeouts internally to avoid
 				# cancelling in-flight RPC futures from an outer timeout wrapper.
 				await self._shelly_device.initialize()
-			except Exception:
-				# Prevent flooding the log
-				logger.debug("Failed to initialize shelly device %s", self.serial_or_server)
+			except Exception as e:
+				logger.warning("Failed to initialize shelly device %s: %s", self.serial_or_server, e)
 				raise ShellyConnectionError()
 
 			if not (self._shelly_device.connected and self._shelly_device.initialized):
