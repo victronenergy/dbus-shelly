@@ -47,6 +47,10 @@ def build_cmd(script_path, device, verbose):
 		cmd.append("--smoke")
 		cmd += ["--battery-percent", str(device.get("battery-percent", 100.0))]
 		cmd += ["--battery-voltage", str(device.get("battery-voltage", 3.0))]
+	if device.get("flood", False):
+		cmd.append("--flood")
+		cmd += ["--battery-percent", str(device.get("battery-percent", 100.0))]
+		cmd += ["--battery-voltage", str(device.get("battery-voltage", 3.0))]
 	if verbose:
 		cmd.append("--verbose")
 	return cmd

@@ -19,6 +19,7 @@ class MockShellyDevice:
 		apower=120.0,
 		pf=0.98,
 		smoke=False,
+		flood=False,
 		battery_percent=100.0,
 		battery_voltage=3.0,
 	):
@@ -34,6 +35,9 @@ class MockShellyDevice:
 		self.smoke = smoke
 		self._smoke_alarm = False
 		self._smoke_mute = False
+		self.flood = flood
+		self._flood_alarm = False
+		self._flood_mute = False
 		self._battery_percent = float(battery_percent)
 		self._battery_voltage = float(battery_voltage)
 		self._start = time.time()
@@ -118,6 +122,9 @@ class MockShellyDevice:
 		if self.smoke:
 			status["smoke:0"] = self.smoke_get_status({"id": 0})
 			status["devicepower:0"] = self.devicepower_get_status({"id": 0})
+		if self.flood:
+			status["flood:0"] = self.flood_get_status({"id": 0})
+			status["devicepower:0"] = self.devicepower_get_status({"id": 0})
 		return status
 
 	def shelly_get_config(self):
@@ -192,15 +199,33 @@ class MockShellyDevice:
 		self._smoke_mute = True
 		return {}
 
+	def flood_get_status(self, params):
+		channel = int(params.get("id", 0))
+		if channel != 0 or not self.flood:
+			return None
+		return {"id": channel, "alarm": self._flood_alarm, "mute": self._flood_mute}
+
+	def flood_get_config(self, params):
+		channel = int(params.get("id", 0))
+		if channel != 0 or not self.flood:
+			return None
+		return {"id": channel, "name": None}
+
+	def flood_set_config(self, params):
+		channel = int(params.get("id", 0))
+		if channel != 0 or not self.flood:
+			return None
+		return {"id": channel, "name": None}
+
 	def devicepower_get_status(self, params):
 		channel = int(params.get("id", 0))
-		if channel != 0 or not self.smoke:
+		if channel != 0 or not (self.smoke or self.flood):
 			return None
 		return {"id": channel, "battery": {"V": self._battery_voltage, "percent": self._battery_percent}}
 
 	def devicepower_get_config(self, params):
 		channel = int(params.get("id", 0))
-		if channel != 0 or not self.smoke:
+		if channel != 0 or not (self.smoke or self.flood):
 			return None
 		return {}
 
@@ -220,6 +245,9 @@ class MockShellyDevice:
 			"Smoke.GetConfig",
 			"Smoke.SetConfig",
 			"Smoke.Mute",
+			"Flood.GetStatus",
+			"Flood.GetConfig",
+			"Flood.SetConfig",
 			"DevicePower.GetStatus",
 			"DevicePower.GetConfig",
 		]
@@ -330,6 +358,18 @@ async def handle_rpc(device, frame, *, verbose=False):
 		resp = _json_response(device.smoke_mute(params), request_id)
 		resp["src"] = f"shelly-{device.mac}"
 		return resp
+	if method == "Flood.GetStatus":
+		resp = _json_response(device.flood_get_status(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "Flood.GetConfig":
+		resp = _json_response(device.flood_get_config(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "Flood.SetConfig":
+		resp = _json_response(device.flood_set_config(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
 	if method == "DevicePower.GetStatus":
 		resp = _json_response(device.devicepower_get_status(params), request_id)
 		resp["src"] = f"shelly-{device.mac}"
@@ -396,6 +436,7 @@ def parse_args():
 	parser.add_argument("--apower", type=float, default=1000.0)
 	parser.add_argument("--pf", type=float, default=0.98)
 	parser.add_argument("--smoke", action="store_true")
+	parser.add_argument("--flood", action="store_true")
 	parser.add_argument("--battery-percent", type=float, default=100.0)
 	parser.add_argument("--battery-voltage", type=float, default=3.0)
 	parser.add_argument("--notify-interval", type=float, default=5)
@@ -416,6 +457,7 @@ async def main():
 		apower=args.apower,
 		pf=args.pf,
 		smoke=args.smoke,
+		flood=args.flood,
 		battery_percent=args.battery_percent,
 		battery_voltage=args.battery_voltage,
 	)
