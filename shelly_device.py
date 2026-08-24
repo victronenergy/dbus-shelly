@@ -23,6 +23,8 @@ from __main__ import VERSION, __file__ as processName
 PRODUCT_ID_SHELLY_EM = 0xB034
 PRODUCT_ID_SHELLY_SWITCH = 0xB075
 PRODUCT_ID_SHELLY_SMOKE = 0xB0A0
+# No product ID has been assigned for the Flood sensor yet; reusing Smoke's until one is.
+PRODUCT_ID_SHELLY_FLOOD = 0xB0A0
 CONNECTION_RETRIES = 10
 background_tasks = set()
 
@@ -86,7 +88,8 @@ class ShellyChannel(object):
 		self.service.add_item(IntegerItem('/Connected', 1))
 		self.service.add_item(TextItem('/Serial', self._serial))
 		# /State has a spec-defined, type-specific meaning on digitalinput services
-		# (owned by ShellyHandler_smoke); elsewhere it's just this generic "connected" placeholder.
+		# (owned by ShellyHandler_smoke / ShellyHandler_flood); elsewhere it's just this
+		# generic "connected" placeholder.
 		if self._ch_type != 'digitalinput':
 			self.service.add_item(IntegerItem('/State', 0x100)) # Connected
 		self.service.add_item(TextItem('/ShellyModel', self.shellyModel))
@@ -156,7 +159,7 @@ class ShellyDevice(object):
 
 	@property
 	def is_sleepy(self):
-		# Battery-powered devices (e.g. a smoke detector) spend most of their time in deep sleep
+		# Battery-powered devices (e.g. a smoke detector or flood sensor) spend most of their time in deep sleep
 		# with WiFi off, so losing the connection is expected and not a sign of a real failure.
 		return any(ch.get('type') == 'digitalinput' for ch in self._channel_info.values())
 
@@ -429,8 +432,13 @@ class ShellyDevice(object):
 				name = "Shelly Switch"
 				id = PRODUCT_ID_SHELLY_SWITCH
 			elif ch_type == 'digitalinput':
-				name = "Shelly Smoke"
-				id = PRODUCT_ID_SHELLY_SMOKE
+				# A device only ever exposes one of these RPC components, so this tells them apart.
+				if 'Flood' in self._capabilities:
+					name = "Shelly Flood"
+					id = PRODUCT_ID_SHELLY_FLOOD
+				else:
+					name = "Shelly Smoke"
+					id = PRODUCT_ID_SHELLY_SMOKE
 			else:
 				name = "Shelly EM"
 				id = PRODUCT_ID_SHELLY_EM

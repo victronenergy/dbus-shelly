@@ -9,8 +9,9 @@ The shelly and the GX should be in the same network. The GX device discovers the
 - Shelly smart plugs without energy metering capabilities will be registered as `com.victronenergy.switch`.
 - Shelly energy metering devices without a switchable output (so energy meters to be installed at an input or an output position) are registered as a standard grid meter. `com.victronenergy.<role>` with role equal to 'genset', 'pvinverter', 'acload' or 'heatpump', depending on the setting and defaulting to 'acload'.
 - Shelly smoke detectors are registered as `com.victronenergy.digitalinput` with `/Type` fixed to 'Smoke alarm', tying into Venus OS's existing digital input alarm/notification handling. Battery level is reported via non-standard `/BatteryVoltage` and `/BatteryPercent` paths, following the convention used by the battery-powered sensors in [dbus-ble-sensors](https://github.com/victronenergy/dbus-ble-sensors). The alarm can be silenced remotely through a writeable `/Mute` path.
+- Shelly flood/leak sensors are registered the same way, as `com.victronenergy.digitalinput`. There's no dedicated flood/water type in Venus's digitalinput enum, so `/Type` is fixed to 'Bilge alarm' (0xB0A0, the same placeholder product ID as Smoke, is used until a dedicated one is assigned) -- the closest existing match for water-intrusion detection. Unlike Smoke, the Flood RPC component has no remote mute call: `/Mute` is read-only and only reflects the state set through the device's physical button.
 
-  Note that smoke detectors are battery-powered and spend almost all their time in deep sleep (waking roughly once every 24h, plus on button press or an actual alarm). Its dbus service stays registered with its last known values (and `/Connected` set to 0) while it's asleep, and reconnects automatically once it's seen again over mDNS on its next wake-up.
+  Note that these sensors are battery-powered and spend almost all their time in deep sleep (waking roughly once every 24h, plus on button press or an actual alarm). Their dbus service stays registered with its last known values (and `/Connected` set to 0) while asleep, and reconnects automatically once seen again over mDNS on its next wake-up.
 
 # Supported RPC components
 Shelly devices use Remote Procedure Calls (RPC) to send commands to devices and receive notifications and replies from the devices. More info [here](https://shelly-api-docs.shelly.cloud/gen2/General/RPCProtocol/). An [RPC component](https://shelly-api-docs.shelly.cloud/gen2/General/ComponentConcept) is an encapsulated functional unit which exposes methods used to control the device.
@@ -35,6 +36,7 @@ Since V2.00, dbus-shelly implements handlers for RPC components, which enables c
 | RGBW               | *.switch                         | Switch type: RGBW                                                                          |
 | CCT                | *.switch                         | Switch type: CCT                                                                           |
 | Smoke              | *.digitalinput                   | Smoke alarm. DevicePower (if present) adds battery info to the same service                |
+| Flood              | *.digitalinput                   | Bilge alarm (no dedicated flood type in Venus). DevicePower (if present) adds battery info  |
 
 If a device exposes x instances of an RPC component listed above, then x channels of that type will show up in the integration menu.
 

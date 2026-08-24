@@ -530,14 +530,18 @@ class ShellyHandler_em1(Shelly_EM_base, ShellyHandler_channel_config_mixin, Shel
 			pass
 
 
-# Smoke handler, registers as a com.victronenergy.digitalinput service (Type: Smoke alarm),
-# tying into Venus OS's existing digital input alarm/notification handling.
-@register_handler('Smoke', kind=HANDLER_KIND_DIGITALINPUT)
-class ShellyHandler_smoke(ShellyHandler_channel_config_mixin, ShellyHandler):
+# Shared base for RPC alarm components (Smoke, Flood) that register as a com.victronenergy.digitalinput
+# service, tying into Venus OS's existing digital input alarm/notification handling instead of
+# inventing a bespoke service type per sensor.
+class ShellyHandler_digitalinput_alarm_base(ShellyHandler_channel_config_mixin, ShellyHandler):
 	# See https://github.com/victronenergy/dbus-digitalinputs for the /Type and /State enums.
-	DIGITALINPUT_TYPE_SMOKE_ALARM = 6
 	STATE_OK = 8
 	STATE_ALARM = 9
+	# Subclasses set these.
+	_digitalinput_type = None
+	_digitalinput_type_text = None
+	# Whether the RPC component supports muting the alarm remotely (via a Mute call).
+	_supports_remote_mute = False
 
 	async def ainit(self):
 		await super().ainit()
@@ -549,10 +553,11 @@ class ShellyHandler_smoke(ShellyHandler_channel_config_mixin, ShellyHandler):
 		)
 		alarm_enabled = self.settings.get_value(self.settings.alias(self._alarm_setting_alias))
 
-		self.service.add_item(IntegerItem('/Type', self.DIGITALINPUT_TYPE_SMOKE_ALARM, text=lambda v: "Smoke alarm"))
+		self.service.add_item(IntegerItem('/Type', self._digitalinput_type, text=lambda v: self._digitalinput_type_text))
 		self.service.add_item(IntegerItem('/State', self.STATE_OK, text=self._state_text_callback))
 		self.service.add_item(IntegerItem('/Alarm', 0, text=self._alarm_text_callback))
-		self.service.add_item(IntegerItem('/Mute', 0, writeable=True, onchange=self.set_mute))
+		mute_kwargs = {"writeable": True, "onchange": self.set_mute} if self._supports_remote_mute else {"writeable": False}
+		self.service.add_item(IntegerItem('/Mute', 0, **mute_kwargs))
 		self.service.add_item(IntegerItem('/Settings/AlarmSetting', alarm_enabled, writeable=True, onchange=self.set_alarm_setting))
 		# There's no raw GPIO level to invert for an RPC-reported alarm state, and letting a
 		# safety device's alarm polarity be flipped is a real hazard rather than a convenience,
@@ -596,13 +601,31 @@ class ShellyHandler_smoke(ShellyHandler_channel_config_mixin, ShellyHandler):
 			s['/Alarm'] = 2 if (is_alarm and value) else 0
 
 	async def set_mute(self, item, value):
-		# The Smoke component only exposes a Mute call, there is no way to unmute on demand:
-		# the device clears the mute state itself, which is picked up on the next update().
+		# Only called for components with _supports_remote_mute set: there is no way to unmute
+		# on demand, the device clears the mute state itself, picked up on the next update().
 		if value != 1:
 			return
 		resp = await self.rpc_call('Mute', {"id": self._channel_id})
 		if resp is not None:
 			item.set_local_value(1)
+
+
+@register_handler('Smoke', kind=HANDLER_KIND_DIGITALINPUT)
+class ShellyHandler_smoke(ShellyHandler_digitalinput_alarm_base):
+	_digitalinput_type = 6  # Smoke alarm
+	_digitalinput_type_text = "Smoke alarm"
+	_supports_remote_mute = True
+
+
+# Flood has no dedicated type in Venus's digitalinput enum, so it's registered as a Bilge alarm --
+# the closest existing match for water-intrusion detection. Unlike Smoke, the Flood RPC component
+# has no Mute call: muting only happens via the device's physical button and is merely reported
+# back through its status.
+@register_handler('Flood', kind=HANDLER_KIND_DIGITALINPUT)
+class ShellyHandler_flood(ShellyHandler_digitalinput_alarm_base):
+	_digitalinput_type = 4  # Bilge alarm
+	_digitalinput_type_text = "Bilge alarm"
+	_supports_remote_mute = False
 
 
 class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_base, ShellyHandler):
