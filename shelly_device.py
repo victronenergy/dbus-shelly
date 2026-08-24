@@ -250,8 +250,8 @@ class ShellyDevice(object):
 				# Let aioshelly manage RPC call timeouts internally to avoid
 				# cancelling in-flight RPC futures from an outer timeout wrapper.
 				await self._shelly_device.initialize()
-			except Exception:
-				logger.warning("Failed to initialize shelly device %s", self.serial_or_server)
+			except Exception as e:
+				logger.warning("Failed to initialize shelly device %s: %s", self.serial_or_server, e)
 				raise ShellyConnectionError()
 
 			if not (self._shelly_device.connected and self._shelly_device.initialized):

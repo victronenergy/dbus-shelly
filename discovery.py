@@ -445,8 +445,8 @@ class ShellyManager(object):
 
 			channel_info = shelly.channel_info
 
-		except:
-			pass
+		except Exception as e:
+			logger.debug("Failed to get device info for %s: %s", server, e)
 		finally:
 			await shelly.stop()
 			del shelly
@@ -504,7 +504,13 @@ class ShellyManager(object):
 			# Don't encode the channel type in the setting path to remain compatible with older versions.
 			# There are two types of channels: 'switch' and 'em'. Switch channels are enumerated first, then em channels.
 			# Note: the channels and settings are 1-indexed.
-			await self.settings.add_settings(Setting(f'/Settings/Devices/shelly_{serial}/{i + 1}/Enabled', 0, alias=f"enabled_{serial}_{i}"))
+			# Deep-sleep alarm sensors (Smoke, Flood) only report state and can't actuate anything, so unlike
+			# switch/EM channels there's no risk in enabling them by default. This also avoids racing the
+			# device's sleep cycle for the first enable: this runs right after a successful _get_device_info(),
+			# while the device is confirmed awake, instead of requiring a manual GUI toggle at some later,
+			# possibly-asleep moment.
+			default_enabled = 1 if ch_type == 'digitalinput' else 0
+			await self.settings.add_settings(Setting(f'/Settings/Devices/shelly_{serial}/{i + 1}/Enabled', default_enabled, alias=f"enabled_{serial}_{i}"))
 			enabled = self.settings.get_value(self.settings.alias(f"enabled_{serial}_{i}"))
 
 			if self.service.get_item(f'/Devices/{serial}/{i + 1}/Enabled') is None:
