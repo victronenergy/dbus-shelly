@@ -42,6 +42,17 @@
       "smoke": true,
       "battery-percent": 100.0,
       "battery-voltage": 3.0
+    },
+    {
+      "device-name": "Mock Shelly Flood",
+      "channel-name": "Mock shelly flood - Channel 1",
+      "app": "MockFlood",
+      "mac": "aabbccddeef6",
+      "port": 8027,
+      "switch-channels": 0,
+      "flood": true,
+      "battery-percent": 100.0,
+      "battery-voltage": 3.0
     }
   ]
 }
