@@ -327,11 +327,16 @@ class ShellyDevice(object):
 			except Exception:
 				pass
 		self._shelly_device = None
+		# A sleepy battery device (Smoke, Flood) going quiet is expected: it won't become
+		# reachable again until its next scheduled wake-up, which is handled separately when
+		# it reappears over mDNS. Retrying it immediately, repeatedly, can't succeed and only
+		# produces log noise for a condition that isn't a fault, so just check once.
+		retries = 1 if self.is_sleepy else CONNECTION_RETRIES
 		# Try reconnecting a few times
-		for i in range(CONNECTION_RETRIES):
+		for i in range(retries):
 			if await self.ping_shelly() and self._shelly_device.initialized:
 				break
-			logger.info("Attempting to reconnect to shelly device %s (%d/%d)", self.serial_or_server, i + 1, CONNECTION_RETRIES)
+			logger.info("Attempting to reconnect to shelly device %s (%d/%d)", self.serial_or_server, i + 1, retries)
 
 			if await self.start():
 				break
