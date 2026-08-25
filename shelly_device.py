@@ -1,4 +1,5 @@
 import aiohttp
+import logging
 from functools import partial
 from enum import IntEnum
 
@@ -282,7 +283,10 @@ class ShellyDevice(object):
 				# cancelling in-flight RPC futures from an outer timeout wrapper.
 				await self._shelly_device.initialize()
 			except Exception as e:
-				logger.warning("Failed to initialize shelly device %s: %s", self.serial_or_server, e)
+				# A sleepy device (Smoke, Flood) can take a few retries to become reachable
+				# while it's mid-wake-up -- that's routine, not worth a WARNING each time.
+				level = logging.DEBUG if self.is_sleepy else logging.WARNING
+				logger.log(level, "Failed to initialize shelly device %s: %s", self.serial_or_server, e)
 				raise ShellyConnectionError()
 
 			if not (self._shelly_device.connected and self._shelly_device.initialized):
@@ -307,7 +311,9 @@ class ShellyDevice(object):
 
 			# This will set _capabilities and _channel_info based on the device's components.
 			# _channel_info will be empty if the device is not supported.
-			await self.set_device_info()
+			if not await self.set_device_info():
+				logger.warning("Failed to get channel info for shelly device %s", self.serial_or_server)
+				raise ShellyConnectionError()
 
 			return True
 		except Exception:
@@ -367,16 +373,16 @@ class ShellyDevice(object):
 			except Exception:
 				pass
 		self._shelly_device = None
-		# A sleepy battery device (Smoke, Flood) going quiet is expected: it won't become
-		# reachable again until its next scheduled wake-up, which is handled separately when
-		# it reappears over mDNS. Retrying it immediately, repeatedly, can't succeed and only
-		# produces log noise for a condition that isn't a fault, so just check once.
-		retries = 1 if self.is_sleepy else CONNECTION_RETRIES
-		# Try reconnecting a few times
-		for i in range(retries):
+		# Try reconnecting a few times. Keep the full retry count even for a sleepy device
+		# (Smoke, Flood): a wake triggered by an actual alarm is exactly the case where this
+		# needs to keep trying, since the device's RPC server can take a few attempts to
+		# become reachable after its WiFi comes up. Only the per-attempt log is toned down
+		# for sleepy devices, since retrying while it's mid-wake-up is routine, not a fault.
+		for i in range(CONNECTION_RETRIES):
 			if await self.ping_shelly() and self._shelly_device.initialized:
 				break
-			logger.info("Attempting to reconnect to shelly device %s (%d/%d)", self.serial_or_server, i + 1, retries)
+			level = logging.DEBUG if self.is_sleepy else logging.INFO
+			logger.log(level, "Attempting to reconnect to shelly device %s (%d/%d)", self.serial_or_server, i + 1, CONNECTION_RETRIES)
 
 			if await self.start():
 				break
@@ -429,12 +435,25 @@ class ShellyDevice(object):
 
 	async def set_device_info(self):
 		components = await self._get_device_components()
+		if components == []:
+			# A marginal connection (e.g. a sleepy device about to drop again) can have its
+			# channel enumeration RPCs silently fail and come back empty. Don't let that wipe
+			# out previously-known channel info -- is_sleepy depends on it, and losing it on a
+			# flaky reconnect misclassifies the device as non-sleepy, causing it to be torn
+			# down instead of just marked disconnected. Only a genuine first-time connect must
+			# actually find channels.
+			return False
 		self._capabilities = self._get_capabilities_from_components(components)
 		if self.is_supported():
 			self._channel_info = await self._get_channels_info_from_components(components)
 			logger.debug(f"Discovered channels for shelly device {self.serial_or_server}: {self._channel_info}")
+			return True
 		else:
+			# Device is not supported, clear channel info.
 			self._channel_info = {}
+			# Device capability probe was successful, but the device is not supported.
+			# The capabilities will indicate it is not supported.
+			return True
 
 	# Enumerate all RPC components on the device via Shelly.GetComponents. This avoids assuming
 	# ids are contiguous starting at 0, which does not hold for all component types.
@@ -779,7 +798,11 @@ class ShellyDevice(object):
 
 		elif update_type == RpcUpdateType.DISCONNECTED:
 			if self._shelly_device:
-				logger.warning("Shelly device %s disconnected", self.serial_or_server)
+				# A sleepy device (Smoke, Flood) disconnecting right after briefly waking to
+				# report is expected, not a fault -- don't let it clutter the trace around the
+				# alarm trigger/clear lines that actually matter.
+				level = logging.DEBUG if self.is_sleepy else logging.WARNING
+				logger.log(level, "Shelly device %s disconnected", self.serial_or_server)
 				self.do_reconnect()
 
 		elif update_type == RpcUpdateType.EVENT:
