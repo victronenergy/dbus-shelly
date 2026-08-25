@@ -581,6 +581,17 @@ class ShellyHandler_digitalinput_alarm_base(ShellyHandler_channel_config_mixin, 
 			alarm = bool(status_json["alarm"])
 			mute = bool(status_json.get("mute", False))
 			alarm_enabled = self.service.get_item('/Settings/AlarmSetting').value
+
+			# Log on the actual transition (not every status refresh), regardless of whether the
+			# /Alarm annunciation is enabled, so an incident is traceable in the logs even if the
+			# device's alarm was muted/disabled on the Venus side at the time.
+			state_item = self.service.get_item('/State')
+			was_alarm = state_item is not None and state_item.value == self.STATE_ALARM
+			if alarm and not was_alarm:
+				logger.warning("%s triggered on shelly device %s", self._digitalinput_type_text, self._serial)
+			elif was_alarm and not alarm:
+				logger.info("%s cleared on shelly device %s", self._digitalinput_type_text, self._serial)
+
 			with self.service as s:
 				s['/State'] = self.STATE_ALARM if alarm else self.STATE_OK
 				s['/Alarm'] = 2 if (alarm and alarm_enabled) else 0
