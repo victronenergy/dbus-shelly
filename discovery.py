@@ -382,12 +382,10 @@ class ShellyManager(object):
 		# Not only disables all channels, but also clears the Enabled setting.
 		try:
 			i = 1
-			while self.service.get_item(key := f'/Devices/{serial}/{i}/Enabled') is not None:
-				enabled_item = self.service.get_item(key)
-				if enabled_item is not None and enabled_item.value == 1:
-					ch_type = self.service.get_item(f'/Devices/{serial}/{i}/Type')
+			while (enabled_item := self.service.get_item(f'/Devices/{serial}/{i}/Enabled')) is not None:
+				if enabled_item.value == 1:
 					# Call callback to disable channel and update the setting.
-					await self._on_enabled_changed(serial, f"{ch_type}_{i-1}", enabled_item, 0)
+					await self._on_enabled_changed(serial, i-1, enabled_item, 0)
 				i += 1
 		except Exception as e:
 			logger.error("Error while stopping channels of shelly device %s: %s", serial, e)
