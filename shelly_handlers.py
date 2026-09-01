@@ -76,7 +76,14 @@ class ShellyHandler(object):
 		c.settings = getattr(shelly_channel, "settings", None)
 		c._serial = getattr(shelly_channel, "_serial", None)
 		c._settings_base = f'/Settings/Devices/shelly_{c._serial}_{c._channel_id}/'
-		await c.ainit()
+		try:
+			# Sanity check: ensure the channel is responsive and returns a valid status before proceeding.
+			if await c.request_channel_status() is None:
+				return None
+			await c.ainit()
+		except Exception as e:
+			logger.error("Failed to initialize handler: %s", e)
+			return None
 
 		return c
 
@@ -91,6 +98,9 @@ class ShellyHandler(object):
 		self.settings = None
 		self._serial = None
 		self._settings_base = None
+
+	async def request_channel_status(self):
+		return await self.rpc_call('GetStatus' , {"id": self._channel_id})
 
 	async def ainit(self):
 		pass
@@ -618,9 +628,6 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 			logger.debug("Setting channel name for shelly device %s channel %d to: %s", self._serial, self._channel_id, value)
 			await self.rpc_call("SetConfig", {"id": self._channel_id, "config": {"name": value}})
 			item.set_local_value(value)
-
-	async def request_channel_status(self):
-		return await self.rpc_call('GetStatus' , {"id": self._channel_id})
 
 	async def _value_changed(self, path, item, value):
 		split = path.split('/')

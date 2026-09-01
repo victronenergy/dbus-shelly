@@ -245,7 +245,8 @@ class ShellyDevice(object):
 				raise ShellyConnectionError()
 
 			# Will be a list of capabilities, e.g. ['Switch', 'EM', 'Sys']
-			reported_capabilities = list(set([m.split('.')[0] for m in methods]))
+			# Filter out components that do not support GetStatus
+			reported_capabilities = list(set([m.split('.')[0] for m in methods if m.endswith('GetStatus')]))
 			if not shelly_handlers.has_functional_handler(reported_capabilities):
 				logger.debug(
 					"Shelly device %s with capabilities: %s is not supported",
@@ -430,12 +431,14 @@ class ShellyDevice(object):
 							create_new = False
 							break
 					if create_new:
-						handlers[cap] = await shelly_handlers.ShellyHandler.create(
+						handler = await shelly_handlers.ShellyHandler.create(
 							cap,
 							rpc_callback=self.rpc_call,
 							restart_callback=partial(self.restart_channel, channel),
 							shelly_channel=ch
 						)
+						if handler is not None:
+							handlers[cap] = handler
 
 				if not await ch.start_service():
 					return False
