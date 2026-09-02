@@ -90,7 +90,6 @@ def main():
 		const='__default__',
 		help='Start mock Shelly devices (optionally provide config path)',
 	)
-	parser.add_argument('--print-cache', help='Print the Shelly device cache to a file', default="shelly_cache.txt")
 	args = parser.parse_args()
 
 	logging.basicConfig(format='%(levelname)-8s %(message)s',
@@ -107,7 +106,7 @@ def main():
 		"session": BusType.SESSION
 	}.get(args.dbus, BusType.SESSION)
 
-	shellyDiscovery = ShellyDiscovery(bus_type, print_cache_file=args.print_cache)
+	shellyDiscovery = ShellyDiscovery(bus_type)
 	mock_proc = None
 
 	if args.mock is not None:
