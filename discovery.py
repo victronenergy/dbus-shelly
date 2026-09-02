@@ -71,7 +71,6 @@ class ShellyEndpoint:
 	host: str	# The hostname or IP address of the Shelly device.
 	source: str  # "Manual" or "mDNS"
 	supported: bool | None = None  # None => unknown, True => supported, False => unsupported
-	model: str | None = None # Only used for printing
 
 # ConnectMeta tracks the connection retry state for a Shelly device, 
 # including the number of attempts, next retry time, and whether the connection has expired.
@@ -193,47 +192,10 @@ class ShellyDeviceCache:
 	for reconnecting to devices that have gone offline.
 	"""
 
-	def __init__(self, cache_file: str | None = None):
+	def __init__(self):
 		self._cache: dict[str, ShellyEndpointState] = {}
 		self._cache_changes: asyncio.Queue[None] = asyncio.Queue()
 		self._device_changes: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-
-		# Start task to print cache state every 30 seconds for debugging purposes
-		if cache_file is not None:
-			self._cache_file = cache_file
-			asyncio.create_task(self._periodic_cache_print())
-
-	async def _periodic_cache_print(self):
-		retries = 0
-		while True:
-			try:
-				await self.print_cache_to_file()
-			except Exception as e:
-				if retries > 3:
-					logger.error("Failed (%d times) to print cache to file, not retrying: %s", retries, e)
-					return
-				retries += 1
-			else:
-				retries = 0
-			await asyncio.sleep(30)
-
-	async def print_cache_to_file(self):
-		# Pretty print to file in table form
-		with open(self._cache_file, "w") as f:
-			f.write("Updated: {}\n".format(time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())))
-			f.write(f"{'Serial':<15}{'Endpoint':<40}{'Model':<15}{'Source':<10}{'Supported':<10}{'Last Seen':<20}{'Connecting':<12}{'Next Retry At':<20}\n")
-			f.write("=" * 142 + "\n")
-			async with cache_lock:
-				for key, state in self._cache.items():
-					serial = state.endpoint.serial or "N/A"
-					host = state.endpoint.host
-					source = state.endpoint.source
-					last_seen = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(state.connect.last_seen)) if state.connect and state.connect.last_seen else "N/A"
-					connecting = "Yes" if state.is_connecting else "No"
-					next_retry_at = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(state.connect.next_retry_at)) if state.connect and state.connect.next_retry_at else "N/A"
-					supported = "Unknown" if state.endpoint.supported is None else "Yes" if state.endpoint.supported else "No"
-					model = state.endpoint.model or "N/A"
-					f.write(f"{serial:<15}{host:<40}{model:<15}{source:<10}{supported:<10}{last_seen:<20}{connecting:<12}{next_retry_at:<20}\n")
 
 	@staticmethod
 	def _host_key(host: str) -> str:
@@ -472,8 +434,6 @@ class ShellyConnectionManager:
 							ep_state.endpoint.host = result.ip or ep_state.endpoint.host
 							if ep_state.endpoint.serial is None and result.info is not None:
 								promote_serial = True
-							if ep_state.endpoint.model is None and result.info is not None:
-								ep_state.endpoint.model = result.info.get('app', result.info.get('model', 'unknown'))
 							ep_state.endpoint.supported = True
 						ep_state.connect.mark_success(now)
 					elif result.status == ProbeStatus.RECONNECTING:
@@ -993,7 +953,7 @@ class ShellyDiscovery(object):
 	and coordinates lifecycle and refresh orchestration.
 	"""
 
-	def __init__(self, bus_type, print_cache_file=None):
+	def __init__(self, bus_type):
 		self.service = None
 		self.settings = None
 		self.bus_type = bus_type
@@ -1005,7 +965,6 @@ class ShellyDiscovery(object):
 		self.bus = None
 		self.monitor = None
 		self._refresh_task = None
-		self._cache_file = print_cache_file
 
 	async def start(self):
 		# Connect to dbus, localsettings
@@ -1026,7 +985,7 @@ class ShellyDiscovery(object):
 
 		self.service.add_item(IntegerItem('/Refresh', 0, writeable=True,
 			onchange=self.start_refresh_task))
-		self._shelly_device_cache = ShellyDeviceCache(cache_file=self._cache_file)
+		self._shelly_device_cache = ShellyDeviceCache()
 
 		self._manager = ShellyManager(
 			bus_type=self.bus_type,
