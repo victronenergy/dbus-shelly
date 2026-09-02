@@ -329,10 +329,14 @@ class ShellyDeviceCache:
 				self._cache[key].start_connect()
 				self._queue_cache_change()
 
-	async def remove(self, identifier: str) -> None:
+	async def remove(self, identifier: str, source: str | None = None) -> None:
 		async with cache_lock:
 			key = self._resolve_key(serial=identifier, host=identifier)
 			if key is not None:
+				# Do not remove from the cache if the source does not match
+				# To prevent a device added manually being removed when mDNS sees it disappear.
+				if source is not None and self._cache[key].endpoint.source != source:
+					return
 				removed_state = self._cache[key]
 				del self._cache[key]
 				self._queue_device_change("remove", removed_state, identifier=identifier)
@@ -526,7 +530,7 @@ class ManualIpDiscovery(object):
 
 		# Remove old IPs that are no longer in the list
 		ips_to_remove = set(self._previous_ip_addresses.split(',')) - set(ips)
-		await asyncio.gather(*(self._remove_endpoint(ip) for ip in ips_to_remove if ip))
+		await asyncio.gather(*(self._remove_endpoint(ip, source=ENDPOINT_SOURCE_MANUAL) for ip in ips_to_remove if ip))
 
 		self._previous_ip_addresses = ip_addresses
 		return True
@@ -617,7 +621,7 @@ class MdnsDiscovery(object):
 				# The add() method of the shelly cache will trigger a connection attempt immediately if the device's support status is unknown.
 				await self._add_endpoint(serial=serial, host=info.server[:-1], source=ENDPOINT_SOURCE_MDNS)
 			elif state_change == ServiceStateChange.Removed:
-				await self._remove_endpoint(serial)
+				await self._remove_endpoint(serial, source=ENDPOINT_SOURCE_MDNS)
 
 
 class ShellyManager(object):
@@ -1049,8 +1053,8 @@ class ShellyDiscovery(object):
 	async def add_endpoint(self, host, serial, source):
 		await self._shelly_device_cache.add(ShellyEndpoint(serial=serial, host=host, source=source))
 
-	async def remove_endpoint(self, serial):
-		await self._shelly_device_cache.remove(serial)
+	async def remove_endpoint(self, serial, source):
+		await self._shelly_device_cache.remove(serial, source)
 
 	async def _on_ip_addresses_changed(self, item, value):
 		if self._manual_ip_discovery is not None:
