@@ -480,6 +480,7 @@ class ShellyConnectionManager:
 						ep_state.connect.mark_reconnecting()
 					# Unsupported device -> stop retrying and mark as unsupported
 					elif result.status == ProbeStatus.UNSUPPORTED:
+						ep_state.deviceInfo = result.info # Store device info so we can list the unsupported device details
 						ep_state.stop_connect()
 						ep_state.endpoint.supported = False
 						logger.info("Shelly device %s at %s is unsupported, will not retry", ep_state.endpoint.serial, ep_state.endpoint.host)
@@ -652,7 +653,7 @@ class ShellyManager(object):
 			return
 
 		if action == ProbeStatus.REACHABLE.value:
-			await self._add_device(state)
+			await self._add_device(state, supported=True)
 		elif action == "update":
 			# For now only update lastseen
 			with self.service as s:
@@ -668,6 +669,9 @@ class ShellyManager(object):
 		elif action == ProbeStatus.UNREACHABLE.value:
 			with self.service as s:
 				s['/Devices/{}/Reachable'.format(serial)] = 0
+
+		elif action == ProbeStatus.UNSUPPORTED.value:
+			await self._add_device(state, supported=False)
 
 		# Removed from cache.
 		elif action == "remove":
@@ -847,16 +851,17 @@ class ShellyManager(object):
 				result.status = ProbeStatus.UNREACHABLE
 				raise Exception()
 
-			if not shelly.is_supported():
-				result.status = ProbeStatus.UNSUPPORTED
-				raise Exception()
-
 			if not shelly._shelly_device or not shelly._shelly_device.connected:
 				result.status = ProbeStatus.ERROR
 				raise Exception()
 
-			result.status = ProbeStatus.REACHABLE
 			result.info = shelly.shelly_info
+
+			if not shelly.is_supported():
+				result.status = ProbeStatus.UNSUPPORTED
+				raise Exception()
+
+			result.status = ProbeStatus.REACHABLE
 			result.ip = shelly.server
 			result.channel_info = shelly.channel_info
 
@@ -884,7 +889,7 @@ class ShellyManager(object):
 		result = await self._get_device_info(server, serial)
 		return result
 
-	async def _add_device(self, state):
+	async def _add_device(self, state, supported):
 		serial = state.endpoint.serial
 		source = state.endpoint.source
 		last_seen = state.connect.last_seen_str if state.connect is not None else None
@@ -907,8 +912,9 @@ class ShellyManager(object):
 			if self.service.get_item('/Devices/{}/{}'.format(serial, p)) is None:
 				self.service.add_item(TextItem('/Devices/{}/{}'.format(serial, p), writeable=False))
 
-		if self.service.get_item('/Devices/{}/Reachable'.format(serial)) is None:
-			self.service.add_item(IntegerItem('/Devices/{}/Reachable'.format(serial), writeable=False))
+		for p in ['Reachable', 'Supported']:
+			if self.service.get_item('/Devices/{}/{}'.format(serial, p)) is None:
+				self.service.add_item(IntegerItem('/Devices/{}/{}'.format(serial, p), writeable=False))
 
 		with self.service as s:
 			s['/Devices/{}/Ip'.format(serial)] = ip
@@ -918,9 +924,10 @@ class ShellyManager(object):
 			s['/Devices/{}/DiscoveryType'.format(serial)] = source
 			s['/Devices/{}/LastSeen'.format(serial)] = last_seen
 			s['/Devices/{}/Reachable'.format(serial)] = 1 if state.is_reachable else 0
+			s['/Devices/{}/Supported'.format(serial)] = 1 if supported else 0
 
 		# Skip channel setup for already-known devices; their dbus items and settings are already configured
-		if skip_channel_setup:
+		if skip_channel_setup or not supported:
 			return
 
 		for i, ch_prop in channel_info.items():
