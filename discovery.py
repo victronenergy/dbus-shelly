@@ -377,7 +377,10 @@ class ShellyDeviceCache:
 		try:
 			return await asyncio.wait_for(self._device_changes.get(), timeout=timeout)
 		except asyncio.TimeoutError:
-			return None
+			pass
+		except Exception as e:
+			logger.error("Unexpected error while waiting for device change: %s", e)
+		return None
 
 	# Wait on cache entry updates, which can be triggered by device discovery or connection attempts.
 	# Used by the ShellyConnectionManager to wait for the next device to attempt to connect to.
@@ -681,14 +684,16 @@ class ShellyManager(object):
 			self._cache_sync_task = None
 
 	async def _cache_change_worker(self):
-		try:
-			while True:
+		while True:
+			try:
 				change = await self.shelly_device_cache.wait_for_device_change(timeout=RECONNECT_LOOP_HEARTBEAT_SECONDS)
 				if change is None:
 					continue
 				await self._apply_cache_change(change)
-		except asyncio.CancelledError:
-			pass
+			except asyncio.CancelledError:
+				return
+			except Exception as e:
+				logger.error("Error in cache change worker: %s", e)
 
 	def clear_discovered_device_paths(self, serial):
 		with self.service as s:
