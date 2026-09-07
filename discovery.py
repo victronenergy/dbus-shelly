@@ -56,6 +56,13 @@ class ProbeStatus(str, Enum):
 	def __str__(self) -> str:
 		return self.value
 
+@dataclass
+class ChannelOperation:
+	serial: str
+	channel: int
+	value: int
+	item: Any
+
 @dataclass(slots=True)
 class DeviceProbeResult:
 	status: ProbeStatus = ProbeStatus.ERROR
@@ -598,8 +605,9 @@ class ShellyManager(object):
 		self.shelly_device_cache = shelly_device_cache
 		self.shellies = {}
 		self._shelly_lock = asyncio.Lock()
-		self._enable_tasks = {}
 		self._cache_sync_task: asyncio.Task | None = None
+		self._channel_op_queue: asyncio.Queue[ChannelOperation] = asyncio.Queue()
+		self._channel_op_worker = asyncio.create_task(self._channel_operation_worker())
 
 	async def _apply_cache_change(self, change: dict[str, Any]) -> None:
 		state = change.get("state")
@@ -921,30 +929,46 @@ class ShellyManager(object):
 		if value not in (0, 1) or item.service is None:
 			return
 
-		if value == 1:
-			server = self.service['/Devices/{}/Ip'.format(serial)]
-			# Start enabling a channel as a task, so multiple channels can be enabled simultaneously.
-			task = asyncio.create_task(self.enable_shelly_channel(serial, channel, server))
-			# Keep track of enabling tasks per device, so we can wait for them to finish when disabling channels.
-			if serial not in self._enable_tasks:
-				self._enable_tasks[serial] = set()
-			self._enable_tasks[serial].add(task)
-			task.add_done_callback(self._enable_tasks[serial].discard)
-			try:
-				ret = await task
-			except Exception as e:
-				logger.error("Failed to enable channel %s for shelly device %s: %s", channel, serial, e)
-				ret = False
-		else:
-			if serial in self._enable_tasks:
-				# Wait for any ongoing enable task on this device to finish before disabling
-				await asyncio.gather(*self._enable_tasks[serial])
-				self._enable_tasks[serial].clear()
-			ret = await self.disable_shelly_channel(serial, channel)
+		# Restrict the number of concurrent operations for the same device and channel to avoid unnecesary concurrent enable/disable operations.
+		if len([x for x in self._channel_op_queue._queue if x.serial == serial and x.channel == channel]) >= 4:
+			return
 
-		if ret:
-			item.set_local_value(value)
-			await self.settings.set_value(self.settings.alias(f'enabled_{serial}_{channel}'), value)
+		item.set_local_value(value)
+		operation = ChannelOperation(serial, channel, value, item)
+		self._channel_op_queue.put_nowait(operation)
+
+	async def _channel_operation_worker(self):
+		queue = self._channel_op_queue
+		try:
+			while True:
+				operation = await queue.get()
+				serial = operation.serial
+				if operation.value:
+					server = self.service[f'/Devices/{serial}/Ip']
+					ret = await self.enable_shelly_channel(
+						serial, operation.channel, server
+					)
+				else:
+					ret = await self.disable_shelly_channel(
+						serial, operation.channel
+					)
+
+				if ret:
+					await self.settings.set_value(
+						self.settings.alias(
+							f'enabled_{serial}_{operation.channel}'
+						),
+						operation.value,
+					)
+				else:
+					operation.item.set_local_value(
+						1 if operation.value == 0 else 0
+					)
+
+		except asyncio.CancelledError:
+			pass
+		except Exception as exc:
+			logger.error("Error in channel operation worker: %s", exc)
 
 class ShellyDiscovery(object):
 	"""Thin composition root for discovery subsystem wiring.
