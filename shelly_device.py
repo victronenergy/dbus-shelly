@@ -24,6 +24,10 @@ PRODUCT_ID_SHELLY_EM = 0xB034
 PRODUCT_ID_SHELLY_SWITCH = 0xB075
 PING_RETRIES = 3
 CONNECTION_RETRIES = 5
+
+# /SwitchableOutput/Capabilities (added in Venus OS 3.90) is used to indicate module-wide capabilities.
+MODULE_CAPABILITIES = 0x01 # Module supports showing/hiding on Watch App UI.
+
 background_tasks = set()
 
 class ShellyConnectionError(Exception):
@@ -83,6 +87,8 @@ class ShellyChannel(object):
 		self.service.add_item(TextItem('/Serial', self._serial))
 		self.service.add_item(IntegerItem('/State', 0x100)) # Connected
 		self.service.add_item(TextItem('/ShellyModel', self.shellyModel))
+
+		self.service.add_item(IntegerItem('/SwitchableOutput/Capabilities', MODULE_CAPABILITIES))
 
 	async def start_service(self):
 		if self.service.name is None:
