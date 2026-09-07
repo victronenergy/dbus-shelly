@@ -550,7 +550,7 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 
 		await self.settings.add_settings(
 			Setting(base + 'Group', "", alias=f'Group_{self._serial}_{self._channel_id}'),
-			Setting(base + 'ShowUIControl', 1, _min=0, _max=6, alias=f'ShowUIControl_{self._serial}_{self._channel_id}'),
+			Setting(base + 'ShowUIControl', 1, _min=0, _max=0x0F, alias=f'ShowUIControl_{self._serial}_{self._channel_id}'),
 			Setting(base + 'Function', int(OutputFunction.MANUAL), _min=0, _max=6, alias=f'Function_{self._serial}_{self._channel_id}'),
 			Setting(base + 'Type', int(self._default_output_type), _min=0, _max=int(OutputType.TYPE_MAX), alias=f'Type_{self._serial}_{self._channel_id}'),
 		)
@@ -642,7 +642,7 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 					return
 			elif split[-1] == 'ShowUIControl':
 				value = int(value)
-				if value > 6 or value < 0:
+				if value > 0x0F or value < 0:
 					return
 			setting = split[-1] + '_' + self._serial + '_' + split[-3]
 			try:
