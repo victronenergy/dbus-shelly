@@ -29,7 +29,7 @@ from zeroconf.asyncio import (
 	AsyncZeroconf
 )
 
-from shelly_device import ShellyDevice
+from shelly_device import ShellyDevice, ShellyEvent
 from utils import logger, wait_for_settings
 
 background_tasks = set()
@@ -692,17 +692,12 @@ class ShellyManager(object):
 					i += 1
 
 	async def add_shelly_device(self, serial, server):
-		event = asyncio.Event()
 		s = ShellyDevice(
 			bus_type=self.bus_type,
 			serial=serial,
-			server=server,
-			event=event
+			server=server
 		)
 
-		e = asyncio.create_task(
-			self._shelly_event_monitor(event, s)
-		)
 		try:
 			started = await s.start()
 		except Exception as ex:
@@ -713,7 +708,8 @@ class ShellyManager(object):
 			await s.stop()
 			return False
 
-		e.add_done_callback(partial(self.delete_shelly_device, serial))
+		e = asyncio.create_task(self._shelly_event_monitor(s))
+		e.add_done_callback(lambda task: asyncio.create_task(self._delete_shelly_device(serial, task)))
 		self.shellies[serial] = {'device': s, 'event_mon': e}
 		return True
 
@@ -729,13 +725,28 @@ class ShellyManager(object):
 
 			return await self.shellies[serial]['device'].start_channel(channel)
 
-	def delete_shelly_device(self, serial, fut=None):
-		if serial in self.shellies:
-			# Cancel the event monitor task if it exists and hasn't finished
-			event_mon = self.shellies[serial].get('event_mon')
-			if event_mon and not event_mon.done():
-				event_mon.cancel()
-			del self.shellies[serial]
+	# Only use this internally as a done callback for the event monitor task.
+	async def _delete_shelly_device(self, serial, task):
+		if serial not in self.shellies:
+			return
+
+		entry = self.shellies[serial]
+		# Ensure that the task being deleted is the event monitor task for this device.
+		# To prevent deleting a newly created device when the old event monitor task finishes.
+		if task is not entry.get('event_mon'):
+			return
+
+		# Cancel the event monitor task if it exists and hasn't finished
+		event_mon = self.shellies[serial].get('event_mon')
+		if event_mon and not event_mon.done():
+			event_mon.cancel()
+			try:
+				await event_mon
+			except asyncio.CancelledError:
+				pass
+		await self.shellies[serial]['device'].stop()
+
+		del self.shellies[serial]
 
 	async def disable_shelly_channel(self, serial, channel):
 		async with self._shelly_lock:
@@ -752,64 +763,66 @@ class ShellyManager(object):
 		if serial in self.shellies:
 			await self.shellies[serial]['device'].stop()
 
-	async def _shelly_event_monitor(self, event, shelly):
+	async def _shelly_event_monitor(self, shelly):
 		serial = shelly.serial
-		try:
-			while True:
-				await event.wait()
-				event.clear()
-				e = shelly.event
+		while True:
+			try:
+				e = await shelly.get_event()
 
-				if e == "disconnected":
-					logger.warning("Shelly device %s disconnected", serial)
-					await self.stop_shelly_device(serial)
-					self.clear_discovered_device_paths(serial)
+				if e == ShellyEvent.DISCONNECTED:
+					if shelly.is_sleepy:
+						logger.info("Sleepy shelly device %s went to sleep, keeping it visible with its last known values", serial)
+						# TODO: How to handle this with the cache
+						#shelly.mark_disconnected()
+					else:
+						logger.warning("Shelly device %s disconnected", serial)
+						# Do not clear discovered paths here.
+						# Instead, start reconnect. If that succeeds, the device will be re-enabled.
+						# If it fails, the device will be indicated as disconnected and will be retried later.
+						await self.shelly_device_cache.start_connect(serial)
+						return
+
+				if e == ShellyEvent.RECONNECTED:
 					await self.shelly_device_cache.start_connect(serial)
-					return
 
-				# TODO: Evaluate if this is the correct way. This will invoke another connection attempt right away which may not be necessary.
-				if e == "reconnected":
-					await self.shelly_device_cache.start_connect(serial)
-
-				elif e == "stopped":
+				elif e == ShellyEvent.STOPPED:
 					return
 
 				# Usually happens when the device profile has changed. E.g. from triphase measuring to monophase measuring.
-				# The number of channels and their capabilities have changed, so stop all channels and refresh the device info.
-				elif e == "capabilities_changed":
+				# The number of channels and their capabilities have changed, so stop all channels and retry connecting to it.
+				elif e == ShellyEvent.CAPABILITIES_CHANGED:
 					logger.info("The capabilities of shelly device %s have changed, disabling all channels", serial)
 					# Disable all channels and reset the Enabled setting.
 					await self.stop_and_disable_all_channels(serial)
-					# Refresh device info
-					await self.refresh_device(serial)
+					# Clear discovered device paths from the discovery service
+					self.clear_discovered_device_paths(serial)
+					# Start a new connection attempt to the device
+					await self.shelly_device_cache.start_connect(serial)
 
-				event.clear()
-		except asyncio.CancelledError:
-			logger.info("Shelly event monitor for %s cancelled", serial)
-		return
+					# Device is stopped, stop the monitor task.
+					return
+			except asyncio.CancelledError:
+				return
+			except Exception as e:
+				logger.error("Error in shelly event monitor for device %s: %s", serial, e)
 
 	async def stop_and_disable_all_channels(self, serial):
 		# Not only disables all channels, but also clears the Enabled setting.
 		try:
+			tasks = []
 			i = 1
 			while (enabled_item := self.service.get_item(f'/Devices/{serial}/{i}/Enabled')) is not None:
 				if enabled_item.value == 1:
 					# Call callback to disable channel and update the setting.
-					await self._on_enabled_changed(serial, i-1, enabled_item, 0)
+					task = asyncio.get_running_loop().create_future()
+					tasks.append(task)
+					await self._on_enabled_changed(serial, i-1, enabled_item, 0, task)
 				i += 1
+			# Block until all channel disable tasks are completed.
+			if tasks:
+				await asyncio.gather(*tasks)
 		except Exception as e:
 			logger.error("Error while stopping channels of shelly device %s: %s", serial, e)
-
-	async def refresh_device(self, serial):
-		if serial not in self.shellies:
-			logger.error("Device not found for refresh: %s", serial)
-			return
-
-		self.clear_discovered_device_paths(serial)	# Clear device info paths from the discovery service
-		self.delete_shelly_device(serial)			# Delete the shelly device instance and stop its event monitor
-
-		# Trigger a new connection attempt to refresh the device info and channels.
-		await self.shelly_device_cache.start_connect(serial)
 
 	async def _get_device_info(self, server, serial=None):
 		result = DeviceProbeResult()
