@@ -600,6 +600,7 @@ class ShellyManager(object):
 	and controls device/channel lifecycle operations.
 	"""
 	def __init__(self, bus_type, service, settings, shelly_device_cache):
+		self._stopping = False
 		self.bus_type = bus_type
 		self.service = service
 		self.settings = settings
@@ -608,9 +609,35 @@ class ShellyManager(object):
 		self._shelly_lock = asyncio.Lock()
 		self._cache_sync_task: asyncio.Task | None = None
 		self._channel_op_queue: asyncio.Queue[ChannelOperation] = asyncio.Queue()
+		# A failed channel start should recover independently of device discovery.
+		self._channel_enable_retry_tasks: dict[tuple[str, int], asyncio.Task] = {}
+		self._channel_enable_retry_attempts: dict[tuple[str, int], int] = {}
+
 		self._channel_op_worker = asyncio.create_task(self._channel_operation_worker())
+		self._channel_op_worker.add_done_callback(self._restart_channel_op_worker)
+
+	def _restart_channel_op_worker(self, task):
+		if self._stopping or task.cancelled():
+			return
 		# Restart worker if it stops unexpectedly.
-		self._channel_op_worker.add_done_callback(lambda fut: asyncio.create_task(self._channel_operation_worker()) if fut.cancelled() or fut.exception() else None)
+		self._channel_op_worker = asyncio.create_task(self._channel_operation_worker())
+		self._channel_op_worker.add_done_callback(self._restart_channel_op_worker)
+
+	async def stop(self):
+		self._stopping = True
+		await asyncio.gather(*(self.stop_shelly_device(shelly) for shelly in self.shellies))
+		await self.stop_cache_sync()
+		self._channel_op_worker.cancel()
+		try:
+			await self._channel_op_worker
+		except asyncio.CancelledError:
+			pass
+		self._channel_op_worker = None
+		for task in self._channel_enable_retry_tasks.values():
+			task.cancel()
+		await asyncio.gather(*self._channel_enable_retry_tasks.values(), return_exceptions=True)
+		self._channel_enable_retry_tasks.clear()
+		self._channel_enable_retry_attempts.clear()
 
 	async def _apply_cache_change(self, change: dict[str, Any]) -> None:
 		state = change.get("state")
@@ -1122,7 +1149,7 @@ class ShellyDiscovery(object):
 
 	async def stop(self):
 		if self._manager is not None:
-			await self._manager.stop_cache_sync()
+			await self._manager.stop()
 		if self._mdns_discovery is not None:
 			await self._mdns_discovery.stop()
 		if self._connection_manager is not None:
