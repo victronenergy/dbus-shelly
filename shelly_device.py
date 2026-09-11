@@ -1,5 +1,6 @@
 import aiohttp
 from functools import partial
+from enum import IntEnum
 
 from aioshelly.common import ConnectionOptions
 from aioshelly.rpc_device import RpcDevice, RpcUpdateType, WsServer
@@ -25,6 +26,13 @@ PRODUCT_ID_SHELLY_SWITCH = 0xB075
 PING_RETRIES = 3
 CONNECTION_RETRIES = 5
 background_tasks = set()
+
+class ShellyEvent(IntEnum):
+	CONNECTED = 1
+	DISCONNECTED = 2
+	RECONNECTED = 3
+	CAPABILITIES_CHANGED = 4
+	STOPPED = 5
 
 class ShellyConnectionError(Exception):
 	pass
@@ -105,10 +113,10 @@ class ShellyChannel(object):
 # Creates an instance of ShellyChannel for each enabled channel.
 class ShellyDevice(object):
 
-	def __init__(self, bus_type=None, serial=None, server=None, event=None):
+	def __init__(self, bus_type=None, serial=None, server=None):
 		self._bus_type= bus_type
 		self._serial = serial
-		self._event_obj = event
+		self._event_queue = asyncio.Queue()
 		self._shelly_device = None
 		self._shelly_info = None
 		self._ws_context = None
@@ -124,16 +132,15 @@ class ShellyDevice(object):
 		self._channel_info = []
 		self._capabilities = []
 		self._subscribed = None
-		self._event = None
 
-	@property
-	def event(self):
-		return self._event
+	async def get_event(self):
+		if self._event_queue:
+			return await self._event_queue.get()
+		return None
 
-	def set_event(self, event_str):
-		if self._event_obj:
-			self._event = event_str
-			self._event_obj.set()
+	def set_event(self, event):
+		if self._event_queue:
+			self._event_queue.put_nowait(event)
 
 	@property
 	def server(self):
@@ -316,7 +323,7 @@ class ShellyDevice(object):
 				for i in range(PING_RETRIES):
 					if await self.ping_shelly() and self._shelly_device.initialized:
 						logger.debug("Ping to shelly device %s successful, no need to reconnect", self.serial_or_server)
-						self.set_event("reconnected")
+						self.set_event(ShellyEvent.RECONNECTED)
 						return True
 					await asyncio.sleep(1)
 			except Exception:
@@ -344,12 +351,12 @@ class ShellyDevice(object):
 
 		if not self.is_connected:
 			logger.error("Failed to reconnect to shelly device %s", self.serial_or_server)
-			self.set_event("disconnected")
+			self.set_event(ShellyEvent.DISCONNECTED)
 			return False
 		logger.info("Reconnected to shelly device %s", self.serial_or_server)
 		# Reinit all channels
 		await asyncio.gather(*(self._reinit_channel_and_handlers(ch) for ch in self._channels))
-		self.set_event("reconnected")
+		self.set_event(ShellyEvent.RECONNECTED)
 		return True
 
 	async def _reinit_channel_and_handlers(self, ch):
@@ -370,7 +377,7 @@ class ShellyDevice(object):
 
 		# Capabilities changed, Stop all channels and let the discovery service refresh the device.
 		if cap_changed:
-			self.set_event("capabilities_changed")
+			self.set_event(ShellyEvent.CAPABILITIES_CHANGED)
 		else:
 			# No capability change, just reinitialize the existing handlers with the new RPC connection.
 			channel_obj = self._channels[ch].get("channel")
@@ -558,7 +565,7 @@ class ShellyDevice(object):
 			self._shelly_device = None
 			self._subscribed = None
 			self._aiohttp_session = None
-			self.set_event("stopped")
+			self.set_event(ShellyEvent.STOPPED)
 
 	async def ping_shelly(self):
 		if not self.is_connected:
