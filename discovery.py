@@ -612,6 +612,15 @@ class ShellyManager(object):
 		# Restart worker if it stops unexpectedly.
 		self._channel_op_worker.add_done_callback(lambda fut: asyncio.create_task(self._channel_operation_worker()) if fut.cancelled() or fut.exception() else None)
 
+	async def stop(self):
+		await asyncio.gather(*(self.stop_shelly_device(shelly) for shelly in self.shellies))
+		await self.stop_cache_sync()
+		self._channel_op_worker.cancel()
+		try:
+			await self._channel_op_worker
+		except asyncio.CancelledError:
+			pass
+
 	async def _apply_cache_change(self, change: dict[str, Any]) -> None:
 		state = change.get("state")
 		if state is None:
@@ -1113,7 +1122,7 @@ class ShellyDiscovery(object):
 
 	async def stop(self):
 		if self._manager is not None:
-			await self._manager.stop_cache_sync()
+			await self._manager.stop()
 		if self._mdns_discovery is not None:
 			await self._mdns_discovery.stop()
 		if self._connection_manager is not None:
