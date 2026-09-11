@@ -142,16 +142,21 @@ def main():
 		logger.info("Received signal %s, shutting down", signum)
 		shutdown_requested = True
 		_stop_mocks()
-		if mainloop.is_running():
+
+		async def cleanup_and_stop():
+			await shellyDiscovery.stop()
 			mainloop.stop()
+
+		asyncio.create_task(cleanup_and_stop())
 
 	signal.signal(signal.SIGINT, _shutdown)
 	signal.signal(signal.SIGTERM, _shutdown)
 
-	# This loop should be removed one day.
 	try:
+		# This loop should be removed one day.
 		mainloop.run_until_complete(
 			websockets.serve(Server(lambda: Meter(bus_type)), '', 8000))
+		# Start the Shelly discovery service
 		mainloop.run_until_complete(shellyDiscovery.start())
 	except RuntimeError as e:
 		if not shutdown_requested or "Event loop stopped before Future completed" not in str(e):
@@ -164,7 +169,9 @@ def main():
 	except KeyboardInterrupt:
 		mainloop.stop()
 	finally:
-		_stop_mocks()
+		if not shutdown_requested:
+			_stop_mocks()
+			mainloop.run_until_complete(shellyDiscovery.stop())
 
 
 if __name__ == "__main__":
