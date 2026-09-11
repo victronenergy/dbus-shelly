@@ -127,6 +127,7 @@ class ShellyDevice(object):
 		self._device_lock = asyncio.Lock() # Protects device operations, enabling/disabling channels etc.
 		self._init_channel_tasks = {}
 		self._reconnecting = False
+		self._stopping = False
 		self._channels = {}
 		self._reconnect_task = None
 		self._channel_info = []
@@ -303,14 +304,13 @@ class ShellyDevice(object):
 	# If the device is reconnected, reinitialize all channels and handlers without restarting the dbus service.
 	# If reconnection fails, set the event to "disconnected" so that the discovery service can try to re-establish communication later.
 	def do_reconnect(self):
-		if self._reconnecting:
+		if self._stopping or self._reconnecting:
 			return False
 		self._reconnecting = True
 		self._reconnect_task = asyncio.create_task(self._reconnect())
-		background_tasks.add(self._reconnect_task)
-		self._reconnect_task.add_done_callback(background_tasks.discard)
 		def clear_reconnecting(fut):
-			self._reconnecting = False
+			if fut == self._reconnect_task:
+				self._reconnecting = False
 		self._reconnect_task.add_done_callback(clear_reconnecting)
 		return True
 
@@ -552,6 +552,20 @@ class ShellyDevice(object):
 		await self.start_channel(channel)
 
 	async def stop(self):
+		self._stopping = True
+		task = self._reconnect_task
+		if task is not None and task is not asyncio.current_task():
+			task.cancel()
+			try:
+				await task
+			except asyncio.CancelledError:
+				pass
+			except Exception:
+				pass
+
+		self._reconnect_task = None
+		self._reconnecting = False
+
 		for ch in list(self._channels):
 			await self.stop_channel(ch)
 
