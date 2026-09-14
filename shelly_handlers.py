@@ -77,10 +77,6 @@ class ShellyHandler(object):
 		c._serial = getattr(shelly_channel, "_serial", None)
 		c._settings_base = f'/Settings/Devices/shelly_{c._serial}_{c._channel_id}/'
 
-		# Sanity check: ensure the channel is responsive and returns a valid status before proceeding.
-		if await c.request_channel_status() is None:
-			return None
-
 		return c
 
 	def __init__(self):
@@ -99,8 +95,18 @@ class ShellyHandler(object):
 	async def request_channel_status(self):
 		return await self.rpc_call('GetStatus' , {"id": self._channel_id})
 
+	async def handler_ainit(self):
+		return True
+
 	async def ainit(self):
+		# Sanity check: ensure the channel is responsive and returns a valid status before proceeding.
+		if await self.request_channel_status() is None:
+			return False
 		await self._check_rpc_type_supported()
+		if not await self.handler_ainit():
+			return False
+		self._init_done = True
+		return True
 
 	# For handlers that can be used for multiple RPC components, this function checks which of the
 	# RPC components are supported by the device and removes unsupported ones from the list.
@@ -169,11 +175,10 @@ class ShellyHandler(object):
 # Temperature handler, puts temperature readings on dbus.
 @register_handler('Temperature', kind=HANDLER_KIND_GENERIC)
 class ShellyHandler_temperature(ShellyHandler):
-	async def ainit(self):
-		await super().ainit()
+	async def handler_ainit(self):
 		# Temperature path must be updated.
 		self.service.add_item(DoubleItem(f'/Temperature', None, text=fmt['celsius']))
-		self._init_done = True
+		return True
 
 	def update(self, status_json, cap=None):
 		try:
@@ -185,15 +190,13 @@ class ShellyHandler_temperature(ShellyHandler):
 # System handler placeholder
 @register_handler('Sys', kind=HANDLER_KIND_GENERIC)
 class ShellyHandler_sys(ShellyHandler):
-	async def ainit(self):
-		await super().ainit()
-		self._init_done = True
+	async def handler_ainit(self):
+		return True
 
 # Generic channel config mixin, adds support for custom channel names and requesting channel config. Used by multiple handlers.
 # Allows for synching the channel name to multiple paths on the service.
 class ShellyHandler_channel_config_mixin():
-	async def ainit(self):
-		await super().ainit()
+	async def handler_ainit(self):
 		self._custom_name_paths = []
 		self._custom_name_retries = 0
 		self._custom_name_retry_task = None
@@ -208,6 +211,7 @@ class ShellyHandler_channel_config_mixin():
 				if await self.rpc_call('GetConfig', {"id": self._channel_id}, rpc_device_types=[rpc]) is not None:
 					self._rpc_types_with_name_config.append(rpc)
 					break
+		return True
 
 	# Invoked when the custom name is changed on the shelly device.
 	# When the value on dbus is changed, the name is updated on the shelly and the hook is called as well.
@@ -445,13 +449,14 @@ class Shelly_EM_base(ShellyHandler_EM_paths_mixin):
 # EM handler, puts voltage, current, power measurements on dbus.
 @register_handler('EM', 'EMData', kind=HANDLER_KIND_EM)
 class ShellyHandler_em(Shelly_EM_base, ShellyHandler_channel_config_mixin, ShellyHandler):
-	async def ainit(self):
-		await super().ainit()
+	async def handler_ainit(self):
+		if not await super().handler_ainit():
+			return False
 		self._num_phases = await self.get_num_phases()
 		await self.add_customname_path()
 		role = await self.init_em(self._num_phases)
 		self.set_service_name(role)
-		self._init_done = True
+		return True
 
 	async def get_num_phases(self):
 		status = await self.rpc_call('GetStatus', {"id": self._channel_id})
@@ -492,13 +497,14 @@ class ShellyHandler_em(Shelly_EM_base, ShellyHandler_channel_config_mixin, Shell
 # The EM1Data component is available on single-phase shelly energy meters.
 @register_handler('EM1', 'EM1Data', 'PM1', kind=HANDLER_KIND_EM1)
 class ShellyHandler_em1(Shelly_EM_base, ShellyHandler_channel_config_mixin, ShellyHandler):
-	async def ainit(self):
-		await super().ainit()
+	async def handler_ainit(self):
+		if not await super().handler_ainit():
+			return False
 		self._num_phases = 1
 		await self.add_customname_path()
 		role = await self.init_em(self._num_phases)
 		self.set_service_name(role)
-		self._init_done = True
+		return True
 
 	def update(self, status_json, cap=None):
 		if status_json is None:
@@ -557,8 +563,9 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 		""" Set the state of the switch. """
 		self.service.get_item(f'/SwitchableOutput/{self._channel_id}/State')._set_value(value)
 
-	async def ainit(self, allow_em=True):
-		await super().ainit()
+	async def handler_ainit(self, allow_em=True):
+		if not await super().handler_ainit():
+			return False
 		base = self._settings_base + '%s/' % self._channel_id
 		self._function = OutputFunction.MANUAL
 		self._has_em = False
@@ -606,7 +613,7 @@ class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_ba
 		self._set_channel_type(str(self._channel_id), self._type)
 		self._set_channel_function(str(self._channel_id), self._function)
 
-		self._init_done = True
+		return True
 
 	async def em_supported(self):
 		status = await self.request_channel_status()
@@ -782,17 +789,10 @@ if _S2_MIXIN_AVAILABLE:
 	class ShellyHandler_switch(_ShellyHandlerS2Mixin, ShellyHandler_switch_base):
 		pass
 
-	async def ainit(self):
-		await super().ainit()
-		self._init_done = True
 else:
 	@register_handler('Switch', kind=HANDLER_KIND_SWITCH)
 	class ShellyHandler_switch(ShellyHandler_switch_base):
 		pass
-
-	async def ainit(self):
-		await super().ainit()
-		self._init_done = True
 
 
 class ThrottledUpdaterMixin:
@@ -821,7 +821,7 @@ class ShellyHandler_light(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 	_valid_types_mask = int(1 << OutputType.DIMMABLE.value)
 	_allowed_em_roles = ['acload', 'heatpump'] # pvinverter makes no sense on a dimmable output. heatpump is also arguable but it shouldn't hurt.
 
-	async def ainit(self):
+	async def handler_ainit(self):
 		self._desired_value = 0
 		self._throttling_lock = asyncio.Lock()
 		self._throttling_runner_lock = asyncio.Lock()
@@ -831,9 +831,8 @@ class ShellyHandler_light(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 			onchange=partial(self.throttled_updater, self._set_dimming_value),
 			text=lambda y: str(y) + '%'))
 
-		# ainit may do a force update which will call update, so make sure the paths are there.
-		await super().ainit()
-		self._init_done = True
+		# handler_ainit may do a force update which will call update, so make sure the paths are there.
+		return await super().handler_ainit()
 
 	def update(self, status_json, cap=None):
 		super().update(status_json, cap)
@@ -870,7 +869,7 @@ class ShellyHandler_RGBW(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 	# Note: EM functionality is disabled on the RGB(W) handlers, but set the default roles anyways to prevent problems when it is allowed later.
 	_allowed_em_roles = ['acload'] # pvinverter and heatpump make no sense on a RGBW output.
 
-	async def ainit(self):
+	async def handler_ainit(self):
 		self._desired_value = 0
 		self._throttling_lock = asyncio.Lock()
 		self._throttling_runner_lock = asyncio.Lock()
@@ -879,9 +878,8 @@ class ShellyHandler_RGBW(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 		self.service.add_item(IntegerArrayItem(path_base + 'LightControls',value=[0, 0, 0, 0, 0], writeable=True,
 				onchange=partial(self.throttled_updater, self._set_light_controls), text=self._light_controls_text_callback))
 
-		# ainit may do a force update which will call update, so make sure the paths are there.
-		await super().ainit(allow_em=False)
-		self._init_done = True
+		# handler_ainit may do a force update which will call update, so make sure the paths are there.
+		return await super().handler_ainit(allow_em=False)
 
 	def _light_controls_text_callback(self, v):
 		if self._type == OutputType.RGBW:
