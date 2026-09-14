@@ -436,6 +436,7 @@ class ShellyDevice(object):
 
 	async def start_channel(self, channel):
 		ch = None
+		init_task = None
 		handlers = {}
 		async with self._device_lock:
 			if not self.is_connected:
@@ -516,14 +517,15 @@ class ShellyDevice(object):
 
 			self._channels[channel] = {"channel": ch, "handlers": handlers, "ch_type": ch_type, "ch_num": ch_type_id.split('_')[-1]}
 
-			self._init_channel_tasks[channel] = asyncio.create_task(self._init_channel_and_handlers(channel))
+			init_task = asyncio.create_task(self._init_channel_and_handlers(channel))
+			self._init_channel_tasks[channel] = init_task
 			def clear_start_channel_task(fut):
 				self._init_channel_tasks[channel] = None
 			self._init_channel_tasks[channel].add_done_callback(clear_start_channel_task)
 
 		# Await the init task outside of the device lock. If the device connection is lost during the init, the reconnect task will call start(), which acquires the device lock.
 		# Note that reconnect will not call start_channel().
-		return await self._init_channel_tasks.get(channel)
+		return await init_task
 
 	async def _init_channel_and_handlers(self, channel):
 		if channel in self._channels:
@@ -531,21 +533,30 @@ class ShellyDevice(object):
 			channel_obj = self._channels[channel].get("channel")
 			if channel_obj and handlers:
 				try:
-					await asyncio.gather(*(handler.ainit() for handler in set(handlers.values())))
-					return await channel_obj.start_service()
+					# Use return_exceptions=True to make sure all ainit tasks finish.
+					results = await asyncio.gather(*(handler.ainit() for handler in set(handlers.values())), return_exceptions=True)
+					if all(r is True for r in results):
+						return await channel_obj.start_service()
+					else:
+						logger.error("Failed to initialize channel %s and its handlers", channel)
+						logger.debug("Failed handlers: %s", [handler for handler, result in zip(handlers.values(), results) if result is not True])
 				except Exception as e:
 					logger.error("Failed to initialize channel %s and its handlers: %s", channel, e)
+		# Initialization failed or, clean up the channel
+		await self.stop_channel(channel)
 		return False
 
 	async def _cancel_init_channel_task(self, channel):
-		if channel in self._init_channel_tasks and self._init_channel_tasks[channel] is not None and not self._init_channel_tasks[channel].done():
-			self._init_channel_tasks[channel].cancel()
-			try:
-				await self._init_channel_tasks[channel]
-			except asyncio.CancelledError:
-				pass
-			except Exception as e:
-				logger.error(f"Error while waiting for init_channel task to finish for channel {channel}: {e}")
+		if channel in self._init_channel_tasks:
+			task = self._init_channel_tasks[channel]
+			if task is not None and not task.done() and task is not asyncio.current_task():
+				task.cancel()
+				try:
+					await task
+				except asyncio.CancelledError:
+					pass
+				except Exception as e:
+					logger.error(f"Error while waiting for init_channel task to finish for channel {channel}: {e}")
 
 	async def restart_channel(self, channel):
 		await self.stop_channel(channel)

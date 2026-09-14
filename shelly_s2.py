@@ -90,14 +90,15 @@ class ShellyHandlerS2Mixin():
 	def has_rm(self):
 		return self.service.get_item("/S2/0/Rm") is not None
 
-	async def ainit(self):
+	async def handler_ainit(self):
 		self._ol_supported = False
-		await super().ainit()
+		if not await super().handler_ainit():
+			return False
 		self.rm_item = None
 		self._ol_supported = self._has_em and self._em_role != 'pvinverter'
 
 		if not self._ol_supported:
-			return
+			return True
 
 		self._control_type_ombc = ShellyOMBC(self)
 		self._control_type_noctrl = ShellyNOCTRL(self)
@@ -115,6 +116,7 @@ class ShellyHandlerS2Mixin():
 
 		# Setup channel function
 		self.on_channel_function_changed(self._channel_id, self._function)
+		return True
 
 	def on_channel_function_changed(self, channel, value):
 		if not self._ol_supported:
