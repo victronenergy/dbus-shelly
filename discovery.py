@@ -1016,7 +1016,7 @@ class ShellyManager(object):
 						1 if operation.value == 0 else 0
 					)
 
-				operation.fut.set_result(True)
+				operation.fut.set_result(ret)
 
 			except asyncio.CancelledError:
 				return
