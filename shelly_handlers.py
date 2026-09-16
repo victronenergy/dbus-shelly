@@ -30,7 +30,9 @@ _CAPS_BY_KIND = {kind: [] for kind in FUNCTIONAL_HANDLERS}
 
 def register_handler(*capabilities, kind):
 	def _decorator(handler_cls):
-		for cap in capabilities:
+		# Store caps in lowercase because shellyDevice._capabilities are in lowercase.
+		for _cap in capabilities:
+			cap = _cap.lower()
 			_HANDLER_REGISTRY[cap] = {"cls": handler_cls, "kind": kind}
 			if kind in FUNCTIONAL_HANDLERS and cap not in _CAPS_BY_KIND[kind]:
 				_CAPS_BY_KIND[kind].append(cap)
