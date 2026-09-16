@@ -258,17 +258,6 @@ class ShellyDevice(object):
 				raise ShellyConnectionError()
 			logger.debug("Connected to shelly device %s model %s", self._serial, self._shelly_info.get('model', 'Unknown'))
 
-			# List shelly methods
-			methods = await self.list_methods()
-			if len(methods) == 0:
-				logger.warning("Failed to list shelly methods")
-				raise ShellyConnectionError()
-
-			# Will be a list of capabilities, e.g. ['Switch', 'EM', 'Sys']
-			# Filter out components that do not support GetStatus
-			reported_capabilities = list(set([m.split('.')[0] for m in methods if m.endswith('GetStatus')]))
-			self._capabilities = reported_capabilities
-
 			# Fetch device's serial if not known yet
 			if not self._serial:
 				if 'mac' in self._shelly_info:
@@ -278,10 +267,9 @@ class ShellyDevice(object):
 					logger.warning("Failed to get serial number for shelly device at %s", self.server)
 					raise ShellyConnectionError()
 
-			# When a device is not supported, do not raise and quit. Instead, set the device info so the discovery service can know it is unsupported.
-			# The discovery service will then avoid reconnecting to the device.
-			if self.is_supported():
-				self._channel_info = await self._get_channels_info()
+			# This will set _capabilities and _channel_info based on the device's components.
+			# _channel_info will be empty if the device is not supported.
+			await self.set_device_info()
 
 			return True
 		except Exception:
@@ -389,30 +377,88 @@ class ShellyDevice(object):
 				background_tasks.add(task)
 				task.add_done_callback(background_tasks.discard)
 
+	async def set_device_info(self):
+		components = await self._get_device_components()
+		self._capabilities = self._get_capabilities_from_components(components)
+		if self.is_supported():
+			self._channel_info = await self._get_channels_info_from_components(components)
+			logger.debug(f"Discovered channels for shelly device {self.serial_or_server}: {self._channel_info}")
+		else:
+			self._channel_info = {}
+
+	# Enumerate all RPC components on the device via Shelly.GetComponents. This avoids assuming
+	# ids are contiguous starting at 0, which does not hold for all component types.
+	async def _get_device_components(self):
+		components = []
+		offset = 0
+		while True:
+			resp = await self.rpc_call("Shelly.GetComponents", {"offset": offset, "include": ["config"]})
+			if resp is None:
+				break
+			batch = resp.get("components", [])
+			components.extend(batch)
+			offset += len(batch)
+			if not batch or offset >= resp.get("total", offset):
+				break
+		return components
+
+	def _get_capabilities_from_components(self, components):
+		capabilities = []
+		for comp in components:
+			cap = comp.get("key", "").split(":")[0]
+			if cap and cap not in capabilities:
+				capabilities.append(cap.lower())
+		return capabilities
+
 	# Get the number of switching and/or metering channels.
-	async def _get_channels_info(self):
+	async def _get_channels_info_from_components(self, components):
 		channels = {}
 
-		async def add_channels(ch_type, capabilities):
-			ch = 0
-			while True:
-				found = False
-				for cap in (c for c in capabilities if c in self._capabilities):
-					resp = await self.rpc_call(f"{cap}.GetConfig", {"id": ch})
-					if resp is None:
-						continue
-					found = True
-					name = resp.get("name", None)
-					index = len(channels)	# The discovery service relies on a unique incremental index for each channel
-					channels[index] = {"type": ch_type, "name": name, "id": f'{ch_type}_{ch}'}
-					ch += 1
-				if not found:
-					# No capabilities on this channel number, or the channel doesn't exist at all. Done.
-					return
+		# Group discovered ids by their reported RPC capability (e.g. 'Switch', 'EM1').
+		# E.g. ids_by_cap = {'Switch': {0, 1}, 'EM1': {0}}
+		ids_by_cap = {}
+		config_by_cap_id = {}
+		for comp in components:
+			cap_lower, sep, id_str = comp.get("key", "").partition(":")
+			if not sep or not id_str.isdigit():
+				continue
+			cap = next((c for c in self._capabilities if c.lower() == cap_lower), None)
+			if cap is None:
+				continue
+			cid = int(id_str)
+			ids_by_cap.setdefault(cap, set()).add(cid)
+			config_by_cap_id[(cap, cid)] = comp.get("config") or {}
 
+		def name_for(caps, cid):
+			for cap in caps:
+				cfg = config_by_cap_id.get((cap, cid))
+				if cfg and cfg.get("name"):
+					return cfg["name"]
+			return None
+
+		# Loop over all functional handler kinds and their associated capabilities.
 		for kind, caps in shelly_handlers.get_capabilities_by_kind().items():
-			await add_channels(kind, caps)
+			# Filter out capabilities that are not present on this device.
+			relevant_caps = [c for c in caps if c in self._capabilities]
+			if not relevant_caps:
+				continue
+			# Merge all ids for the relevant capabilities into a single sorted list.
+			# E.g. if ids_by_cap = {'Switch': {0, 1}, 'EM1': {0}}, then
+			# ids = [0, 1] for relevant_caps = 'Switch' and
+			# ids = [0] for relevant_caps = ['EM1']
+			ids = sorted(set().union(*(ids_by_cap.get(c, set()) for c in relevant_caps)))
+			if not ids:
+				continue
 
+			for cid in ids:
+				index = len(channels)
+				# Create a new entry for this channel in the channels dictionary.
+				# E.g., for a switch with id 0, the entry might be {"type": "switch", "name": "Living Room Switch", "id": "switch_0"}
+				entry = {"type": kind, "name": name_for(relevant_caps, cid), "id": f'{kind}_{cid}'}
+				# Add the entry to the channels dictionary with the next available index.
+				# Note: The order matters as the discovery service relies on it to index settings.
+				# Order: Switch, em1, em. Add new types at the end of the FUNCTIONAL_HANDLERS list in shelly_handlers.py.
+				channels[index] = entry
 		return channels
 
 	async def start(self):
@@ -641,10 +687,6 @@ class ShellyDevice(object):
 
 	async def _get_device_info(self):
 		return await self.rpc_call("Shelly.GetDeviceInfo")
-
-	async def list_methods(self):
-		resp = await self.rpc_call("Shelly.ListMethods")
-		return resp['methods'] if resp and 'methods' in resp else []
 
 	def device_updated(self, cb_device, update_type):
 		if update_type == RpcUpdateType.STATUS:
