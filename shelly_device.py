@@ -172,6 +172,16 @@ class ShellyDevice(object):
 		return self._channel_info
 
 	@property
+	def is_valid(self):
+		return self._shelly_info is not None and bool(self._channel_info)
+
+	# Invalidate the current device information, clearing shelly info and channel info.
+	# Does not stop the device or its channels.
+	def _invalidate(self):
+		self._shelly_info = None
+		self._channel_info = {}
+
+	@property
 	def active_channels(self):
 		return list(self._channels.keys())
 	
@@ -339,6 +349,7 @@ class ShellyDevice(object):
 
 		if not self.is_connected:
 			logger.error("Failed to reconnect to shelly device %s", self.serial_or_server)
+			self._invalidate()
 			self.set_event(ShellyEvent.DISCONNECTED)
 			return False
 		logger.info("Reconnected to shelly device %s", self.serial_or_server)
@@ -365,6 +376,7 @@ class ShellyDevice(object):
 
 		# Capabilities changed, Stop all channels and let the discovery service refresh the device.
 		if cap_changed:
+			self._invalidate()
 			self.set_event(ShellyEvent.CAPABILITIES_CHANGED)
 		else:
 			# No capability change, just reinitialize the existing handlers with the new RPC connection.
