@@ -21,16 +21,18 @@ Since V2.00, dbus-shelly implements handlers for RPC components, which enables c
 2. Check if the device supports at least one of RPC components listed in the table below:
 
 ### RPC component to service type mapping
-| RPC component      | Service type                     | Remarks                                                                                    |
-|--------------------|----------------------------------|--------------------------------------------------------------------------------------------|
-| EM and/or EMData   | *.acload, *.pvinverter, *.genset | Three-phase EM                                                                             |
-| EM1 and/or EM1Data | *.acload, *.pvinverter, *.genset | Single-phase EM                                                                            |
-| PM1                | *.acload, *.pvinverter, *.genset | Single-phase EM                                                                            |
-| Switch             | *.switch, *.acload               | acload service when switch component reports voltage/current etc. switch service otherwise |
-| Light              | *.switch                         | Switch type: Dimmable                                                                      |
-| RGB                | *.switch                         | Switch type: RGB                                                                           |
-| RGBW               | *.switch                         | Switch type: RGBW                                                                          |
-| CCT                | *.switch                         | Switch type: CCT                                                                           |
+| RPC component      | Service type                                | Remarks                                                                                    |
+|--------------------|---------------------------------------------|--------------------------------------------------------------------------------------------|
+| EM and/or EMData   | *.acload, *.pvinverter, *.genset, *heatpump | Three-phase EM                                                                             |
+| EM1 and/or EM1Data | *.acload, *.pvinverter, *.genset, *heatpump | Single-phase EM                                                                            |
+| PM1                | *.acload, *.pvinverter, *.genset, *heatpump | Single-phase EM                                                                            |
+| Voltmeter          | *.acload, *.pvinverter, *.genset, *heatpump | Single-phase EM with only voltage readings                                                 |
+| Switch             | *.switch, *.acload                          | acload service when switch component reports voltage/current etc. switch service otherwise |
+| Light              | *.switch                                    | Switch type: Dimmable                                                                      |
+| RGB                | *.switch                                    | Switch type: RGB                                                                           |
+| RGBW               | *.switch                                    | Switch type: RGBW                                                                          |
+| CCT                | *.switch                                    | Switch type: CCT                                                                           |
+| CB                 | *.switch                                    | Switch type: Toggle
 
 If a device exposes x instances of an RPC component listed above, then x channels of that type will show up in the integration menu.
 
@@ -52,6 +54,7 @@ The following shelly devices have been verified to work correctly:
 - Shelly PM mini gen3 (1x PM)
 - Shelly Pro 1
 - Shelly Duo Bulb Gen3 (CCT)
+- Shelly Pro 3CB (SW [CB] + EM [Voltmeter])
 
 # Shelly settings
 This driver will only control runtime values like the on/off state and brightness. The settings of the shelly device will not be touched. There are some settings that may affect the behavior of your shelly device when controlled through the GX device:
