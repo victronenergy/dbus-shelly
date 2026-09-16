@@ -737,23 +737,24 @@ class ShellyManager(object):
 		if serial not in self.shellies:
 			return
 
-		entry = self.shellies[serial]
-		# Ensure that the task being deleted is the event monitor task for this device.
-		# To prevent deleting a newly created device when the old event monitor task finishes.
-		if task is not entry.get('event_mon'):
-			return
+		async with self._shelly_lock:
+			entry = self.shellies[serial]
+			# Ensure that the task being deleted is the event monitor task for this device.
+			# To prevent deleting a newly created device when the old event monitor task finishes.
+			if task is not entry.get('event_mon'):
+				return
 
-		# Cancel the event monitor task if it exists and hasn't finished
-		event_mon = self.shellies[serial].get('event_mon')
-		if event_mon and not event_mon.done():
-			event_mon.cancel()
-			try:
-				await event_mon
-			except asyncio.CancelledError:
-				pass
-		await self.shellies[serial]['device'].stop()
+			# Cancel the event monitor task if it exists and hasn't finished
+			event_mon = self.shellies[serial].get('event_mon')
+			if event_mon and not event_mon.done():
+				event_mon.cancel()
+				try:
+					await event_mon
+				except asyncio.CancelledError:
+					pass
+			await self.shellies[serial]['device'].stop()
 
-		del self.shellies[serial]
+			del self.shellies[serial]
 
 	async def disable_shelly_channel(self, serial, channel):
 		async with self._shelly_lock:
@@ -859,18 +860,20 @@ class ShellyManager(object):
 		return result
 
 	async def _probe_device(self, server, serial=None):
-		if serial is not None and serial in self.shellies:
-			shelly = self.shellies[serial]['device']
-			result = DeviceProbeResult()
-			result.info = shelly.shelly_info
-			result.ip = shelly.server
-			result.channel_info = shelly.channel_info
-			if await shelly.ping_shelly():
-				result.status = ProbeStatus.REACHABLE
-			else:
-				shelly.do_reconnect()
-				result.status = ProbeStatus.RECONNECTING
-			return result
+		async with self._shelly_lock:
+			# Check if device is valid if it is in self.shellies. This prevents using stale or invalid device information.
+			if serial is not None and serial in self.shellies and self.shellies[serial]['device'].is_valid:
+				shelly = self.shellies[serial]['device']
+				result = DeviceProbeResult()
+				result.info = shelly.shelly_info
+				result.ip = shelly.server
+				result.channel_info = shelly.channel_info
+				if await shelly.ping_shelly():
+					result.status = ProbeStatus.REACHABLE
+				else:
+					shelly.do_reconnect()
+					result.status = ProbeStatus.RECONNECTING
+				return result
 
 		result = await self._get_device_info(server, serial)
 		return result
