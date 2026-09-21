@@ -222,11 +222,16 @@ class ShellyHandler_sys(ShellyHandler):
 # Generic channel config mixin, adds support for custom channel names and requesting channel config. Used by multiple handlers.
 # Allows for synching the channel name to multiple paths on the service.
 class ShellyHandler_channel_config_mixin():
-	async def handler_ainit(self):
+	def __init__(self):
+		super().__init__()
+		# Set here too (not just in handler_ainit) so stop() is safe even if ainit() fails
+		# before handler_ainit() runs (e.g. an unresponsive device).
 		self._custom_name_paths = []
 		self._custom_name_retries = 0
 		self._custom_name_retry_task = None
+		self._rpc_type_with_name_config = None
 
+	async def handler_ainit(self):
 		# Stored as a single string, so rpc_call returns the response itself instead of a dict of responses.
 		self._rpc_type_with_name_config = self._rpc_device_type if isinstance(self._rpc_device_type, str) else None
 		return True
