@@ -43,6 +43,9 @@ BACKOFF_INITIAL_SECONDS = 10 # Initial backoff for failed connection attempts, d
 BACKOFF_MAX_SECONDS = 10 * 60
 RECONNECT_LOOP_HEARTBEAT_SECONDS = BACKOFF_INITIAL_SECONDS # Interval for the reconnect loop to check device connectivity. Should be equal to or less than BACKOFF_INITIAL_SECONDS to ensure timely retries.
 
+CHANNEL_ENABLE_RETRY_INITIAL_SECONDS = BACKOFF_INITIAL_SECONDS
+CHANNEL_ENABLE_RETRY_MAX_SECONDS = BACKOFF_MAX_SECONDS
+
 cache_lock = asyncio.Lock()
 
 # ProbeStatus is used to indicate the result of a connection attempt to a Shelly device.
@@ -981,6 +984,9 @@ class ShellyManager(object):
 			if fut is not None and not fut.done():
 				fut.set_result(False)
 			return
+		if value == 0:
+			# An explicit disable takes precedence over any pending automatic retry.
+			self._cancel_channel_enable_retry(serial, channel)
 
 		item.set_local_value(value)
 		if fut is None:
@@ -989,6 +995,43 @@ class ShellyManager(object):
 		self._channel_op_queue.put_nowait(operation)
 		# Return task future so the caller can await the completion of the operation.
 		return fut
+
+	def _cancel_channel_enable_retry(self, serial, channel):
+		key = (serial, channel)
+		task = self._channel_enable_retry_tasks.pop(key, None)
+		if task is not None:
+			task.cancel()
+		self._channel_enable_retry_attempts.pop(key, None)
+
+	def _schedule_channel_enable_retry(self, serial, channel):
+		key = (serial, channel)
+		if key in self._channel_enable_retry_tasks:
+			return
+
+		attempt = self._channel_enable_retry_attempts.get(key, 0) + 1
+		self._channel_enable_retry_attempts[key] = attempt
+		delay = min(
+			CHANNEL_ENABLE_RETRY_INITIAL_SECONDS * (2 ** (attempt - 1)),
+			CHANNEL_ENABLE_RETRY_MAX_SECONDS,
+		)
+
+		async def retry():
+			try:
+				await asyncio.sleep(delay)
+				self._channel_enable_retry_tasks.pop(key, None)
+				# Retry only while the persisted setting still requests this channel.
+				enabled = self.settings.get_value(self.settings.alias(f'enabled_{serial}_{channel}'))
+				item = self.service.get_item(f'/Devices/{serial}/{channel + 1}/Enabled')
+				if enabled == 1 and item is not None:
+					logger.info("Retrying channel %s for shelly device %s after %d seconds", channel, serial, delay)
+					await self._on_enabled_changed(serial, channel, item, 1)
+			except asyncio.CancelledError:
+				pass
+
+		task = asyncio.create_task(retry())
+		self._channel_enable_retry_tasks[key] = task
+		background_tasks.add(task)
+		task.add_done_callback(background_tasks.discard)
 
 	async def _channel_operation_worker(self):
 		queue = self._channel_op_queue
@@ -1014,10 +1057,15 @@ class ShellyManager(object):
 						),
 						operation.value,
 					)
+					if operation.value:
+						self._channel_enable_retry_attempts.pop((serial, operation.channel), None)
 				else:
 					operation.item.set_local_value(
 						1 if operation.value == 0 else 0
 					)
+					if operation.value:
+						# Keep retrying an enabled channel even when the device stays reachable.
+						self._schedule_channel_enable_retry(serial, operation.channel)
 
 				operation.fut.set_result(ret)
 
