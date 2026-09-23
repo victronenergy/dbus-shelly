@@ -29,17 +29,21 @@ FUNCTIONAL_HANDLERS = [HANDLER_KIND_SWITCH, HANDLER_KIND_EM1, HANDLER_KIND_EM, H
 _HANDLER_REGISTRY = {}
 _CAPS_BY_KIND = {kind: [] for kind in FUNCTIONAL_HANDLERS}
 
-def register_handler(*capabilities, kind):
+def register_handler(*capabilities, kind, aggregate=False):
 	def _decorator(handler_cls):
 		# Store caps in lowercase because shellyDevice._capabilities are in lowercase.
 		for _cap in capabilities:
 			cap = _cap.lower()
-			_HANDLER_REGISTRY[cap] = {"cls": handler_cls, "kind": kind}
+			_HANDLER_REGISTRY[cap] = {"cls": handler_cls, "kind": kind, "aggregate": aggregate}
 			if kind in FUNCTIONAL_HANDLERS and cap not in _CAPS_BY_KIND[kind]:
 				_CAPS_BY_KIND[kind].append(cap)
 		handler_cls._rpc_device_type = list(capabilities) if len(capabilities) > 1 else capabilities[0]
 		return handler_cls
 	return _decorator
+
+def is_aggregate_handler(capability):
+	info = _HANDLER_REGISTRY.get(capability)
+	return info["aggregate"] if info else False
 
 def get_handler_class(capability, kind=None):
 	info = _HANDLER_REGISTRY.get(capability)
@@ -72,6 +76,7 @@ class ShellyHandler(object):
 
 		c = handler_cls()
 		c._channel_id = getattr(shelly_channel, "_channel_id", 0)
+		c._channel_ids = list(getattr(shelly_channel, "_channel_ids", [c._channel_id]))
 		c._rpc_call = rpc_callback
 		c.restart = restart_callback
 		c.sc = shelly_channel
@@ -84,6 +89,7 @@ class ShellyHandler(object):
 
 	def __init__(self):
 		self._channel_id = 0
+		self._channel_ids = [0]
 		self._init_done = False
 		self._rpc_call = None
 		self.restart = None
@@ -109,6 +115,7 @@ class ShellyHandler(object):
 		if not await self.handler_ainit():
 			return False
 		self._init_done = True
+		await self.force_update()
 		return True
 
 	# For handlers that can be used for multiple RPC components, this function checks which of the
@@ -573,6 +580,39 @@ class ShellyHandler_em1(Shelly_EM_base, ShellyHandler_channel_config_mixin, Shel
 			pass
 
 
+# Voltmeter handler. Unlike EM/EM1, a Voltmeter RPC component only exposes a single voltage
+# measurement per id. All Voltmeter ids on the device are aggregated into this one handler/channel
+# each id filling one /Ac/L<n>/Voltage path.
+@register_handler('Voltmeter', kind=HANDLER_KIND_EM, aggregate=True)
+class ShellyHandler_voltmeter(Shelly_EM_base, ShellyHandler):
+	async def handler_ainit(self):
+		#if not await super().handler_ainit():
+		#	return False
+		self._num_phases = min(len(self._channel_ids), 3)
+		#await self.add_customname_path()
+		role = await self.init_em(self._num_phases)
+		self.set_service_name(role)
+		return True
+
+	async def request_channel_status(self):
+		# Sanity-check using the first id; the others were already validated during discovery.
+		return await self.rpc_call('GetStatus', {"id": self._channel_ids[0]})
+
+	async def force_update(self):
+		for index, ch_id in enumerate(self._channel_ids[:self._num_phases]):
+			await self.rpc_call('GetStatus', {"id": ch_id}, fun=partial(self.update, index=index))
+
+	def update(self, status_json, cap=None, index=0):
+		if status_json is None or index >= self._num_phases:
+			return
+		try:
+			with self.service as s:
+				l = self._phase if self._num_phases == 1 else index + 1
+				s[f'/Ac/L{l}/Voltage'] = status_json["voltage"]
+		except KeyError as e:
+			logger.error("KeyError in update: %s", e)
+
+
 # Shared base for RPC alarm components (Smoke, Flood) that register as a com.victronenergy.digitalinput
 # service, tying into Venus OS's existing digital input alarm/notification handling instead of
 # inventing a bespoke service type per sensor.
@@ -935,6 +975,34 @@ else:
 	@register_handler('Switch', kind=HANDLER_KIND_SWITCH)
 	class ShellyHandler_switch(ShellyHandler_switch_base):
 		pass
+
+
+@register_handler('CB', kind=HANDLER_KIND_SWITCH)
+class ShellyHandler_cb(ShellyHandler_switch_base):
+	_valid_types_mask = int(1 << OutputType.TOGGLE.value)
+
+	async def set_state(self, item, value):
+		await self.rpc_call(
+			'Set',
+			{
+				# id is the switch channel, starting from 0
+				"id":self._channel_id,
+				"output":True if value == 1 else False,
+			}
+		)
+
+		item.set_local_value(value)
+
+	def update(self, status_json, cap=None):
+		try:
+			switch_prefix = f'/SwitchableOutput/{self._channel_id}/'
+			safety = 0x20 if status_json.get("safety", False) else 0x00
+			status = STATUS_ON if status_json["output"] else STATUS_OFF
+			with self.service as s:
+				s[switch_prefix + 'State'] = 1 if status == STATUS_ON else 0
+				s[switch_prefix + 'Status'] = safety | status
+		except:
+			pass
 
 
 class ThrottledUpdaterMixin:
