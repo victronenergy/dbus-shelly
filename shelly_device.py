@@ -44,9 +44,9 @@ class ShellyConnectionError(Exception):
 
 class ShellyChannel(object):
 	@classmethod
-	async def create(cls, bus_type, serial, channel_type_id, server, productid=0x0000, productName=None, shellyModel=None):
+	async def create(cls, bus_type, serial, channel_type_id, server, productid=0x0000, productName=None, shellyModel=None, channel_ids=None):
 		bus = await MessageBus(bus_type=bus_type).connect()
-		c = cls(bus_type, bus, productid, serial, channel_type_id, server, productName, shellyModel)
+		c = cls(bus_type, bus, productid, serial, channel_type_id, server, productName, shellyModel, channel_ids)
 		c.service = Service(bus, None)
 		c.settings = await wait_for_settings(bus, itemsChanged=c.itemsChanged)
 
@@ -61,7 +61,7 @@ class ShellyChannel(object):
 		await c.ainit()
 		return c
 
-	def __init__(self, bus_type, bus, productid, serial, channel_type_id, connection, productName, shellyModel=None):
+	def __init__(self, bus_type, bus, productid, serial, channel_type_id, connection, productName, shellyModel=None, channel_ids=None):
 		self.service = None
 		self.settings = None
 		self.channel_custom_name = ""
@@ -69,6 +69,8 @@ class ShellyChannel(object):
 		self._serial = serial
 		self._ch_type = channel_type_id.split('_')[0]
 		self._channel_id = int(channel_type_id.split('_')[1])
+		# All RPC ids aggregated into this channel (e.g. multiple Voltmeter ids sharing one service). Defaults to just the primary id.
+		self._channel_ids = list(channel_ids) if channel_ids else [self._channel_id]
 		self.bus_type = bus_type
 		self.bus = bus
 		self.connection = connection
@@ -519,15 +521,21 @@ class ShellyDevice(object):
 			if not ids:
 				continue
 
-			for cid in ids:
-				index = len(channels)
-				# Create a new entry for this channel in the channels dictionary.
-				# E.g., for a switch with id 0, the entry might be {"type": "switch", "name": "Living Room Switch", "id": "switch_0"}
-				entry = {"type": kind, "name": name_for(relevant_caps, cid), "id": f'{kind}_{cid}'}
-				# Add the entry to the channels dictionary with the next available index.
-				# Note: The order matters as the discovery service relies on it to index settings.
-				# Order: Switch, em1, em. Add new types at the end of the FUNCTIONAL_HANDLERS list in shelly_handlers.py.
+			if shelly_handlers.is_aggregate_handler(relevant_caps[0]):
+				# Collapse all ids of this kind into a single channel/service.
+				index = len(channels)	# The discovery service relies on a unique incremental index for each channel
+				entry = {"type": kind, "name": name_for(relevant_caps, ids[0]), "id": f'{kind}_{ids[0]}', "channel_ids": ids}
 				channels[index] = entry
+			else:
+				for cid in ids:
+					index = len(channels)
+					# Create a new entry for this channel in the channels dictionary.
+					# E.g., for a switch with id 0, the entry might be {"type": "switch", "name": "Living Room Switch", "id": "switch_0"}
+					entry = {"type": kind, "name": name_for(relevant_caps, cid), "id": f'{kind}_{cid}'}
+					# Add the entry to the channels dictionary with the next available index.
+					# Note: The order matters as the discovery service relies on it to index settings.
+					# Order: Switch, em1, em. Add new types at the end of the FUNCTIONAL_HANDLERS list in shelly_handlers.py.
+					channels[index] = entry
 		return channels
 
 	async def start(self):
@@ -572,6 +580,7 @@ class ShellyDevice(object):
 
 			ch_type = self._channel_info[channel]['type']
 			ch_type_id = self._channel_info[channel]['id']
+			channel_ids = self._channel_info[channel].get('channel_ids')
 			if ch_type == 'switch':
 				name = "Shelly Switch"
 				id = PRODUCT_ID_SHELLY_SWITCH
@@ -596,14 +605,17 @@ class ShellyDevice(object):
 					productid=id,
 					productName=name,
 					server=self._shelly_device.ip_address or self._server,
-					shellyModel=self._shelly_info.get('model', 'Unknown')
+					shellyModel=self._shelly_info.get('model', 'Unknown'),
+					channel_ids=channel_ids,
 				)
 
 				# Create handlers for the generic + switching OR EM capabilities
+				cap_ids = {}
 				for cap in self._capabilities:
 					cls = shelly_handlers.get_handler_class(cap, ch_type)
 					if cls is None:
 						continue
+					cap_ids[cap.lower()] = list(channel_ids or [ch._channel_id])
 					create_new = True
 
 					# Reuse existing handler if the same handler class is used for more capabilities (e.g. EM1 and EM1Data)
@@ -641,7 +653,12 @@ class ShellyDevice(object):
 						pass
 				return False
 
-			self._channels[channel] = {"channel": ch, "handlers": handlers, "ch_type": ch_type, "ch_num": ch_type_id.split('_')[-1]}
+			self._channels[channel] = {
+				"channel": ch,
+				"handlers": handlers,
+				"ch_type": ch_type,
+				"cap_ids": cap_ids,
+			}
 
 			init_task = asyncio.create_task(self._init_channel_and_handlers(channel))
 			self._init_channel_tasks[channel] = init_task
@@ -786,15 +803,21 @@ class ShellyDevice(object):
 		if update_type == RpcUpdateType.STATUS:
 			for ch in self._channels.keys():
 				entry = self._channels[ch]
-				channel = entry.get("ch_num")
+				cap_ids = entry.get("cap_ids", {})
 				handlers = entry.get("handlers", {})
 				for cap, handler in handlers.items():
 					if not handler.init_done:
 						continue
 					cap = cap.lower()
-					key = f'{cap}:{channel}'
-					if key in cb_device.status:
-						handler.update(cb_device.status[key], cap=cap)
+					ids = cap_ids.get(cap, [])
+					for index, cid in enumerate(ids):
+						key = f'{cap}:{cid}'
+						if key not in cb_device.status:
+							continue
+						if len(ids) > 1:
+							handler.update(cb_device.status[key], cap=cap, index=index)
+						else:
+							handler.update(cb_device.status[key], cap=cap)
 
 		elif update_type == RpcUpdateType.DISCONNECTED:
 			if self._shelly_device:

@@ -32,13 +32,15 @@ Since V2.00, dbus-shelly implements handlers for RPC components, which enables c
 | EM and/or EMData   | *.acload, *.pvinverter, *.genset | Three-phase EM                                                                             |
 | EM1 and/or EM1Data | *.acload, *.pvinverter, *.genset | Single-phase EM                                                                            |
 | PM1                | *.acload, *.pvinverter, *.genset | Single-phase EM                                                                            |
+| Voltmeter          | *.acload, *.pvinverter, *.genset, *heatpump | Single-phase EM with only voltage readings                                      |
 | Switch             | *.switch, *.acload               | acload service when switch component reports voltage/current etc. switch service otherwise |
 | Light              | *.switch                         | Switch type: Dimmable                                                                      |
 | RGB                | *.switch                         | Switch type: RGB                                                                           |
 | RGBW               | *.switch                         | Switch type: RGBW                                                                          |
 | CCT                | *.switch                         | Switch type: CCT                                                                           |
+| CB                 | *.switch                         | Switch type: Toggle                                                                        |
 | Smoke              | *.digitalinput                   | Smoke alarm. DevicePower (if present) adds battery info to the same service                |
-| Flood              | *.digitalinput                   | Bilge alarm (no dedicated flood type in Venus). DevicePower (if present) adds battery info  |
+| Flood              | *.digitalinput                   | Bilge alarm (no dedicated flood type in Venus). DevicePower (if present) adds battery info |
 
 If a device exposes x instances of an RPC component listed above, then x channels of that type will show up in the integration menu.
 
@@ -60,6 +62,7 @@ The following shelly devices have been verified to work correctly:
 - Shelly PM mini gen3 (1x PM)
 - Shelly Pro 1
 - Shelly Duo Bulb Gen3 (CCT)
+- Shelly Pro 3CB (SW [CB] + EM [Voltmeter])
 - Shelly Plus Smoke (Smoke + DevicePower)
 
 # Shelly settings
