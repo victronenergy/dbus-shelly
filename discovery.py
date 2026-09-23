@@ -274,10 +274,15 @@ class ShellyDeviceCache:
 		async with cache_lock:
 			current_key = self._resolve_key(serial=endpoint.serial, host=endpoint.host)
 			if current_key is not None:
+				# Update existing endpoint to manually added if a device that was already discovered over mDNS was also added manually.
+				existing = self._cache[current_key]
+				if endpoint.source == ENDPOINT_SOURCE_MANUAL and existing.endpoint.source != ENDPOINT_SOURCE_MANUAL:
+					existing.update_endpoint(endpoint.host, ENDPOINT_SOURCE_MANUAL)
+					self._queue_device_change("update", existing)
 				# If the device is already in the cache, but we do not know if it is supported yet, trigger a reconnect straight away
 				# NOTE: Unsupported devices will be retried upon refresh.
-				if self._cache[current_key].endpoint.supported is None:
-					self._cache[current_key].start_connect()
+				if existing.endpoint.supported is None:
+					existing.start_connect()
 					self._queue_cache_change()
 				return
 
@@ -333,8 +338,16 @@ class ShellyDeviceCache:
 			if serial_key in self._cache: # Device already present in cache, update the serial-keyed entry
 				existing = self._cache[serial_key]
 				existing.update_endpoint(state.endpoint.host, state.endpoint.source)
-				if state.is_connecting:
-					existing.start_connect()
+				if state.endpoint.source == ENDPOINT_SOURCE_MANUAL:
+					existing.endpoint.source = ENDPOINT_SOURCE_MANUAL
+				if state.deviceInfo is not None:
+					existing.deviceInfo = state.deviceInfo
+				if state.channel_info:
+					existing.channel_info = state.channel_info
+				if state.endpoint.supported is not None:
+					existing.endpoint.supported = state.endpoint.supported
+				if state.connect is not None and state.connect.success:
+					existing.connect = state.connect
 				return existing
 			else:
 				self._cache[serial_key] = state # Device not present in cache keyed by serial, add it.
@@ -437,15 +450,13 @@ class ShellyConnectionManager:
 					if result.status == ProbeStatus.REACHABLE:
 						if ep_state.is_reachable:
 							action = "update" # If the device was already connected, this is just an update to the state.
-						# First succesfull connection to this device, update info.
-						else:
-							ep_state.deviceInfo = result.info
-							ep_state.channel_info = result.channel_info
-							# Make sure the host is set to the device IP address, in case it was discovered by mDNS with a hostname.
-							ep_state.endpoint.host = result.ip or ep_state.endpoint.host
-							if ep_state.endpoint.serial is None and result.info is not None:
-								promote_serial = True
-							ep_state.endpoint.supported = True
+						ep_state.deviceInfo = result.info
+						ep_state.channel_info = result.channel_info
+						# Make sure the host is set to the device IP address, in case it was discovered by mDNS with a hostname.
+						ep_state.endpoint.host = result.ip or ep_state.endpoint.host
+						if ep_state.endpoint.serial is None and result.info is not None:
+							promote_serial = True
+						ep_state.endpoint.supported = True
 						ep_state.connect.mark_success(now)
 					elif result.status == ProbeStatus.RECONNECTING:
 						ep_state.connect.mark_reconnecting()
@@ -649,16 +660,13 @@ class ShellyManager(object):
 
 		serial = state.endpoint.serial
 		action = change.get("action")
-		last_seen = state.connect.last_seen_str if state.connect is not None else None
 		if not serial:	# The serial should be known at this point. The ShellyConnectionManager will fetch and update the serial if it was previously unknown.
 			return
 
 		if action == ProbeStatus.REACHABLE.value:
 			await self._add_device(state, supported=True)
 		elif action == "update":
-			# For now only update lastseen
-			with self.service as s:
-				s['/Devices/{}/LastSeen'.format(serial)] = last_seen
+			await self._update_device(state)
 
 		elif action == ProbeStatus.RECONNECTING.value:
 			with self.service as s:
@@ -907,6 +915,24 @@ class ShellyManager(object):
 		result = await self._get_device_info(server, serial)
 		return result
 
+	async def _update_device(self, state):
+		serial = state.endpoint.serial
+
+		if self.service.get_item('/Devices/{}/Mac'.format(serial)) is None:
+			return
+
+		ip = state.endpoint.host
+		last_seen = state.connect.last_seen_str if state.connect is not None else None
+		source = state.endpoint.source
+		is_reachable = state.is_reachable
+
+		with self.service as s:
+			if last_seen is not None:
+				s['/Devices/{}/LastSeen'.format(serial)] = last_seen
+			s['/Devices/{}/DiscoveryType'.format(serial)] = source
+			s['/Devices/{}/Reachable'.format(serial)] = 1 if is_reachable else 0
+			s['/Devices/{}/Ip'.format(serial)] = ip
+
 	async def _add_device(self, state, supported):
 		serial = state.endpoint.serial
 		source = state.endpoint.source
@@ -918,7 +944,10 @@ class ShellyManager(object):
 		# A known device can have updated info, so we always update the device info in the service, but skip channel setup for known devices.
 		# If the number of channels or its capabilities have changed, the device will emit a "capabilities_changed" event, which will trigger a refresh of the device info and channel setup.
 		item = self.service.get_item('/Devices/{}/Reachable'.format(serial))
-		skip_channel_setup = item is not None and item.value == 1
+		skip_channel_setup = item is not None and item.value == 1 and bool(channel_info) and all(
+			self.service.get_item(f'/Devices/{serial}/{i + 1}/Type') is not None
+			for i in channel_info
+		)
 
 		# 'app' is a more user-friendly name for the model. Use that if available.
 		# Shelly plus plug S example: 'app': 'PlusPlugS', 'model': 'SNPL-00112EU'
