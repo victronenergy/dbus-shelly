@@ -9,6 +9,8 @@ The shelly and the GX should be in the same network. The GX device discovers the
 - Shelly smart plugs without energy metering capabilities will be registered as `com.victronenergy.switch`.
 - Shelly energy metering devices without a switchable output (so energy meters to be installed at an input or an output position) are registered as a standard grid meter. `com.victronenergy.<role>` with role equal to 'genset', 'pvinverter', 'acload' or 'heatpump', depending on the setting and defaulting to 'acload'.
 
+While a device is connected - discovered, selected, and with one or more channels enabled - its own local admin web UI is registered with venus-web-pages (if installed), so it appears in GUIv2's web pages list. It's unregistered the moment the device stops being connected, for any reason (explicit disable, mDNS disappearance, a reboot it never comes back from), so it never lingers as a stale entry. This is fully automatic; the page is only removable by this driver itself, not manually from GUIv2.
+
 # Supported RPC components
 Shelly devices use Remote Procedure Calls (RPC) to send commands to devices and receive notifications and replies from the devices. More info [here](https://shelly-api-docs.shelly.cloud/gen2/General/RPCProtocol/). An [RPC component](https://shelly-api-docs.shelly.cloud/gen2/General/ComponentConcept) is an encapsulated functional unit which exposes methods used to control the device.
 

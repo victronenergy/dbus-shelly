@@ -147,6 +147,19 @@ class ShellyDevice(object):
 		return self._shelly_device and self._shelly_device.connected
 
 	@property
+	def web_ui_upstream(self):
+		"""(host, port) for this device's own local admin web UI - the same
+		host:port the RPC/websocket connection itself uses, since Shelly
+		gen2+ devices serve their web UI from the same HTTP server. Defaults
+		to the standard port 80 when no explicit port was given (real
+		hardware always uses 80; mock devices under mock/ use a custom port
+		via _parse_server)."""
+		host, port = self._parse_server()
+		if self._shelly_device:
+			host = self._shelly_device.ip_address or host
+		return host, port or 80
+
+	@property
 	def serial(self):
 		return self._serial
 

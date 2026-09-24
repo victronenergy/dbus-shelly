@@ -4,14 +4,16 @@ from __future__ import annotations
 import sys
 import os
 import asyncio
+import json
 import re
+import tempfile
 from functools import partial
 
 # aiovelib
 sys.path.insert(1, os.path.join(os.path.dirname(__file__), 'ext', 'aiovelib'))
 from aiovelib.service import Service, IntegerItem, TextItem
 from aiovelib.localsettings import Setting
-from aiovelib.client import Monitor
+from aiovelib.client import Monitor, DbusException
 
 try:
 	from dbus_fast.aio import MessageBus
@@ -30,6 +32,20 @@ from utils import logger, wait_for_settings
 
 background_tasks = set()
 ADD_BY_IP_RECHECK_SECONDS = 15 * 60
+
+# venus-web-pages integration: a device's own local admin web UI is
+# registered there for exactly as long as it is "connected" - discovered,
+# selected, and with one or more channels enabled - and unregistered the
+# moment that stops being true, for any reason (explicit disable, mDNS
+# disappearance, a reboot the device never comes back from). See
+# ShellyManager._sync_web_page, the single place this is decided; the
+# actual add/remove calls are always best-effort/log-only, since a device
+# with no venus-web-pages installed is a fully supported configuration.
+WEBPAGES_SERVICE = "com.victronenergy.webpages"
+WEBPAGES_MANAGEMENT_PATH = "/Management"
+WEBPAGES_MANAGEMENT_INTERFACE = "com.victronenergy.WebPages"
+WEBPAGES_CALL_TIMEOUT_S = 5.0
+WEBPAGES_ORIGIN = "dbus-shelly"
 
 
 class ManualIpDiscovery(object):
@@ -247,15 +263,22 @@ class ShellyManager(object):
 	and controls device/channel lifecycle operations.
 	"""
 
-	def __init__(self, bus_type, service, settings):
+	def __init__(self, bus_type, service, settings, monitor):
 		self.bus_type = bus_type
 		self.service = service
 		self.settings = settings
+		self.monitor = monitor
 		self.discovered_devices = [] 	# Devices found via mDNS but not manually added
 		self.saved_devices = []			# Devices manually added via IP that should be retained even if not found via mDNS
 		self.shellies = {}
 		self._shelly_lock = asyncio.Lock()
 		self._enable_tasks = {}
+		# serial -> the venus-web-pages definition currently believed
+		# registered for that device - present only while "connected" (see
+		# _sync_web_page). Doubles as the source to unregister from once a
+		# device is removed from self.shellies entirely, for a path (like
+		# refresh_device) that doesn't go through _sync_web_page itself.
+		self._webpage_registered = {}
 
 	async def add_device(self, server, serial=None, manual=False):
 		await self._add_device(server, serial, manual)
@@ -326,9 +349,23 @@ class ShellyManager(object):
 				if not await self.add_shelly_device(serial, server):
 					return False
 
-			return await self.shellies[serial]['device'].start_channel(channel)
+			result = await self.shellies[serial]['device'].start_channel(channel)
+			await self._sync_web_page(serial)
+			return result
 
 	def delete_shelly_device(self, serial, fut=None):
+		# Safety net: a page normally gets unregistered by _sync_web_page
+		# once a device's active channel count reaches zero, before it's
+		# ever removed from self.shellies here - but refresh_device calls
+		# this directly without stopping channels first, so this must not
+		# assume that already happened. delete_shelly_device is itself a
+		# sync method (an asyncio task done-callback can't be a coroutine),
+		# so the unregister runs as its own fire-and-forget task.
+		page = self._webpage_registered.pop(serial, None)
+		if page is not None:
+			task = asyncio.create_task(self._unregister_web_page(serial, page))
+			task.add_done_callback(background_tasks.discard)
+			background_tasks.add(task)
 		if serial in self.shellies:
 			# Cancel the event monitor task if it exists and hasn't finished
 			event_mon = self.shellies[serial].get('event_mon')
@@ -345,7 +382,91 @@ class ShellyManager(object):
 			if len(self.shellies[serial]['device'].active_channels) == 0:
 				logger.info("No active channels left for device %s, stopping device", serial)
 				await self.shellies[serial]['device'].stop()
+			await self._sync_web_page(serial)
 			return True
+
+	def _build_web_page(self, serial, device):
+		""" Pure-ish (only reads already-published inventory items):
+		normalizes one connected device's own local admin web UI into a
+		venus-web-pages-ready payload. Returns None if the device's
+		upstream host can't be determined yet. """
+		host, port = device.web_ui_upstream
+		if not host:
+			return None
+		name_item = self.service.get_item('/Devices/{}/Name'.format(serial))
+		model_item = self.service.get_item('/Devices/{}/Model'.format(serial))
+		name = name_item.value if name_item is not None else None
+		model = model_item.value if model_item is not None else None
+		return {
+			"schemaVersion": 1,
+			"id": "shelly-{}".format(serial.lower()),
+			"title": name or model or "Shelly {}".format(serial),
+			"upstream": {"scheme": "http", "host": host, "port": port, "path": "/"},
+			"visibility": {"local": True, "wasm": True, "vrm": False},
+			"origin": WEBPAGES_ORIGIN,
+		}
+
+	async def _register_web_page(self, serial, page):
+		""" Best-effort venus-web-pages registration, exactly what running
+		`vwp add` by hand would do. A device with no venus-web-pages
+		installed is a fully supported outcome here - never logged above
+		info level. """
+		fd, path = tempfile.mkstemp(prefix="shelly-page-", suffix=".json")
+		try:
+			with os.fdopen(fd, "w", encoding="utf-8") as f:
+				json.dump(page, f)
+			added, page_id, error_detail = await asyncio.wait_for(
+				self.monitor.dbus_call(
+					WEBPAGES_SERVICE, WEBPAGES_MANAGEMENT_PATH, "TryAddDefinition", "s", path,
+					interface=WEBPAGES_MANAGEMENT_INTERFACE,
+				),
+				timeout=WEBPAGES_CALL_TIMEOUT_S,
+			)
+			if added:
+				logger.info("registered web page %s (%s) with venus-web-pages", page_id, serial)
+			else:
+				logger.warning(
+					"venus-web-pages rejected web page %s for %s: %s",
+					page["id"], serial, error_detail,
+				)
+		except (DbusException, asyncio.TimeoutError) as e:
+			logger.info("venus-web-pages is unavailable, not registering web page for %s: %s", serial, e)
+		finally:
+			os.unlink(path)
+
+	async def _unregister_web_page(self, serial, page):
+		""" Symmetric counterpart to _register_web_page - same best-effort/
+		log-only contract. """
+		try:
+			reply = await asyncio.wait_for(
+				self.monitor.dbus_call(
+					WEBPAGES_SERVICE, WEBPAGES_MANAGEMENT_PATH, "RemoveDefinition", "s", page["id"],
+					interface=WEBPAGES_MANAGEMENT_INTERFACE,
+				),
+				timeout=WEBPAGES_CALL_TIMEOUT_S,
+			)
+			if reply and reply[0]:
+				logger.info("unregistered web page %s (%s) from venus-web-pages", page["id"], serial)
+		except (DbusException, asyncio.TimeoutError) as e:
+			logger.info("venus-web-pages is unavailable, not unregistering web page for %s: %s", serial, e)
+
+	async def _sync_web_page(self, serial):
+		""" Keep a device's venus-web-pages registration synced to whether
+		it is currently "connected" - discovered, selected, and with one or
+		more channels enabled. Called after every channel enable/disable and
+		on automatic disconnect (see _shelly_event_monitor); delete_shelly_
+		device is a safety net for any path that skips this. """
+		entry = self.shellies.get(serial)
+		is_connected = entry is not None and len(entry['device'].active_channels) > 0
+		was_registered = serial in self._webpage_registered
+		if is_connected and not was_registered:
+			page = self._build_web_page(serial, entry['device'])
+			if page is not None:
+				self._webpage_registered[serial] = page
+				await self._register_web_page(serial, page)
+		elif not is_connected and was_registered:
+			page = self._webpage_registered.pop(serial)
+			await self._unregister_web_page(serial, page)
 
 	async def stop_shelly_device(self, serial):
 		if serial in self.shellies:
@@ -364,6 +485,13 @@ class ShellyManager(object):
 				if e == "disconnected":
 					logger.warning("Shelly device %s disconnected", serial)
 					await self.stop_shelly_device(serial)
+					# Ensures the device's web page is gone the moment it's
+					# no longer connected, even if it never comes back (e.g.
+					# a reboot that isn't re-detected) - stop_shelly_device
+					# above already dropped active_channels to zero, so this
+					# always unregisters here rather than waiting for the
+					# eventual delete_shelly_device safety net.
+					await self._sync_web_page(serial)
 					self.remove_discovered_device(serial)
 					return
 
@@ -584,6 +712,7 @@ class ShellyDiscovery(object):
 			bus_type=self.bus_type,
 			service=self.service,
 			settings=self.settings,
+			monitor=self.monitor,
 		)
 
 		self.manual_ip_discovery = ManualIpDiscovery(
