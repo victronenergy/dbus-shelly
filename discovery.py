@@ -251,6 +251,7 @@ class ShellyManager(object):
 		self.bus_type = bus_type
 		self.service = service
 		self.settings = settings
+		self.meter_poll_interval = 0
 		self.discovered_devices = [] 	# Devices found via mDNS but not manually added
 		self.saved_devices = []			# Devices manually added via IP that should be retained even if not found via mDNS
 		self.shellies = {}
@@ -296,7 +297,8 @@ class ShellyManager(object):
 			bus_type=self.bus_type,
 			serial=serial,
 			server=server,
-			event=event
+			event=event,
+			meter_poll_interval=self.meter_poll_interval
 		)
 
 		e = asyncio.create_task(
@@ -335,6 +337,11 @@ class ShellyManager(object):
 			if event_mon and not event_mon.done():
 				event_mon.cancel()
 			del self.shellies[serial]
+
+	def set_meter_poll_interval(self, interval):
+		self.meter_poll_interval = interval
+		for entry in self.shellies.values():
+			entry['device'].set_meter_poll_interval(interval)
 
 	async def disable_shelly_channel(self, serial, channel):
 		async with self._shelly_lock:
@@ -574,9 +581,13 @@ class ShellyDiscovery(object):
 		# Add DeviceInstance path set to 0 to avoid systemcalc legacy scanning
 		self.service.add_item(IntegerItem('/DeviceInstance', 0, writeable=False))
 
-		await self.settings.add_settings(Setting('/Settings/Shelly/IpAddresses', "", alias="ipaddresses"))
+		await self.settings.add_settings(
+			Setting('/Settings/Shelly/IpAddresses', "", alias="ipaddresses"),
+			Setting('/Settings/Shelly/MeterPollInterval', 0, alias="meterpollinterval"),
+		)
 
 		ip_addresses = self.settings.get_value(self.settings.alias('ipaddresses'))
+		meter_poll_interval = self.settings.get_value(self.settings.alias('meterpollinterval'))
 
 		self.service.add_item(IntegerItem('/Refresh', 0, writeable=True,
 			onchange=self.start_refresh_task))
@@ -585,6 +596,7 @@ class ShellyDiscovery(object):
 			service=self.service,
 			settings=self.settings,
 		)
+		self.manager.set_meter_poll_interval(meter_poll_interval)
 
 		self.manual_ip_discovery = ManualIpDiscovery(
 			settings=self.settings,
@@ -597,6 +609,8 @@ class ShellyDiscovery(object):
 			logger_obj=logger,
 		)
 		self.service.add_item(TextItem('/IpAddresses', ip_addresses, writeable=True, onchange=self.manual_ip_discovery.on_ip_addresses_changed))
+		self.service.add_item(IntegerItem('/MeterPollInterval', meter_poll_interval, writeable=True,
+			onchange=self.meter_poll_interval_changed))
 		await self.service.register()
 
 		self.mdns_discovery = MdnsDiscovery(
@@ -608,6 +622,24 @@ class ShellyDiscovery(object):
 		self.manual_ip_discovery.start_if_needed(ip_addresses)
 
 		await self.bus.wait_for_disconnect()
+
+	async def meter_poll_interval_changed(self, item, value):
+		try:
+			value = int(value)
+		except (TypeError, ValueError):
+			return False
+
+		if value < 0:
+			return False
+
+		if value != 0 and value < 1:
+			value = 1
+
+		await self.settings.set_value(self.settings.alias('meterpollinterval'), value)
+		if self.manager is not None:
+			self.manager.set_meter_poll_interval(value)
+		item.set_local_value(value)
+		return True
 
 	async def start_refresh_task(self, item, value):
 		if value != 1 or self.manager is None:

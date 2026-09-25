@@ -148,6 +148,9 @@ class ShellyHandler(object):
 	def update(self, status_json, cap=None):
 		pass
 
+	def update_meter_status(self, status_json, cap=None):
+		self.update(status_json, cap)
+
 	async def em_supported(self):
 		return False
 
@@ -302,7 +305,7 @@ class ShellyHandler_EM_paths_mixin():
 
 # Contains common code for shelly handlers that have energy metering capabilities (single or multi-phase)
 class Shelly_EM_base(ShellyHandler_EM_paths_mixin):
-	async def init_em(self, num_phases, allowed_roles=['acload', 'pvinverter', 'genset', 'heatpump', 'grid']):
+	async def init_em(self, num_phases, allowed_roles=['acload', 'pvinverter', 'genset', 'heatpump']):
 		# Determine role and instance
 		self._em_role, instance = self.role_instance(
 			self.settings.get_value(self.settings.alias('instance_{}_{}'.format(self._serial, self._channel_id))))
@@ -353,22 +356,23 @@ class Shelly_EM_base(ShellyHandler_EM_paths_mixin):
 		with self.service as s:
 			s['/AllowedRoles'] = allowed_roles
 
-	def grid_role(self):
-		return self._em_role == 'grid'
-
-	def power_value(self, value):
-		return float(value) if self.grid_role() else abs(value)
-
 	def store_energies(self, forward, reverse, prefix=''):
+		# Do not update the paths when the energy counter is exactly zero as that is likely an incorrect value and will confuse VRM.
+		# Sometimes the shelly invalidly reports an energy counter of 0 while booting before initializing it to the value from memory.
+		# If this value were to be reported, it would lead to a sudden drop and spike on the VRM graphs.
+		# When the counter is intentionally reset to 0 by the user, it will be reported as soon as the value is no longer exactly 0.
+
 		# The shelly reports the measured PV energy in the reverse energy counter, but on the GX we need to report this in the forward energy counter.
 		# The GX uses the role/service type to determine the direction of the energy flow.
 		forward = float(forward)
 		reverse = float(reverse)
-		with self.service as s:
-			if self._em_role == 'pvinverter':
+		if self._em_role == 'pvinverter' and reverse != 0:
+			with self.service as s:
 				s[prefix + 'Energy/Forward'] = reverse
 				s[prefix + 'Energy/Reverse'] = forward
-			else:
+
+		elif self._em_role != 'pvinverter' and forward != 0:
+			with self.service as s:
 				s[prefix + 'Energy/Forward'] = forward
 				s[prefix + 'Energy/Reverse'] = reverse
 
@@ -450,9 +454,8 @@ class ShellyHandler_em(Shelly_EM_base, ShellyHandler_channel_config_mixin, Shell
 						p = {1:'a', 2:'b', 3:'c'}.get(l)
 						s[em_prefix + 'Voltage'] = status_json[f"{p}_voltage"]
 						s[em_prefix + 'Current'] = abs(status_json[f"{p}_current"])
-						phase_power = self.power_value(status_json[f"{p}_act_power"])
-						power += phase_power
-						s[em_prefix + 'Power'] = phase_power
+						power += abs(status_json[f"{p}_act_power"])
+						s[em_prefix + 'Power'] = abs(status_json[f"{p}_act_power"])
 						s[em_prefix + 'PowerFactor'] = status_json[f"{p}_pf"]
 					s['/Ac/Power'] = power
 
@@ -490,9 +493,9 @@ class ShellyHandler_em1(Shelly_EM_base, ShellyHandler_channel_config_mixin, Shel
 				if cap == 'em1':
 					s[em_prefix + 'Voltage'] = status_json["voltage"]
 					s[em_prefix + 'Current'] = abs(status_json["current"])
-					s[em_prefix + 'Power'] = self.power_value(status_json["act_power"])
+					s[em_prefix + 'Power'] = abs(status_json["act_power"])
 					s[em_prefix + 'PowerFactor'] = status_json["pf"] if 'pf' in status_json else None
-					s['/Ac/Power'] = self.power_value(status_json["act_power"])
+					s['/Ac/Power'] = abs(status_json["act_power"])
 				elif cap == 'em1data':
 					eforward = status_json["total_act_energy"] / 1000 if "total_act_energy" in status_json else 0.0
 					ereverse = status_json["total_act_ret_energy"] / 1000 if "total_act_ret_energy" in status_json else 0.0
@@ -501,14 +504,36 @@ class ShellyHandler_em1(Shelly_EM_base, ShellyHandler_channel_config_mixin, Shel
 				elif cap == 'pm1':
 					s[em_prefix + 'Voltage'] = status_json["voltage"]
 					s[em_prefix + 'Current'] = abs(status_json["current"])
-					s[em_prefix + 'Power'] = self.power_value(status_json["apower"])
+					s[em_prefix + 'Power'] = abs(status_json["apower"])
 					s[em_prefix + 'PowerFactor'] = status_json["pf"] if 'pf' in status_json else None
-					s['/Ac/Power'] = self.power_value(status_json["apower"])
+					s['/Ac/Power'] = abs(status_json["apower"])
 
 					eforward = status_json["aenergy"]["total"] / 1000 if "aenergy" in status_json else 0.0
 					ereverse = status_json["ret_aenergy"]["total"] / 1000 if "ret_aenergy" in status_json else 0.0
 					self.store_energies(eforward, ereverse, prefix=em_prefix)
 					self.store_energies(eforward, ereverse, prefix='/Ac/')
+
+		except KeyError as e:
+			logger.error("KeyError in update: %s", e)
+			pass
+		except Exception as e:
+			logger.error("Exception in update: %s", e)
+			pass
+
+	def update_meter_status(self, status_json, cap=None):
+		if cap != 'pm1':
+			self.update(status_json, cap)
+			return
+		if status_json is None:
+			return
+		try:
+			with self.service as s:
+				em_prefix = "/Ac/L{}/".format(self._phase or 1)
+				s[em_prefix + 'Voltage'] = status_json["voltage"]
+				s[em_prefix + 'Current'] = abs(status_json["current"])
+				s[em_prefix + 'Power'] = abs(status_json["apower"])
+				s[em_prefix + 'PowerFactor'] = status_json["pf"] if 'pf' in status_json else None
+				s['/Ac/Power'] = abs(status_json["apower"])
 
 		except KeyError as e:
 			logger.error("KeyError in update: %s", e)

@@ -23,6 +23,7 @@ from __main__ import VERSION, __file__ as processName
 PRODUCT_ID_SHELLY_EM = 0xB034
 PRODUCT_ID_SHELLY_SWITCH = 0xB075
 CONNECTION_RETRIES = 10
+METER_POLL_MIN_INTERVAL = 1
 background_tasks = set()
 
 class ShellyConnectionError(Exception):
@@ -104,7 +105,7 @@ class ShellyChannel(object):
 # Creates an instance of ShellyChannel for each enabled channel.
 class ShellyDevice(object):
 
-	def __init__(self, bus_type=None, serial=None, server=None, event=None):
+	def __init__(self, bus_type=None, serial=None, server=None, event=None, meter_poll_interval=0):
 		self._bus_type= bus_type
 		self._serial = serial
 		self._event_obj = event
@@ -120,6 +121,8 @@ class ShellyDevice(object):
 		self._channel_info = []
 		self._capabilities = []
 		self._event = None
+		self._meter_poll_interval = self._normalise_meter_poll_interval(meter_poll_interval)
+		self._meter_poll_task = None
 
 	@property
 	def event(self):
@@ -189,6 +192,70 @@ class ShellyDevice(object):
 				if channel_obj is not None:
 					await channel_obj.stop()
 				del self._channels[ch]
+
+	def _normalise_meter_poll_interval(self, interval):
+		try:
+			interval = float(interval)
+		except (TypeError, ValueError):
+			return 0
+		if interval <= 0:
+			return 0
+		return max(int(interval), METER_POLL_MIN_INTERVAL)
+
+	def set_meter_poll_interval(self, interval):
+		self._meter_poll_interval = self._normalise_meter_poll_interval(interval)
+		if self._meter_poll_interval == 0:
+			self._stop_meter_polling()
+		else:
+			self._start_meter_polling()
+
+	def _start_meter_polling(self):
+		if self._meter_poll_interval == 0 or not self.is_connected:
+			return
+		if self._meter_poll_task is not None and not self._meter_poll_task.done():
+			return
+		self._meter_poll_task = asyncio.create_task(self._meter_poll_loop())
+		background_tasks.add(self._meter_poll_task)
+		self._meter_poll_task.add_done_callback(background_tasks.discard)
+
+	def _stop_meter_polling(self):
+		task = self._meter_poll_task
+		if task is not None and not task.done():
+			task.cancel()
+		self._meter_poll_task = None
+
+	def _meter_poll_targets(self):
+		for entry in list(self._channels.values()):
+			if entry.get("ch_type") not in (shelly_handlers.HANDLER_KIND_EM, shelly_handlers.HANDLER_KIND_EM1):
+				continue
+
+			channel = int(entry.get("ch_num"))
+			handlers = entry.get("handlers", {})
+			for cap in ('EM', 'EM1', 'PM1'):
+				handler = handlers.get(cap)
+				if handler is not None:
+					yield cap, channel, handler
+					break
+
+	async def _meter_poll_once(self):
+		for cap, channel, handler in self._meter_poll_targets():
+			resp = await self.rpc_call(f"{cap}.GetStatus", {"id": channel})
+			if resp is not None:
+				update = getattr(handler, "update_meter_status", handler.update)
+				update(resp, cap=cap.lower())
+
+	async def _meter_poll_loop(self):
+		try:
+			while self._meter_poll_interval > 0 and self.is_connected:
+				await asyncio.sleep(self._meter_poll_interval)
+				if self._meter_poll_interval == 0 or not self.is_connected:
+					break
+				await self._meter_poll_once()
+		except asyncio.CancelledError:
+			raise
+		finally:
+			if self._meter_poll_task is asyncio.current_task():
+				self._meter_poll_task = None
 
 	def _parse_server(self):
 		if not self._server:
@@ -279,6 +346,7 @@ class ShellyDevice(object):
 	def do_reconnect(self):
 		if self._reconnecting:
 			return False
+		self._stop_meter_polling()
 		self._reconnecting = True
 		task = asyncio.create_task(self._reconnect())
 		background_tasks.add(task)
@@ -318,6 +386,7 @@ class ShellyDevice(object):
 			return False
 		# Reinit all channels
 		await asyncio.gather(*(self._reinit_channel_and_handlers(ch) for ch in self._channels))
+		self._start_meter_polling()
 		return True
 
 	async def _reinit_channel_and_handlers(self, ch):
@@ -385,6 +454,7 @@ class ShellyDevice(object):
 				return False
 
 			self._shelly_device.subscribe_updates(self.device_updated)
+			self._start_meter_polling()
 			return True
 
 	async def start_channel(self, channel):
@@ -469,6 +539,7 @@ class ShellyDevice(object):
 		await self.start_channel(channel)
 
 	async def stop(self):
+		self._stop_meter_polling()
 		for ch in list(self._channels):
 			await self.stop_channel(ch)
 
@@ -539,6 +610,7 @@ class ShellyDevice(object):
 		elif update_type == RpcUpdateType.DISCONNECTED:
 			if self._shelly_device:
 				logger.warning("Shelly device %s disconnected", self.serial_or_server)
+				self._stop_meter_polling()
 				self.do_reconnect()
 
 		elif update_type == RpcUpdateType.EVENT:
