@@ -555,6 +555,8 @@ class MdnsDiscovery(object):
 		self._name_rgx = re.compile(r"^shelly[\d\w\-]+-[0-9a-f]{12}\._shelly\._tcp\.local\.$")
 
 	async def start(self):
+		if self.aiozc is not None:
+			return
 		self.aiozc = AsyncZeroconf()
 		self.aiobrowser = AsyncServiceBrowser(
 			self.aiozc.zeroconf,
@@ -574,12 +576,15 @@ class MdnsDiscovery(object):
 				)
 
 	async def stop(self):
-		if self.aiobrowser is not None:
-			await self.aiobrowser.async_cancel()
-			self.aiobrowser = None
-		if self.aiozc is not None:
-			await self.aiozc.async_close()
-			self.aiozc = None
+		aiobrowser, self.aiobrowser = self.aiobrowser, None
+		aiozc, self.aiozc = self.aiozc, None
+		try:
+			if aiobrowser is not None:
+				await aiobrowser.async_cancel()
+			if aiozc is not None:
+				await aiozc.async_close()
+		except Exception as e:
+			logger.debug("Error while stopping mDNS discovery: %s", e)
 
 	def on_service_state_change(self, zeroconf, service_type, name, state_change):
 		if not self._name_rgx.match(name):
@@ -592,8 +597,17 @@ class MdnsDiscovery(object):
 
 	async def _on_service_state_change_async(self, zeroconf, service_type, name, state_change):
 		async with self._mdns_lock:
+			# mDNS discovery may have been stopped while this task was waiting for the lock.
+			if self.aiozc is None:
+				return
 			info = AsyncServiceInfo(service_type, name)
-			await info.async_request(zeroconf, 3000)
+			try:
+				await info.async_request(zeroconf, 3000)
+			except Exception:
+				# Zeroconf is closed when mDNS discovery is stopped during a request.
+				if self.aiozc is None:
+					return
+				raise
 			if not info or not info.server:
 				return
 			serial = info.server.split(".")[0].split("-")[-1]
@@ -1145,9 +1159,12 @@ class ShellyDiscovery(object):
 		# Add DeviceInstance path set to 0 to avoid systemcalc legacy scanning
 		self.service.add_item(IntegerItem('/DeviceInstance', 0, writeable=False))
 
-		await self.settings.add_settings(Setting('/Settings/Shelly/IpAddresses', "", alias="ipaddresses"))
+		await self.settings.add_settings(
+			Setting('/Settings/Shelly/IpAddresses', "", alias="ipaddresses"),
+			Setting('/Settings/Shelly/AutoScan', 1, _min=0, _max=1, alias="autoscan"))
 
 		ip_addresses = self.settings.get_value(self.settings.alias('ipaddresses'))
+		autoscan = self.settings.get_value(self.settings.alias('autoscan'))
 
 		self.service.add_item(IntegerItem('/Refresh', 0, writeable=True,
 			onchange=self.start_refresh_task))
@@ -1162,6 +1179,7 @@ class ShellyDiscovery(object):
 		await self._manager.start_cache_sync()
 
 		self.service.add_item(TextItem('/IpAddresses', ip_addresses, writeable=True, onchange=self._on_ip_addresses_changed))
+		self.service.add_item(IntegerItem('/AutoScan', autoscan, writeable=True, onchange=self._on_autoscan_changed))
 
 		self._connection_manager = ShellyConnectionManager(self._shelly_device_cache,probe_device=self._manager._probe_device)
 		await self._connection_manager.start()
@@ -1176,7 +1194,8 @@ class ShellyDiscovery(object):
 			remove_endpoint=self.remove_endpoint,
 		)
 
-		await self._mdns_discovery.start()
+		if autoscan:
+			await self._mdns_discovery.start()
 		await self._manual_ip_discovery.start(ip_addresses)
 
 		await self.service.register()
@@ -1194,6 +1213,20 @@ class ShellyDiscovery(object):
 				item.set_local_value(value)
 				if value != self.settings.get_value(self.settings.alias('ipaddresses')):
 					await self.settings.set_value(self.settings.alias('ipaddresses'), value)
+
+	async def _on_autoscan_changed(self, item, value):
+		if value not in (0, 1):
+			return False
+		item.set_local_value(value)
+		if value != self.settings.get_value(self.settings.alias('autoscan')):
+			await self.settings.set_value(self.settings.alias('autoscan'), value)
+		if self._mdns_discovery is None:
+			return
+		# Devices that were already discovered stay in the cache, so enabled channels keep running.
+		if value:
+			await self._mdns_discovery.start()
+		else:
+			await self._mdns_discovery.stop()
 
 	async def start_refresh_task(self, item, value):
 		if value != 1 or self._manager is None:
@@ -1217,8 +1250,8 @@ class ShellyDiscovery(object):
 			if self._shelly_device_cache is not None:
 				self._shelly_device_cache.refresh()
 
-			# 2. Restart mDNS discovery.
-			if self._mdns_discovery is not None:
+			# 2. Restart mDNS discovery, if enabled.
+			if self._mdns_discovery is not None and self.settings.get_value(self.settings.alias('autoscan')):
 				await self._mdns_discovery.restart()
 
 	async def _clear_refresh(self):
