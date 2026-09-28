@@ -3,7 +3,7 @@
 This is a VenusOS driver for Gen2+ Shelly switches and energy meters.
 
 # Connection
-The shelly and the GX should be in the same network. The GX device discovers the shelly over mDNS. Found shelly devices are listed under the service `com.victronenergy.shelly/Devices/`. Each channel can be enabled individually. After enabling a channel by setting the `/Enabled` path to 1, a dedicated service will be registered on dbus. The type of service depends on the capabilities of the shelly.
+The shelly and the GX should be in the same network. The GX device discovers the shelly over mDNS. Automatic scanning can be disabled by setting `com.victronenergy.shelly/AutoScan` to 0, in which case devices have to be added manually through `/IpAddresses`. Found shelly devices are listed under the service `com.victronenergy.shelly/Devices/`. Each channel can be enabled individually. After enabling a channel by setting the `/Enabled` path to 1, a dedicated service will be registered on dbus. The type of service depends on the capabilities of the shelly.
 
 Switch and energy metering channels default to disabled and require an explicit opt-in, since enabling them can drive real loads. Smoke and Flood channels default to enabled on first discovery instead: they can't actuate anything, and enabling them right away -- while the device is confirmed awake from the discovery probe -- avoids having to catch a battery-powered sensor during one of its brief wake windows just to turn it on.
 
