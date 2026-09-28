@@ -73,6 +73,7 @@ class DeviceProbeResult:
 	ip: str | None = None
 	info: dict[str, Any] | None = None
 	channel_info: dict[int, dict[str, Any]] = field(default_factory=dict)
+	sleepy: bool = False
 
 # ShellyEndpoint represents a discovered Shelly device endpoint, including its serial number,
 # endpoint address, source of discovery (manual or mDNS), and connection status.
@@ -82,6 +83,7 @@ class ShellyEndpoint:
 	host: str	# The hostname or IP address of the Shelly device.
 	source: str  # "Manual" or "mDNS"
 	supported: bool | None = None  # None => unknown, True => supported, False => unsupported
+	sleepy: bool = False  # Battery-powered device (e.g. Smoke, Flood) that is only reachable while awake
 
 # ConnectMeta tracks the connection retry state for a Shelly device, 
 # including the number of attempts, next retry time, and whether the connection has expired.
@@ -281,7 +283,8 @@ class ShellyDeviceCache:
 					self._queue_device_change("update", existing)
 				# If the device is already in the cache, but we do not know if it is supported yet, trigger a reconnect straight away
 				# NOTE: Unsupported devices will be retried upon refresh.
-				if existing.endpoint.supported is None:
+				# A sleepy device that is seen again has likely just woken up. It is only reachable for a short time, so trigger a reconnect straight away.
+				if existing.endpoint.supported is None or existing.endpoint.sleepy:
 					existing.start_connect()
 					self._queue_cache_change()
 				return
@@ -346,6 +349,7 @@ class ShellyDeviceCache:
 					existing.channel_info = state.channel_info
 				if state.endpoint.supported is not None:
 					existing.endpoint.supported = state.endpoint.supported
+					existing.endpoint.sleepy = state.endpoint.sleepy
 				if state.connect is not None and state.connect.success:
 					existing.connect = state.connect
 				return existing
@@ -457,6 +461,7 @@ class ShellyConnectionManager:
 						if ep_state.endpoint.serial is None and result.info is not None:
 							promote_serial = True
 						ep_state.endpoint.supported = True
+						ep_state.endpoint.sleepy = result.sleepy
 						ep_state.connect.mark_success(now)
 					elif result.status == ProbeStatus.RECONNECTING:
 						ep_state.connect.mark_reconnecting()
@@ -902,6 +907,7 @@ class ShellyManager(object):
 			result.status = ProbeStatus.REACHABLE
 			result.ip = shelly.server
 			result.channel_info = shelly.channel_info
+			result.sleepy = shelly.is_sleepy
 
 		except Exception as e:
 			logger.debug("Failed to get device info for %s: %s", server, e)
@@ -919,6 +925,7 @@ class ShellyManager(object):
 				result.info = shelly.shelly_info
 				result.ip = shelly.server
 				result.channel_info = shelly.channel_info
+				result.sleepy = shelly.is_sleepy
 				if await shelly.ping_shelly():
 					result.status = ProbeStatus.REACHABLE
 				else:
