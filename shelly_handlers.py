@@ -643,12 +643,6 @@ class ShellyHandler_digitalinput_alarm_base(ShellyHandler_channel_config_mixin, 
 		mute_kwargs = {"writeable": True, "onchange": self.set_mute} if self._supports_remote_mute else {"writeable": False}
 		self.service.add_item(IntegerItem('/Mute', 0, **mute_kwargs))
 		self.service.add_item(IntegerItem('/Settings/AlarmSetting', alarm_enabled, writeable=True, onchange=self.set_alarm_setting))
-		# There's no raw GPIO level to invert for an RPC-reported alarm state, and letting a
-		# safety device's alarm polarity be flipped is a real hazard rather than a convenience,
-		# so these are fixed read-only placeholders -- present only so the Setup page's generic
-		# digitalinput template renders correctly instead of showing unbound-looking switches.
-		self.service.add_item(IntegerItem('/Settings/InvertTranslation', 0, writeable=False))
-		self.service.add_item(IntegerItem('/Settings/InvertAlarm', 0, writeable=False))
 		self.set_service_name('digitalinput')
 		await self.force_update()
 
