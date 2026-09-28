@@ -390,8 +390,9 @@ class ShellyDevice(object):
 				break
 
 		if not self.is_connected:
-			logger.error("Failed to reconnect to shelly device %s", self.serial_or_server)
-			self._invalidate()
+			if not self.is_sleepy:
+				logger.error("Failed to reconnect to shelly device %s", self.serial_or_server)
+				self._invalidate()
 			self.set_event(ShellyEvent.DISCONNECTED)
 			return False
 		logger.info("Reconnected to shelly device %s", self.serial_or_server)
