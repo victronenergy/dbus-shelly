@@ -15,6 +15,7 @@ class MockShellyDevice:
 		app,
 		mac,
 		switch_channels=1,
+		rgbcct_channels=0,
 		voltage=230.0,
 		apower=120.0,
 		pf=0.98,
@@ -47,6 +48,13 @@ class MockShellyDevice:
 		self._energy_total = [0.0] * switch_channels
 		self._ret_energy_total = [0.0] * switch_channels
 		self._last_energy_update = time.time()
+
+		self.rgbcct_channels = rgbcct_channels
+		self._rgbcct = [
+			{"output": False, "brightness": 50, "rgb": [255, 255, 255], "ct": 4000, "mode": "rgb"}
+			for _ in range(rgbcct_channels)
+		]
+		self._rgbcct_names = [None] * rgbcct_channels
 
 		self._ws_clients = set()
 		self._notify_task = None
@@ -119,6 +127,8 @@ class MockShellyDevice:
 		}
 		for i in range(self.switch_channels):
 			status[f"switch:{i}"] = self._switch_status(i)
+		for i in range(self.rgbcct_channels):
+			status[f"rgbcct:{i}"] = self._rgbcct_status(i)
 		if self.smoke:
 			status["smoke:0"] = self.smoke_get_status({"id": 0})
 			status["devicepower:0"] = self.devicepower_get_status({"id": 0})
@@ -189,6 +199,53 @@ class MockShellyDevice:
 				pass
 		return {"id": channel, "on": self._switch_outputs[channel]}
 
+	def _rgbcct_status(self, channel):
+		return {"id": channel, **self._rgbcct[channel]}
+
+	def rgbcct_get_status(self, params):
+		channel = int(params.get("id", 0))
+		if channel < 0 or channel >= self.rgbcct_channels:
+			return None
+		return self._rgbcct_status(channel)
+
+	def rgbcct_get_config(self, params):
+		channel = int(params.get("id", 0))
+		if channel < 0 or channel >= self.rgbcct_channels:
+			return None
+		return {"id": channel, "name": self._rgbcct_names[channel]}
+
+	def rgbcct_set_config(self, params):
+		channel = int(params.get("id", 0))
+		if channel < 0 or channel >= self.rgbcct_channels:
+			return None
+		name = params.get("config", {}).get("name")
+		if name:
+			self._rgbcct_names[channel] = name
+		return {"id": channel, "name": self._rgbcct_names[channel]}
+
+	def rgbcct_set(self, params):
+		channel = int(params.get("id", 0))
+		if channel < 0 or channel >= self.rgbcct_channels:
+			return None
+		# The API requires at least one of on and brightness.
+		if "on" not in params and "brightness" not in params:
+			raise ValueError("At least one of 'on' and 'brightness' is required")
+		if "mode" in params and params["mode"] not in ("rgb", "cct"):
+			raise ValueError(f"Invalid mode: {params['mode']}")
+		state = self._rgbcct[channel]
+		for key in ("mode", "brightness", "rgb", "ct"):
+			if key in params:
+				state[key] = params[key]
+		if "on" in params:
+			state["output"] = bool(params["on"])
+		# Push an immediate status update to websocket clients.
+		try:
+			loop = asyncio.get_running_loop()
+			loop.create_task(self.notify_full_status())
+		except RuntimeError:
+			pass
+		return {}
+
 	def smoke_get_status(self, params):
 		channel = int(params.get("id", 0))
 		if channel != 0 or not self.smoke:
@@ -250,12 +307,17 @@ class MockShellyDevice:
 			"Shelly.GetStatus",
 			"Shelly.GetConfig",
 			"Shelly.ListMethods",
+			"Shelly.GetComponents",
 			"Sys.GetConfig",
 			"Sys.SetConfig",
 			"Switch.GetStatus",
 			"Switch.GetConfig",
 			"Switch.SetConfig",
 			"Switch.Set",
+			"RGBCCT.GetStatus",
+			"RGBCCT.GetConfig",
+			"RGBCCT.SetConfig",
+			"RGBCCT.Set",
 			"Smoke.GetStatus",
 			"Smoke.GetConfig",
 			"Smoke.SetConfig",
@@ -361,6 +423,25 @@ async def handle_rpc(device, frame, *, verbose=False):
 		resp = _json_response(device.switch_set(params), request_id)
 		resp["src"] = f"shelly-{device.mac}"
 		return resp
+	if method == "RGBCCT.GetStatus":
+		resp = _json_response(device.rgbcct_get_status(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "RGBCCT.GetConfig":
+		resp = _json_response(device.rgbcct_get_config(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "RGBCCT.SetConfig":
+		resp = _json_response(device.rgbcct_set_config(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "RGBCCT.Set":
+		try:
+			resp = _json_response(device.rgbcct_set(params), request_id)
+		except ValueError as e:
+			resp = _json_error(str(e), request_id, code=-103)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
 	if method == "Smoke.GetStatus":
 		resp = _json_response(device.smoke_get_status(params), request_id)
 		resp["src"] = f"shelly-{device.mac}"
@@ -451,6 +532,7 @@ def parse_args():
 	parser.add_argument("--app", default="MockSwitchEM")
 	parser.add_argument("--mac", default="aabbccddeeff")
 	parser.add_argument("--switch-channels", type=int, default=1)
+	parser.add_argument("--rgbcct-channels", type=int, default=0)
 	parser.add_argument("--voltage", type=float, default=230.0)
 	parser.add_argument("--apower", type=float, default=1000.0)
 	parser.add_argument("--pf", type=float, default=0.98)
@@ -472,6 +554,7 @@ async def main():
 		app=args.app,
 		mac=args.mac,
 		switch_channels=args.switch_channels,
+		rgbcct_channels=args.rgbcct_channels,
 		voltage=args.voltage,
 		apower=args.apower,
 		pf=args.pf,

@@ -38,6 +38,7 @@ Since V2.00, dbus-shelly implements handlers for RPC components, which enables c
 | RGB                | *.switch                         | Switch type: RGB                                                                           |
 | RGBW               | *.switch                         | Switch type: RGBW                                                                          |
 | CCT                | *.switch                         | Switch type: CCT                                                                           |
+| RGBCCT             | *.switch                         | Switch type: RGB or CCT                                                                    |
 | CB                 | *.switch                         | Switch type: Toggle                                                                        |
 | Smoke              | *.digitalinput                   | Smoke alarm. DevicePower (if present) adds battery info to the same service                |
 | Flood              | *.digitalinput                   | Bilge alarm (no dedicated flood type in Venus). DevicePower (if present) adds battery info |

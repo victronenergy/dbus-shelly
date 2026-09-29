@@ -1088,7 +1088,10 @@ class ShellyHandler_RGBW(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 	def _light_controls_text_callback(self, v):
 		if self._type == OutputType.RGBW:
 			return "H: %.1f, S: %.1f, B: %.1f, W: %.1f" % (v[0], v[1], v[2], v[3])
-		return "H: %.1f, S: %.1f, B: %.1f" % (v[0], v[1], v[2])
+		elif self._type == OutputType.RGB:
+			return "H: %.1f, S: %.1f, B: %.1f" % (v[0], v[1], v[2])
+		else:
+			return "CT: %dK, B: %.1f" % (v[4], v[2])
 
 	def update(self, status_json, cap=None):
 		super().update(status_json, cap)
@@ -1207,6 +1210,63 @@ class ShellyHandler_CCT(ShellyHandler_RGBW):
 					"ct": value[4],
 					"brightness": value[2]
 				}
+
+		await self.rpc_call(
+			'Set',
+			params
+		)
+
+# RGBCCT component: a single light output that operates either in rgb or in cct mode.
+# The switch type (RGB or CCT) selects the mode. The mode reported by the device is leading.
+@register_handler('RGBCCT', kind=HANDLER_KIND_SWITCH)
+class ShellyHandler_RGBCCT(ShellyHandler_RGBW):
+	_default_output_type = OutputType.RGB
+	_valid_types_mask = int((1 << OutputType.RGB.value) | (1 << OutputType.CCT.value))
+	_mode_by_type = {OutputType.RGB: "rgb", OutputType.CCT: "cct"}
+
+	def update(self, status_json, cap=None):
+		self._sync_type_from_mode(status_json.get("mode") if status_json else None)
+		super().update(status_json, cap)
+
+	def _sync_type_from_mode(self, mode):
+		# The mode can also be changed from outside (Shelly app, web UI), reflect it in the switch type.
+		t = {v: k for k, v in self._mode_by_type.items()}.get(mode)
+		if t is None or t == self._type:
+			return
+		self._type = t
+		self.service.get_item(f'/SwitchableOutput/{self._channel_id}/Settings/Type').set_local_value(int(t))
+		task = asyncio.create_task(self.settings.set_value(self.settings.alias(f'Type_{self._serial}_{self._channel_id}'), int(t)))
+		background_tasks.add(task)
+		task.add_done_callback(background_tasks.discard)
+
+	def on_channel_type_changed(self, channel, value):
+		# On init, the mode of the device is leading, so only push it on a user change.
+		if not self._init_done or value == self._type:
+			return
+		params = {
+			"id": self._channel_id,
+			"on": bool(self.state),
+			"mode": self._mode_by_type[value],
+		}
+		task = asyncio.create_task(self.rpc_call('Set', params))
+		background_tasks.add(task)
+		task.add_done_callback(background_tasks.discard)
+
+	async def _set_light_controls(self, item, value, force_white=False):
+		if not self._sanity_check_values(value):
+			return
+
+		item.set_local_value(value) # Set the value here already to make the UI more responsive
+
+		params = {
+					"id": self._channel_id,
+					"mode": self._mode_by_type.get(self._type, "rgb"),
+					"brightness": value[2]
+				}
+		if self._type == OutputType.CCT:
+			params["ct"] = value[4]
+		else:
+			params["rgb"] = self._hsv2rgb(value, normalise=True)
 
 		await self.rpc_call(
 			'Set',
