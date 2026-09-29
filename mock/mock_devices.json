@@ -53,6 +53,15 @@
       "flood": true,
       "battery-percent": 100.0,
       "battery-voltage": 3.0
+    },
+    {
+      "device-name": "Mock Shelly RGBCCT",
+      "channel-name": "Mock shelly rgbcct - Channel 1",
+      "app": "MockRGBCCT",
+      "mac": "aabbccddeef7",
+      "port": 8028,
+      "switch-channels": 0,
+      "rgbcct-channels": 1
     }
   ]
 }

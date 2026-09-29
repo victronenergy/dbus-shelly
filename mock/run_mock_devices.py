@@ -42,6 +42,8 @@ def build_cmd(script_path, device, verbose):
 		str(device.get("apower", 1000.0)),
 		"--switch-channels",
 		str(device.get("switch-channels", 1)),
+		"--rgbcct-channels",
+		str(device.get("rgbcct-channels", 0)),
 	]
 	if device.get("smoke", False):
 		cmd.append("--smoke")

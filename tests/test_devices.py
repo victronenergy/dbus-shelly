@@ -21,6 +21,7 @@ DIMMER = "aabbccdd1004"
 RGB = "aabbccdd1005"
 CCT = "aabbccdd1006"
 FLOOD = "aabbccdd1007"
+RGBCCT = "aabbccdd1008"
 
 DEVICES = {
 	# serial: (mock args, expected channel types)
@@ -31,6 +32,7 @@ DEVICES = {
 	RGB: (["--rgb"], ["switch"]),
 	CCT: (["--cct"], ["switch"]),
 	FLOOD: (["--flood"], ["digitalinput"]),
+	RGBCCT: (["--rgbcct-channels", "1"], ["switch"]),
 }
 
 
@@ -213,6 +215,40 @@ def test_cct(stack):
 
 	mock.rpc("CCT.Set", id=0, ct=2700)
 	stack.wait_for(lambda: light_controls(stack, name)[4] == 2700, "LightControls ct to follow the device")
+
+
+def test_rgbcct(stack):
+	enable(stack, RGBCCT)
+	name = service_name("switch", RGBCCT)
+	items = stack.wait_service(name)
+	# Mock starts in rgb mode
+	assert items["/SwitchableOutput/0/Settings/Type"] == 11	# RGB
+	assert items["/SwitchableOutput/0/Settings/ValidTypes"] == (1 << 11) | (1 << 12)
+
+	mock = stack.mocks[RGBCCT]
+	assert stack.client.set_value(name, "/SwitchableOutput/0/LightControls", "ai", [120, 100, 80, 0, 0]) == 0
+	stack.wait_for(lambda: (st := mock.rpc("RGBCCT.GetStatus", id=0))["mode"] == "rgb" and st["rgb"] == [0, 255, 0]
+		and st["brightness"] == 80, "mock green at 80%")
+
+	mock.rpc("RGBCCT.Set", id=0, brightness=80, rgb=[0, 0, 255])
+	stack.wait_for(lambda: light_controls(stack, name)[0] == 240, "LightControls hue to follow the device")
+
+	# Switching the type on D-Bus switches the mode on the device
+	assert stack.client.set_value(name, "/SwitchableOutput/0/Settings/Type", "i", 12) == 0
+	stack.wait_for(lambda: mock.rpc("RGBCCT.GetStatus", id=0)["mode"] == "cct", "mock in cct mode")
+	assert stack.setting(f"/Settings/Devices/shelly_{RGBCCT}_0/0/Type") == 12
+
+	assert stack.client.set_value(name, "/SwitchableOutput/0/LightControls", "ai", [0, 0, 60, 0, 2700]) == 0
+	stack.wait_for(lambda: (st := mock.rpc("RGBCCT.GetStatus", id=0))["mode"] == "cct" and st["ct"] == 2700
+		and st["brightness"] == 60, "mock at 2700K, 60%")
+
+	mock.rpc("RGBCCT.Set", id=0, brightness=60, ct=5000)
+	stack.wait_for(lambda: light_controls(stack, name)[4] == 5000, "LightControls ct to follow the device")
+
+	# The mode of the device is leading: a mode change from outside updates the type and its setting
+	mock.rpc("RGBCCT.Set", id=0, on=True, mode="rgb")
+	stack.wait_value(name, "/SwitchableOutput/0/Settings/Type", 11)
+	stack.wait_for(lambda: stack.setting(f"/Settings/Devices/shelly_{RGBCCT}_0/0/Type") == 11, "Type setting to follow the device")
 
 
 def test_flood(stack):
