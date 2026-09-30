@@ -5,6 +5,7 @@ FILES =					\
 	shelly_device.py	\
 	shelly_handlers.py	\
 	shelly_s2.py		\
+	shelly_s2_control.py	\
 	utils.py
 
 LIB =					\
