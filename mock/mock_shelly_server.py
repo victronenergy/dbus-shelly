@@ -133,6 +133,19 @@ class MockShellyDevice:
 			"sys": {"device": {"name": self.name}},
 		}
 
+	def shelly_get_components(self, params):
+		components = []
+		for i in range(self.switch_channels):
+			components.append({"key": f"switch:{i}", "status": self._switch_status(i), "config": self.switch_get_config({"id": i})})
+		if self.smoke:
+			components.append({"key": "smoke:0", "status": self.smoke_get_status({"id": 0}), "config": self.smoke_get_config({"id": 0})})
+		if self.flood:
+			components.append({"key": "flood:0", "status": self.flood_get_status({"id": 0}), "config": self.flood_get_config({"id": 0})})
+		if self.smoke or self.flood:
+			components.append({"key": "devicepower:0", "status": self.devicepower_get_status({"id": 0}), "config": self.devicepower_get_config({"id": 0})})
+		offset = int(params.get("offset", 0))
+		return {"components": components[offset:], "cfg_rev": 1, "offset": offset, "total": len(components)}
+
 	def sys_get_config(self):
 		return {"device": {"name": self.name}}
 
@@ -235,6 +248,7 @@ class MockShellyDevice:
 			"Shelly.GetStatus",
 			"Shelly.GetConfig",
 			"Shelly.ListMethods",
+			"Shelly.GetComponents",
 			"Sys.GetConfig",
 			"Sys.SetConfig",
 			"Switch.GetStatus",
@@ -312,6 +326,10 @@ async def handle_rpc(device, frame, *, verbose=False):
 		return resp
 	if method == "Shelly.GetConfig":
 		resp = _json_response(device.shelly_get_config(), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "Shelly.GetComponents":
+		resp = _json_response(device.shelly_get_components(params), request_id)
 		resp["src"] = f"shelly-{device.mac}"
 		return resp
 	if method == "Shelly.ListMethods":
