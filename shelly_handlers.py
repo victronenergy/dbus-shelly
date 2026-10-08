@@ -185,16 +185,8 @@ class ShellyHandler_channel_config_mixin():
 		self._custom_name_retries = 0
 		self._custom_name_retry_task = None
 
-		# Find the first RPC component that has a config with a name and use that to sync to the custom name.
-		# This is needed to prevent attempting to set the name on a component that does not support it, in case of handlers that handle multiple RPC components (e.g. EM and EMData).
-		self._rpc_types_with_name_config = []
-		if isinstance(self._rpc_device_type, str):
-			self._rpc_types_with_name_config = [self._rpc_device_type]
-		else:
-			for rpc in self._rpc_device_type:
-				if await self.rpc_call('GetConfig', {"id": self._channel_id}, rpc_device_types=[rpc]) is not None:
-					self._rpc_types_with_name_config.append(rpc)
-					break
+		# Stored as a single string, so rpc_call returns the response itself instead of a dict of responses.
+		self._rpc_type_with_name_config = self._rpc_device_type if isinstance(self._rpc_device_type, str) else None
 
 	# Invoked when the custom name is changed on the shelly device.
 	# When the value on dbus is changed, the name is updated on the shelly and the hook is called as well.
@@ -213,19 +205,41 @@ class ShellyHandler_channel_config_mixin():
 			self._custom_name_paths.append(path)
 			await self._get_channel_customname()
 
+	# Find the first RPC component that has a config with a name and use that to sync to the custom name.
+	# This is needed to prevent attempting to set the name on a component that does not support it, in case of handlers
+	# that handle multiple RPC components (e.g. EM and EMData), or devices that only have some of them (e.g. PM1 only).
+	# Returns None when no component responded (e.g. device not reachable), so detection is attempted again on the next call.
+	async def _get_rpc_type_with_name_config(self):
+		if self._rpc_type_with_name_config is None:
+			for rpc in self._rpc_device_type:
+				if await self.rpc_call('GetConfig', {"id": self._channel_id}, rpc_device_types=rpc) is not None:
+					self._rpc_type_with_name_config = rpc
+					break
+		return self._rpc_type_with_name_config
+
 	async def request_channel_config(self, _fun=None):
-		resp = await self.rpc_call('GetConfig', {"id": self._channel_id}, rpc_device_types=self._rpc_types_with_name_config, fun=_fun)
-		return resp
+		rpc = await self._get_rpc_type_with_name_config()
+		if rpc is None:
+			if _fun:
+				await _fun(None)
+			return None
+		return await self.rpc_call('GetConfig', {"id": self._channel_id}, rpc_device_types=rpc, fun=_fun)
 
 	async def set_channel_config(self, config):
-		return await self.rpc_call('SetConfig', {"id": self._channel_id, "config": config}, rpc_device_types=self._rpc_types_with_name_config)
+		rpc = await self._get_rpc_type_with_name_config()
+		if rpc is None:
+			return None
+		return await self.rpc_call('SetConfig', {"id": self._channel_id, "config": config}, rpc_device_types=rpc)
 
 	async def _update_customname(self, config, cap=None):
 		name = None
 		# Make sure the service is still there as this function can be called delayed due to the retry mechanism.
 		if self.service is None or getattr(self.service, '_closed', False):
 			return
-		if config and 'name' in config:
+		if config is None:
+			# Fetching the config failed, retry instead of settling on the fallback name.
+			self._schedule_customname_retry(2)
+		elif 'name' in config:
 			name = config['name']	# Try shelly channel custom name
 		if name is None:
 			# Otherwise fallback to device name + channel index
@@ -233,10 +247,14 @@ class ShellyHandler_channel_config_mixin():
 			if device_name is None:
 				device_name = "Unknown shelly device"
 				self._schedule_customname_retry(2)
-			else:
+			# Name fetched successfully, but it is not set; clear retries and use the fallback name.
+			elif config is not None:
 				self._custom_name_retries = 0
 
 			name = f"{device_name} - channel {self._channel_id}"
+		# Name fetched and it is set; done
+		else:
+			self._custom_name_retries = 0
 		with self.service as s:
 			for path in self._custom_name_paths:
 				s[path] = name
@@ -252,11 +270,9 @@ class ShellyHandler_channel_config_mixin():
 
 	async def _get_channel_customname_retry(self, wait_time):
 		await asyncio.sleep(wait_time)
+		# This task is done waiting, allow the fetch below to schedule the next retry.
+		self._custom_name_retry_task = None
 		await self._get_channel_customname()
-
-	def _clear_customname_retry_task(self, task):
-		if self._custom_name_retry_task is task:
-			self._custom_name_retry_task = None
 
 	def _schedule_customname_retry(self, wait_time):
 		# Ensure delayed retries do not pile up when multiple fetch triggers arrive.
@@ -268,10 +284,17 @@ class ShellyHandler_channel_config_mixin():
 		self._custom_name_retries += 1
 		logger.warning("Failed to get channel custom name for shelly device %s channel %d, retrying in %d seconds (attempt %d/10)", self._serial, self._channel_id, wait_time, self._custom_name_retries)
 		self._custom_name_retry_task = asyncio.get_event_loop().create_task(self._get_channel_customname_retry(wait_time))
-		self._custom_name_retry_task.add_done_callback(self._clear_customname_retry_task)
 
 	async def _get_channel_customname(self):
 		await self.request_channel_config(self._update_customname)
+
+	# Invoked after the connection was re-established. Fetching the name may have failed (and run out of retries)
+	# while the device was unreachable, so fetch it again with a fresh retry budget.
+	async def refresh(self):
+		self._cancel_customname_retry_task()
+		self._custom_name_retries = 0
+		await self._get_channel_customname()
+		await super().refresh()
 
 	async def stop(self):
 		self._cancel_customname_retry_task()
