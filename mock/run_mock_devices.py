@@ -51,6 +51,15 @@ def build_cmd(script_path, device, verbose):
 		cmd.append("--flood")
 		cmd += ["--battery-percent", str(device.get("battery-percent", 100.0))]
 		cmd += ["--battery-voltage", str(device.get("battery-voltage", 3.0))]
+	if device.get("em", False):
+		cmd.append("--em")
+	if device.get("rgb", False):
+		cmd.append("--rgb")
+	if device.get("cct", False):
+		cmd.append("--cct")
+	for key in ("em1-channels", "pm1-channels", "light-channels"):
+		if key in device:
+			cmd += [f"--{key}", str(device[key])]
 	if verbose:
 		cmd.append("--verbose")
 	return cmd

@@ -22,6 +22,12 @@ class MockShellyDevice:
 		flood=False,
 		battery_percent=100.0,
 		battery_voltage=3.0,
+		em=False,
+		em1_channels=0,
+		pm1_channels=0,
+		light_channels=0,
+		rgb=False,
+		cct=False,
 	):
 		self.name = device_name
 		self.channel_name = channel_name
@@ -43,10 +49,38 @@ class MockShellyDevice:
 		self._start = time.time()
 
 		self._switch_outputs = [False] * switch_channels
-		self._switch_names = [channel_name if i == 0 else f"Channel {i + 1}" for i in range(switch_channels)]
+		self._switch_names = [(channel_name or None) if i == 0 else f"Channel {i + 1}" for i in range(switch_channels)]
 		self._energy_total = [0.0] * switch_channels
 		self._ret_energy_total = [0.0] * switch_channels
 		self._last_energy_update = time.time()
+
+		# Energy meters report fixed forward and returned energy counters (Wh), so tests can assert exact values.
+		self.em = em
+		self.em1_channels = em1_channels
+		self.pm1_channels = pm1_channels
+		self.energy_wh = 12345.0
+		self.ret_energy_wh = 2345.0
+
+		# Dimmable / color outputs, keyed by RPC component key (e.g. "light:0").
+		self._lights = {}
+		for i in range(light_channels):
+			self._lights[f"light:{i}"] = {"output": False, "brightness": 50}
+		if rgb:
+			self._lights["rgb:0"] = {"output": False, "brightness": 50, "rgb": [255, 0, 0]}
+		if cct:
+			self._lights["cct:0"] = {"output": False, "brightness": 50, "ct": 3000}
+
+		# Meter channel names, keyed by component key. Id 0 defaults to channel_name.
+		self._meter_names = {}
+
+		# Test hooks: methods that return an error, and a log of (time, method) of calls over websocket.
+		self.faults = set()
+		self.fault_mode = "error"
+		self.fault_delay = 0.0
+		# Cleared while the device is frozen (see mock_freeze).
+		self.running = asyncio.Event()
+		self.running.set()
+		self.call_log = []
 
 		self._ws_clients = set()
 		self._notify_task = None
@@ -125,6 +159,17 @@ class MockShellyDevice:
 		if self.flood:
 			status["flood:0"] = self.flood_get_status({"id": 0})
 			status["devicepower:0"] = self.devicepower_get_status({"id": 0})
+		if self.em:
+			status["em:0"] = self.em_get_status({"id": 0})
+			status["emdata:0"] = self.emdata_get_status({"id": 0})
+		for i in range(self.em1_channels):
+			status[f"em1:{i}"] = self.em1_get_status({"id": i})
+			status[f"em1data:{i}"] = self.em1data_get_status({"id": i})
+		for i in range(self.pm1_channels):
+			status[f"pm1:{i}"] = self.pm1_get_status({"id": i})
+		for key in self._lights:
+			kind, _, i = key.partition(":")
+			status[key] = self.light_get_status(kind, {"id": int(i)})
 		return status
 
 	def shelly_get_config(self):
@@ -143,6 +188,17 @@ class MockShellyDevice:
 			components.append({"key": "flood:0", "status": self.flood_get_status({"id": 0}), "config": self.flood_get_config({"id": 0})})
 		if self.smoke or self.flood:
 			components.append({"key": "devicepower:0", "status": self.devicepower_get_status({"id": 0}), "config": self.devicepower_get_config({"id": 0})})
+		if self.em:
+			components.append({"key": "em:0", "status": self.em_get_status({"id": 0}), "config": self.meter_get_config("em", {"id": 0})})
+			components.append({"key": "emdata:0", "status": self.emdata_get_status({"id": 0}), "config": {"id": 0}})
+		for i in range(self.em1_channels):
+			components.append({"key": f"em1:{i}", "status": self.em1_get_status({"id": i}), "config": self.meter_get_config("em1", {"id": i})})
+			components.append({"key": f"em1data:{i}", "status": self.em1data_get_status({"id": i}), "config": {"id": i}})
+		for i in range(self.pm1_channels):
+			components.append({"key": f"pm1:{i}", "status": self.pm1_get_status({"id": i}), "config": self.meter_get_config("pm1", {"id": i})})
+		for key in self._lights:
+			kind, _, i = key.partition(":")
+			components.append({"key": key, "status": self.light_get_status(kind, {"id": int(i)}), "config": self.light_get_config(kind, {"id": int(i)})})
 		offset = int(params.get("offset", 0))
 		return {"components": components[offset:], "cfg_rev": 1, "offset": offset, "total": len(components)}
 
@@ -172,6 +228,7 @@ class MockShellyDevice:
 		name = params.get("config", {}).get("name")
 		if 0 <= channel < self.switch_channels and name:
 			self._switch_names[channel] = name
+			self._emit_event(f"switch:{channel}", "config_changed")
 		return {"id": channel, "name": self._switch_names[channel]}
 
 	def switch_set(self, params):
@@ -242,6 +299,135 @@ class MockShellyDevice:
 			return None
 		return {}
 
+	# Test hook, not a real Shelly method: trigger or clear the smoke/flood alarm.
+	def mock_set_alarm(self, params):
+		alarm = bool(params.get("alarm", True))
+		if self.smoke:
+			self._smoke_alarm = alarm
+		elif self.flood:
+			self._flood_alarm = alarm
+		else:
+			return None
+		try:
+			asyncio.get_running_loop().create_task(self.notify_full_status())
+		except RuntimeError:
+			pass
+		return {"alarm": alarm}
+
+	def _meter_values(self):
+		current = self.default_apower / self.voltage if self.voltage else 0.0
+		return self.voltage, current, self.default_apower
+
+	def em_get_status(self, params):
+		if int(params.get("id", 0)) != 0 or not self.em:
+			return None
+		voltage, current, power = self._meter_values()
+		status = {"id": 0, "total_current": 3 * current, "total_act_power": 3 * power}
+		for p in ("a", "b", "c"):
+			status[f"{p}_voltage"] = voltage
+			status[f"{p}_current"] = current
+			status[f"{p}_act_power"] = power
+			status[f"{p}_pf"] = self.pf
+		return status
+
+	def emdata_get_status(self, params):
+		if int(params.get("id", 0)) != 0 or not self.em:
+			return None
+		status = {"id": 0, "total_act": 3 * self.energy_wh, "total_act_ret": 3 * self.ret_energy_wh}
+		for p in ("a", "b", "c"):
+			status[f"{p}_total_act_energy"] = self.energy_wh
+			status[f"{p}_total_act_ret_energy"] = self.ret_energy_wh
+		return status
+
+	def em1_get_status(self, params):
+		channel = int(params.get("id", 0))
+		if channel < 0 or channel >= self.em1_channels:
+			return None
+		voltage, current, power = self._meter_values()
+		return {"id": channel, "voltage": voltage, "current": current, "act_power": power, "pf": self.pf}
+
+	def em1data_get_status(self, params):
+		channel = int(params.get("id", 0))
+		if channel < 0 or channel >= self.em1_channels:
+			return None
+		return {"id": channel, "total_act_energy": self.energy_wh, "total_act_ret_energy": self.ret_energy_wh}
+
+	def pm1_get_status(self, params):
+		channel = int(params.get("id", 0))
+		if channel < 0 or channel >= self.pm1_channels:
+			return None
+		voltage, current, power = self._meter_values()
+		return {"id": channel, "voltage": voltage, "current": current, "apower": power, "pf": self.pf,
+			"aenergy": {"total": self.energy_wh}, "ret_aenergy": {"total": self.ret_energy_wh}}
+
+	# Shared by EM, EM1 and PM1. kind is the lowercase component name.
+	def meter_get_config(self, kind, params):
+		channel = int(params.get("id", 0))
+		default = (self.channel_name or None) if channel == 0 else None
+		return {"id": channel, "name": self._meter_names.get(f"{kind}:{channel}", default)}
+
+	def meter_set_config(self, kind, params):
+		channel = int(params.get("id", 0))
+		config = params.get("config", {})
+		if "name" in config:
+			self._meter_names[f"{kind}:{channel}"] = config["name"]
+			self._emit_event(f"{kind}:{channel}", "config_changed")
+		return {"restart_required": False}
+
+	# Test hook, not a real Shelly method: make methods return an error. An empty list clears all faults.
+	# Modes: "error" returns an RPC error, "timeout" never replies, "delay" replies after "delay" seconds.
+	def mock_set_faults(self, params):
+		self.faults = set(params.get("methods", []))
+		self.fault_mode = params.get("mode", "error")
+		self.fault_delay = float(params.get("delay", 0.0))
+		return {"methods": sorted(self.faults), "mode": self.fault_mode}
+
+	# Test hook, not a real Shelly method: freeze the device, as if it dropped off the network without
+	# closing its connections. Open websockets go silent (no replies, no pongs, no notifications) and
+	# new connections hang in the handshake. Only Mock.* calls over HTTP still work.
+	def mock_freeze(self, params):
+		if params.get("frozen", True):
+			self.running.clear()
+		else:
+			self.running.set()
+		return {"frozen": not self.running.is_set()}
+
+	# Test hook, not a real Shelly method: [time, method] of the calls made over the websocket (by the driver).
+	def mock_get_call_log(self, params):
+		log = list(self.call_log)
+		if params.get("reset", False):
+			self.call_log = []
+		return log
+
+	# Shared by Light, RGB and CCT. kind is the lowercase component name.
+	def light_get_status(self, kind, params):
+		key = f"{kind}:{int(params.get('id', 0))}"
+		if key not in self._lights:
+			return None
+		return {"id": int(params.get("id", 0)), **self._lights[key]}
+
+	def light_get_config(self, kind, params):
+		key = f"{kind}:{int(params.get('id', 0))}"
+		if key not in self._lights:
+			return None
+		return {"id": int(params.get("id", 0)), "name": None}
+
+	def light_set(self, kind, params):
+		key = f"{kind}:{int(params.get('id', 0))}"
+		if key not in self._lights:
+			return None
+		light = self._lights[key]
+		if "on" in params:
+			light["output"] = bool(params["on"])
+		for field in ("brightness", "rgb", "ct", "white"):
+			if field in params and field in light:
+				light[field] = params[field]
+		try:
+			asyncio.get_running_loop().create_task(self.notify_full_status())
+		except RuntimeError:
+			pass
+		return {}
+
 	def list_methods(self):
 		return [
 			"Shelly.GetDeviceInfo",
@@ -264,10 +450,48 @@ class MockShellyDevice:
 			"Flood.SetConfig",
 			"DevicePower.GetStatus",
 			"DevicePower.GetConfig",
+			"EM.GetStatus",
+			"EM.GetConfig",
+			"EM.SetConfig",
+			"EMData.GetStatus",
+			"EM1.GetStatus",
+			"EM1.GetConfig",
+			"EM1.SetConfig",
+			"EM1Data.GetStatus",
+			"PM1.GetStatus",
+			"PM1.GetConfig",
+			"PM1.SetConfig",
+			"Light.GetStatus",
+			"Light.GetConfig",
+			"Light.Set",
+			"RGB.GetStatus",
+			"RGB.GetConfig",
+			"RGB.Set",
+			"CCT.GetStatus",
+			"CCT.GetConfig",
+			"CCT.Set",
 		]
 
+	def _emit_event(self, component, event):
+		try:
+			asyncio.get_running_loop().create_task(self.notify_event(component, event))
+		except RuntimeError:
+			pass
+
+	async def notify_event(self, component, event):
+		frame = {
+			"src": f"shelly-{self.mac}",
+			"method": "NotifyEvent",
+			"params": {"ts": time.time(), "events": [{"component": component, "event": event, "ts": time.time()}]},
+		}
+		for ws in set(self._ws_clients):
+			if ws.closed:
+				self._ws_clients.discard(ws)
+				continue
+			await ws.send_json(frame)
+
 	async def notify_full_status(self):
-		if not self._ws_clients:
+		if not self._ws_clients or not self.running.is_set():
 			return
 		frame = {
 			"src": f"shelly-{self.mac}",
@@ -313,6 +537,15 @@ async def handle_rpc(device, frame, *, verbose=False):
 	request_id = frame.get("id")
 	method = frame.get("method")
 	params = frame.get("params", {}) or {}
+	if method in device.faults:
+		if device.fault_mode == "timeout":
+			return None
+		if device.fault_mode == "delay":
+			await asyncio.sleep(device.fault_delay)
+		else:
+			resp = _json_error(f"Mock fault for {method}", request_id, code=-114)
+			resp["src"] = f"shelly-{device.mac}"
+			return resp
 	if verbose:
 		print(f"mock rpc method={method} params={params}")
 
@@ -396,6 +629,82 @@ async def handle_rpc(device, frame, *, verbose=False):
 		resp = _json_response(device.devicepower_get_config(params), request_id)
 		resp["src"] = f"shelly-{device.mac}"
 		return resp
+	if method == "EM.GetStatus" and device.em:
+		resp = _json_response(device.em_get_status(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "EM.GetConfig" and device.em:
+		resp = _json_response(device.meter_get_config("em", params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "EM.SetConfig" and device.em:
+		resp = _json_response(device.meter_set_config("em", params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "EMData.GetStatus" and device.em:
+		resp = _json_response(device.emdata_get_status(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "EM1.GetStatus" and device.em1_channels:
+		resp = _json_response(device.em1_get_status(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "EM1.GetConfig" and device.em1_channels:
+		resp = _json_response(device.meter_get_config("em1", params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "EM1.SetConfig" and device.em1_channels:
+		resp = _json_response(device.meter_set_config("em1", params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "EM1Data.GetStatus" and device.em1_channels:
+		resp = _json_response(device.em1data_get_status(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "PM1.GetStatus" and device.pm1_channels:
+		resp = _json_response(device.pm1_get_status(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "PM1.GetConfig" and device.pm1_channels:
+		resp = _json_response(device.meter_get_config("pm1", params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "PM1.SetConfig" and device.pm1_channels:
+		resp = _json_response(device.meter_set_config("pm1", params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	for component in ("Light", "RGB", "CCT"):
+		kind = component.lower()
+		if not any(key.startswith(f"{kind}:") for key in device._lights):
+			continue
+		if method == f"{component}.GetStatus":
+			resp = _json_response(device.light_get_status(kind, params), request_id)
+			resp["src"] = f"shelly-{device.mac}"
+			return resp
+		if method in (f"{component}.GetConfig", f"{component}.SetConfig"):
+			resp = _json_response(device.light_get_config(kind, params), request_id)
+			resp["src"] = f"shelly-{device.mac}"
+			return resp
+		if method == f"{component}.Set":
+			resp = _json_response(device.light_set(kind, params), request_id)
+			resp["src"] = f"shelly-{device.mac}"
+			return resp
+	if method == "Mock.SetFaults":
+		resp = _json_response(device.mock_set_faults(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "Mock.GetCallLog":
+		resp = _json_response(device.mock_get_call_log(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "Mock.Freeze":
+		resp = _json_response(device.mock_freeze(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "Mock.SetAlarm":
+		resp = _json_response(device.mock_set_alarm(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
 	resp = _json_error(f"Unknown method: {method}", request_id)
 	resp["src"] = f"shelly-{device.mac}"
 	return resp
@@ -408,26 +717,36 @@ async def http_rpc_handler(request):
 	except Exception:
 		return web.json_response(_json_error("Invalid JSON", None, code=400))
 	_vprint(request, f"mock http /rpc frame={frame}")
+	if not str(frame.get("method", "")).startswith("Mock."):
+		await device.running.wait()
 	return web.json_response(await handle_rpc(device, frame, verbose=request.app.get('verbose', False)))
 
 
 async def ws_rpc_handler(request):
 	device = request.app["device"]
-	ws = web.WebSocketResponse()
+	# A frozen device doesn't complete the handshake
+	await device.running.wait()
+	# Pings are answered here instead of by aiohttp, so a frozen device stops answering them.
+	ws = web.WebSocketResponse(autoping=False)
 	await ws.prepare(request)
 	device._ws_clients.add(ws)
 	_vprint(request, "mock ws connected")
 
 	async for msg in ws:
-		if msg.type == web.WSMsgType.TEXT:
+		await device.running.wait()
+		if msg.type == web.WSMsgType.PING:
+			await ws.pong(msg.data)
+		elif msg.type == web.WSMsgType.TEXT:
 			try:
 				frame = json.loads(msg.data)
 			except json.JSONDecodeError:
 				await ws.send_json(_json_error("Invalid JSON", None, code=400))
 				continue
 			_vprint(request, f"mock ws frame={frame}")
+			device.call_log.append((time.time(), frame.get("method", "")))
 			response = await handle_rpc(device, frame, verbose=request.app.get('verbose', False))
-			await ws.send_json(response)
+			if response is not None:
+				await ws.send_json(response)
 		elif msg.type == web.WSMsgType.ERROR:
 			break
 
@@ -437,6 +756,7 @@ async def ws_rpc_handler(request):
 
 async def shelly_info_handler(request):
 	device = request.app["device"]
+	await device.running.wait()
 	_vprint(request, "mock http /shelly")
 	return web.json_response(device.shelly_info())
 
@@ -457,6 +777,12 @@ def parse_args():
 	parser.add_argument("--flood", action="store_true")
 	parser.add_argument("--battery-percent", type=float, default=100.0)
 	parser.add_argument("--battery-voltage", type=float, default=3.0)
+	parser.add_argument("--em", action="store_true", help="Add a 3-phase EM + EMData component")
+	parser.add_argument("--em1-channels", type=int, default=0)
+	parser.add_argument("--pm1-channels", type=int, default=0)
+	parser.add_argument("--light-channels", type=int, default=0)
+	parser.add_argument("--rgb", action="store_true")
+	parser.add_argument("--cct", action="store_true")
 	parser.add_argument("--notify-interval", type=float, default=5)
 	parser.add_argument("--verbose", action="store_true")
 	return parser.parse_args()
@@ -478,6 +804,12 @@ async def main():
 		flood=args.flood,
 		battery_percent=args.battery_percent,
 		battery_voltage=args.battery_voltage,
+		em=args.em,
+		em1_channels=args.em1_channels,
+		pm1_channels=args.pm1_channels,
+		light_channels=args.light_channels,
+		rgb=args.rgb,
+		cct=args.cct,
 	)
 
 	app = web.Application()
