@@ -1,0 +1,9 @@
+dbus_fast
+aioshelly
+# websockets >= 14 breaks the legacy server in dbus_shelly.py (websockets.serve() outside a running loop)
+websockets<14
+zeroconf
+async_timeout
+s2_python==0.8.1
+aiohttp
+pytest

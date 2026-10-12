@@ -35,5 +35,16 @@ testinstall:
 	(cd $(TMP) && python3 dbus_shelly.py --help > /dev/null)
 	-rm -rf $(TMP)
 
+PYTHON ?= $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
+
+# make test                          runs all tests
+# make test TEST=test_flood          runs matching tests (pytest -k)
+# make test TEST="em1 and not phase"
+test:
+	$(PYTHON) -m pytest -v tests $(if $(TEST),-k "$(TEST)")
+
+test-list:
+	@$(PYTHON) -m pytest --collect-only -q tests | grep '::'
+
 clean:
 distclean:
