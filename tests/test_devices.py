@@ -190,9 +190,6 @@ def test_rgb(stack):
 	stack.wait_for(lambda: light_controls(stack, name)[0] == 240, "LightControls hue to follow the device")
 
 
-@pytest.mark.xfail(strict=True, reason="shelly_handlers.py:1077 _desired_value starts as int 0; _rgb2hsv indexes it "
-	"when the rgb value is 0 (always for CCT), the TypeError is swallowed and LightControls is not updated "
-	"until the first write from D-Bus")
 def test_cct_initial_light_controls(stack):
 	enable(stack, CCT)
 	name = service_name("switch", CCT)
@@ -224,6 +221,9 @@ def test_rgbcct(stack):
 	# Mock starts in rgb mode
 	assert items["/SwitchableOutput/0/Settings/Type"] == 11	# RGB
 	assert items["/SwitchableOutput/0/Settings/ValidTypes"] == (1 << 11) | (1 << 12)
+	# Mock starts at white, 50% brightness, 4000K
+	stack.wait_for(lambda: light_controls(stack, name)[2] == 50 and light_controls(stack, name)[4] == 4000,
+		"initial LightControls", timeout=5)
 
 	mock = stack.mocks[RGBCCT]
 	assert stack.client.set_value(name, "/SwitchableOutput/0/LightControls", "ai", [120, 100, 80, 0, 0]) == 0

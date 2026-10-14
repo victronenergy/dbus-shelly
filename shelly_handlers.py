@@ -1098,7 +1098,7 @@ class ShellyHandler_RGBW(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 	_allowed_em_roles = ['acload'] # pvinverter and heatpump make no sense on a RGBW output.
 
 	async def handler_ainit(self):
-		self._desired_value = 0
+		self._desired_value = [0, 0, 0, 0, 0]
 		self._throttling_lock = asyncio.Lock()
 		self._throttling_runner_lock = asyncio.Lock()
 
