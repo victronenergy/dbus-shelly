@@ -1,5 +1,7 @@
 # Venus driver for Shelly energy meters
 
+[![CI](https://github.com/victronenergy/dbus-shelly/actions/workflows/main.yml/badge.svg?branch=master)](https://github.com/victronenergy/dbus-shelly/actions/workflows/main.yml)
+
 This is a VenusOS driver for Gen2+ Shelly switches and energy meters.
 
 # Connection

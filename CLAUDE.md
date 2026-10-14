@@ -26,14 +26,15 @@ A Venus OS (Victron GX) driver that exposes Gen2+ Shelly devices on D-Bus. It di
 
 ## Commands
 
-CI (`.github/workflows/main.yml`) only runs:
+CI (`.github/workflows/main.yml`) runs:
 
 ```sh
 git submodule update --init          # ext/aiovelib is a required submodule
 make testinstall                     # installs to a temp dir and runs `dbus_shelly.py --help`
+make test                            # end-to-end tests, see below; logs are uploaded as an artifact on failure
 ```
 
-There are end-to-end tests in `tests/` (not yet in CI). `tests/shelly_stack.py` starts a private `dbus-daemon`, a fake localsettings (`tests/fake_localsettings.py`), mock Shellys and the driver, then drives everything over D-Bus. Mocks can be killed and restarted with other capabilities to test reconnects. The `Mock.*` RPCs on the mock (`SetAlarm`, `SetFaults`, `Freeze`, `GetCallLog`) are test hooks, not real Shelly methods. `tests/test_timeouts.py` runs the driver through `tests/run_driver.py`, which scales the driver's and aioshelly's timeouts in memory (no source changes) so timeout scenarios run in seconds. Tests marked `xfail(strict=True)` document known driver bugs; remove the marker when the bug is fixed. The tests need `dbus-daemon`, Python 3.11+ (for a recent aioshelly) and port 8000 free:
+There are end-to-end tests in `tests/`. `tests/shelly_stack.py` starts a private `dbus-daemon`, a fake localsettings (`tests/fake_localsettings.py`), mock Shellys and the driver, then drives everything over D-Bus. Mocks can be killed and restarted with other capabilities to test reconnects. The `Mock.*` RPCs on the mock (`SetAlarm`, `SetFaults`, `Freeze`, `GetCallLog`) are test hooks, not real Shelly methods. `tests/test_timeouts.py` runs the driver through `tests/run_driver.py`, which scales the driver's and aioshelly's timeouts in memory (no source changes) so timeout scenarios run in seconds. Tests marked `xfail(strict=True)` document known driver bugs; remove the marker when the bug is fixed. The tests need `dbus-daemon`, Python 3.11+ (for a recent aioshelly) and port 8000 free:
 
 ```sh
 pip install -r tests/requirements.txt
