@@ -195,10 +195,12 @@ class ShellyHandlerS2Mixin():
 		setting = f'Auto_{self._serial}_{self._channel_id}'
 		try:
 			await self.settings.set_value(self.settings.alias(setting), value)
+			# Update the dbus value before (re)offering control types, so it is in sync with the setting
+			# even when the CEM does not respond in time.
+			item.set_local_value(value)
 			await self.enable_rm(self._channel_id, value)
-		except:
-			return
-		item.set_local_value(value)
+		except Exception as e:
+			logger.error("Failed to handle /Auto change: %s", e)
 
 	async def _set_type_to_three_state_switch(self, enabled):
 		if enabled:
