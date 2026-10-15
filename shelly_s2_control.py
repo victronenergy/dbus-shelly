@@ -284,6 +284,9 @@ class ShellyOMBC(OMBCControlType):
 		# Set _active to False immediately to stop new items being queued to workers
 		self._active = False
 		logger.debug("Deactivate OMBCControlTypeSwitch")
+		if self.enabled == 1 and self._switch_item.state == 1:
+			logger.warning("OMBCControlTypeSwitch unexpectedly deactivated while output is still on, turning off output.")
+			self._switch_item.state = 0
 		await self._stop_status_worker()
 		await self._stop_power_worker()
 		self._switch_item.s2_active = 0
