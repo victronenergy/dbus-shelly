@@ -236,6 +236,15 @@ class ShellyOMBC(OMBCControlType):
 			logger.debug("Waiting for %f seconds before setting operation mode to %s", wait, "on" if op_id == self._id_on else "off")
 			await asyncio.sleep(wait)
 
+		# The control type may have been deactivated (CEM comm lost) or disabled (/Auto turned off) while waiting.
+		# Don't touch the output in that case, deactivate() / the user is in charge now.
+		if not self._active:
+			logger.debug("OMBC deactivated before operation mode could be applied, ignoring")
+			return
+		if not self._enabled:
+			logger.debug("OMBC disabled before operation mode could be applied, ignoring")
+			return
+
 		self._switch_item.state = (1 if op_id == self._id_on else 0)
 		logger.debug("Set operation mode to %s", "on" if op_id == self._id_on else "off")
 		# Don't set _status here. It will be updated by values_changed when its done. Status message will then also be sent to HEMS.
