@@ -25,6 +25,8 @@ CAP_CHANGE = "aabbccdd2005"
 CH_COUNT = "aabbccdd2006"
 CAP_OFFLINE = "aabbccdd2007"
 REMOVE = "aabbccdd2008"
+OFFLINE_DISABLE = "aabbccdd2009"
+OFFLINE_ENABLE = "aabbccdd200a"
 
 TWO_SWITCHES = ["--switch-channels", "2"]
 ONE_SWITCH = ["--switch-channels", "1"]
@@ -43,6 +45,8 @@ def setup(s):
 	s.add_mock("ch-count", CH_COUNT, *TWO_SWITCHES)
 	s.add_mock("cap-offline", CAP_OFFLINE, *TWO_SWITCHES)
 	s.add_mock("remove", REMOVE, *ONE_SWITCH)
+	s.add_mock("offline-disable", OFFLINE_DISABLE, *ONE_SWITCH)
+	s.add_mock("offline-enable", OFFLINE_ENABLE, *TWO_SWITCHES)
 
 
 @pytest.fixture(scope="module")
@@ -162,6 +166,48 @@ def test_reconnect_after_reconnect_loop(stack):
 	stack.wait_for(lambda: stack.device(OFFLINE, "Reachable") == 1, f"{OFFLINE} reachable")
 	assert stack.client.set_value(name, "/SwitchableOutput/0/State", "i", 1) == 0
 	stack.wait_for(lambda: mock.rpc("Switch.GetStatus", id=0)["output"] is True, "mock on")
+
+
+# Enabling and disabling channels while a device is offline
+
+def test_disable_channel_while_offline(stack):
+	enable_all(stack, OFFLINE_DISABLE, 1)
+	name = service_name("acload", OFFLINE_DISABLE)
+	mock = stack.mocks["offline-disable"]
+
+	mock.stop()
+	wait_reconnect_loop_done(stack, OFFLINE_DISABLE, [name])
+
+	# Disabling is accepted and stored while the device is away
+	stack.set_enabled(OFFLINE_DISABLE, 1, 0)
+	stack.wait_for(lambda: stack.enabled_setting(OFFLINE_DISABLE, 1) == 0, "Enabled setting reset to 0")
+	stack.hold(lambda: stack.device(OFFLINE_DISABLE, "1/Enabled") == 0, "/Enabled to stay 0", 2)
+
+	# The device comes back, but the channel stays disabled
+	mock.start()
+	stack.wait_reachable(OFFLINE_DISABLE)
+	assert stack.device(OFFLINE_DISABLE, "1/Enabled") == 0
+	stack.hold(lambda: not stack.client.has_name(name), "channel to stay disabled", 2)
+
+
+def test_enable_channel_while_offline_is_rejected(stack):
+	enable_all(stack, OFFLINE_ENABLE, 1)
+	first = service_name("acload", OFFLINE_ENABLE, 0)
+	second = service_name("acload", OFFLINE_ENABLE, 1)
+	mock = stack.mocks["offline-enable"]
+
+	mock.stop()
+	wait_reconnect_loop_done(stack, OFFLINE_ENABLE, [first])
+
+	stack.set_enabled(OFFLINE_ENABLE, 2, 1)
+	stack.hold(lambda: stack.device(OFFLINE_ENABLE, "2/Enabled") == 0, "/Enabled to stay 0", 2)
+	assert stack.enabled_setting(OFFLINE_ENABLE, 2) == 0
+
+	# Only the channel that was enabled before comes back
+	mock.start()
+	stack.wait_service(first, connected=True)
+	assert stack.device(OFFLINE_ENABLE, "2/Enabled") == 0
+	stack.hold(lambda: not stack.client.has_name(second), "second channel to stay disabled", 2)
 
 
 # Capability changes

@@ -809,13 +809,24 @@ class ShellyManager(object):
 	async def disable_shelly_channel(self, serial, channel):
 		async with self._shelly_lock:
 			if serial not in self.shellies:
-				return False
+				# The device is not running, e.g. because it is unreachable. There is nothing to stop,
+				# so the channel can be disabled. Its setting is read again when the device reconnects.
+				return True
 			await self.shellies[serial]['device'].stop_channel(channel)
 
+			was_connected = True
 			if len(self.shellies[serial]['device'].active_channels) == 0:
+				device = self.shellies[serial]['device']
+				was_connected = device.is_connected and not device.is_reconnecting
 				logger.info("No active channels left for device %s, stopping device", serial)
-				await self.shellies[serial]['device'].stop()
-			return True
+				await device.stop()
+
+		# Stopping the device also cancels its reconnect attempt, which would otherwise have
+		# handed the device back to the connection manager. Do that here, so a device that
+		# was not connected is probed again and marked unreachable if it does not respond.
+		if not was_connected:
+			await self.shelly_device_cache.start_connect(serial)
+		return True
 
 	async def stop_shelly_device(self, serial):
 		if serial in self.shellies:
@@ -919,7 +930,9 @@ class ShellyManager(object):
 	async def _probe_device(self, server, serial=None):
 		async with self._shelly_lock:
 			# Check if device is valid if it is in self.shellies. This prevents using stale or invalid device information.
-			if serial is not None and serial in self.shellies and self.shellies[serial]['device'].is_valid:
+			# A stopped device can still be in self.shellies until its event monitor has cleaned it up. It won't reconnect, so probe it like a new device.
+			if serial is not None and serial in self.shellies and self.shellies[serial]['device'].is_valid and \
+					not self.shellies[serial]['device'].is_stopping:
 				shelly = self.shellies[serial]['device']
 				result = DeviceProbeResult()
 				result.info = shelly.shelly_info
@@ -1016,7 +1029,7 @@ class ShellyManager(object):
 
 			if self.service.get_item(f'/Devices/{serial}/{i + 1}/Enabled') is None:
 				self.service.add_item(IntegerItem(f'/Devices/{serial}/{i + 1}/Enabled',
-									  writeable=True, onchange=partial(self._on_enabled_changed, serial, i)))
+									  writeable=True, onchange=partial(self._on_enabled_changed_from_dbus, serial, i)))
 			if self.service.get_item(f'/Devices/{serial}/{i + 1}/Type') is None:
 				self.service.add_item(TextItem(f'/Devices/{serial}/{i + 1}/Type', writeable=False))
 			if self.service.get_item(f'/Devices/{serial}/{i + 1}/Name') is None:
@@ -1030,6 +1043,15 @@ class ShellyManager(object):
 			if enabled:
 				enabled_item = self.service.get_item(f'/Devices/{serial}/{i + 1}/Enabled')
 				await self._on_enabled_changed(serial, i, enabled_item, enabled)
+
+	async def _on_enabled_changed_from_dbus(self, serial, channel, item, value):
+		# A channel can only be enabled by the user while the device is reachable.
+		# Disabling is always allowed. Channels that are enabled in the settings are started when the device reconnects.
+		# Rejected by not calling set_local_value, accepted values are set by _on_enabled_changed.
+		if value == 1 and self.service.get_item(f'/Devices/{serial}/Reachable').value != 1:
+			logger.warning("Not enabling channel %s of shelly device %s, device is not reachable", channel, serial)
+			return
+		await self._on_enabled_changed(serial, channel, item, value)
 
 	async def _on_enabled_changed(self, serial, channel, item, value, fut=None):
 		# Restrict the number of concurrent operations for the same device and channel to avoid unnecesary concurrent enable/disable operations.

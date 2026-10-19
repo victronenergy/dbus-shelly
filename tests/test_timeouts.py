@@ -35,10 +35,12 @@ SLOW = "aabbccdd4001"
 RPC_TIMEOUT_DEV = "aabbccdd4002"
 SHORT_FREEZE = "aabbccdd4003"
 LONG_FREEZE = "aabbccdd4004"
+DISABLE_FROZEN = "aabbccdd4005"
 
 
 def setup(s):
-	for name, sn in (("slow", SLOW), ("rpc-timeout", RPC_TIMEOUT_DEV), ("short-freeze", SHORT_FREEZE), ("long-freeze", LONG_FREEZE)):
+	for name, sn in (("slow", SLOW), ("rpc-timeout", RPC_TIMEOUT_DEV), ("short-freeze", SHORT_FREEZE), ("long-freeze", LONG_FREEZE),
+			("disable-frozen", DISABLE_FROZEN)):
 		s.add_mock(name, sn, "--switch-channels", "1")
 
 
@@ -149,3 +151,29 @@ def test_freeze_longer_than_reconnect_loop(stack):
 	stack.wait_for(lambda: stack.device(LONG_FREEZE, "Reachable") == 1, "device reachable again")
 	assert stack.client.set_value(name, "/SwitchableOutput/0/State", "i", 1) == 0
 	stack.wait_for(lambda: output(mock) is True, "mock on")
+
+
+def test_disable_last_channel_during_reconnect_loop(stack):
+	# The device stops answering and the user disables its only channel while the driver is still
+	# reconnecting, before the device is marked unreachable. Stopping the device cancels the reconnect,
+	# so the driver must probe it again to find out it is unreachable.
+	name = enable(stack, DISABLE_FROZEN)
+	mock = stack.mocks["disable-frozen"]
+	mock.rpc("Mock.Freeze", frozen=True)
+	try:
+		# Heartbeat (~1.5x) + pings, so the driver is in its reconnect loop
+		time.sleep(1.5 * HEARTBEAT + 3 * 1.2)
+		assert stack.device(DISABLE_FROZEN, "Reachable") == 1
+
+		stack.set_enabled(DISABLE_FROZEN, 1, 0)
+		stack.wait_for(lambda: stack.enabled_setting(DISABLE_FROZEN, 1) == 0, "Enabled setting reset to 0")
+		stack.wait_service_gone(name)
+		stack.wait_for(lambda: stack.device(DISABLE_FROZEN, "Reachable") == 0, "device unreachable",
+			timeout=3 * CONNECT_TIMEOUT + 5)
+	finally:
+		mock.rpc("Mock.Freeze", frozen=False)
+
+	# The connection manager keeps retrying, the channel stays disabled
+	stack.wait_reachable(DISABLE_FROZEN)
+	assert stack.device(DISABLE_FROZEN, "1/Enabled") == 0
+	stack.hold(lambda: not stack.client.has_name(name), "channel to stay disabled", 2)

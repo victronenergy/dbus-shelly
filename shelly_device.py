@@ -175,6 +175,14 @@ class ShellyDevice(object):
 		return self._shelly_device and self._shelly_device.connected
 
 	@property
+	def is_reconnecting(self):
+		return self._reconnecting
+
+	@property
+	def is_stopping(self):
+		return self._stopping
+
+	@property
 	def is_sleepy(self):
 		# Battery-powered devices (e.g. a smoke detector or flood sensor) spend most of their time in deep sleep
 		# with WiFi off, so losing the connection is expected and not a sign of a real failure.
@@ -400,6 +408,9 @@ class ShellyDevice(object):
 		return True
 
 	async def _reinit_channel_and_handlers(self, ch):
+		# The channel can be stopped by the user while the device is reconnecting.
+		if ch not in self._channels:
+			return
 		# Check if capabilities changed
 		cap_changed = False
 		handlers = self._channels[ch].get("handlers", {})
