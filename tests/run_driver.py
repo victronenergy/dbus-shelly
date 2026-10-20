@@ -14,6 +14,11 @@ What is scaled:
 
 Retry counts (CONNECTION_RETRIES, PING_RETRIES) and the 1s sleep between pings
 are left as they are.
+
+With SHELLY_TEST_FAKE_MDNS set to a file path, MdnsDiscovery does not use
+zeroconf (so no real Shellys on the network are picked up). Instead, on
+SIGUSR1 it reads a JSON list of {"serial", "host"} from that file and hands
+each one to the driver the same way an mDNS announcement would.
 """
 import os
 import re
@@ -49,5 +54,29 @@ if SCALE != 1:
 
 	discovery.BACKOFF_INITIAL_SECONDS *= SCALE
 	discovery.RECONNECT_LOOP_HEARTBEAT_SECONDS *= SCALE
+
+FAKE_MDNS = os.environ.get("SHELLY_TEST_FAKE_MDNS")
+if FAKE_MDNS:
+	import asyncio
+	import json
+	import signal
+
+	async def fake_mdns_start(self):
+		def announce():
+			with open(FAKE_MDNS) as f:
+				endpoints = json.load(f)
+			for ep in endpoints:
+				task = asyncio.get_running_loop().create_task(
+					self._add_endpoint(serial=ep["serial"], host=ep["host"], source=discovery.ENDPOINT_SOURCE_MDNS))
+				task.add_done_callback(discovery.background_tasks.discard)
+				discovery.background_tasks.add(task)
+		asyncio.get_running_loop().add_signal_handler(signal.SIGUSR1, announce)
+
+	async def fake_mdns_noop(self):
+		pass
+
+	discovery.MdnsDiscovery.start = fake_mdns_start
+	discovery.MdnsDiscovery.restart = fake_mdns_noop
+	discovery.MdnsDiscovery.stop = fake_mdns_noop
 
 runpy.run_path(DRIVER, run_name="__main__")

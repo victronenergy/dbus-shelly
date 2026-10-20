@@ -8,7 +8,9 @@ A Stack owns:
   - dbus_shelly.py --dbus session
 
 mDNS is disabled through the AutoScan setting, so devices on the local network
-are never picked up. The legacy websocket server in dbus_shelly.py always binds
+are never picked up. With fake_mdns, AutoScan is on but the driver runs with a
+fake mDNS browser (see tests/run_driver.py), and announce() simulates a device
+announcing itself. The legacy websocket server in dbus_shelly.py always binds
 port 8000, so that port must be free.
 """
 import asyncio
@@ -168,11 +170,13 @@ class MockDevice:
 
 
 class Stack:
-	def __init__(self, logdir, time_scale=None):
+	def __init__(self, logdir, time_scale=None, fake_mdns=False):
 		""" With time_scale, the driver runs through tests/run_driver.py with all
 		    its timeouts and retry intervals scaled by that factor. """
 		self.logdir = logdir
 		self.time_scale = time_scale
+		self.fake_mdns = fake_mdns
+		self.mdns_file = os.path.join(logdir, "mdns.json")
 		self.procs = {}
 		self.mocks = {}
 		self.client = None
@@ -200,18 +204,21 @@ class Stack:
 		for mock in self.mocks.values():
 			mock.start()
 
-		initial = {"/Settings/Shelly/AutoScan": 0}
+		initial = {"/Settings/Shelly/AutoScan": 1 if self.fake_mdns else 0}
 		if preseed_ips:
 			initial["/Settings/Shelly/IpAddresses"] = ",".join(m.endpoint for m in self.mocks.values())
 		self._start("localsettings", [sys.executable, "tests/fake_localsettings.py",
 			"--initial", json.dumps(initial)])
 		self.wait_for(lambda: self.client.has_name(SETTINGS_SERVICE), "fake localsettings on D-Bus", timeout=10)
 
-		if self.time_scale is None:
+		if self.time_scale is None and not self.fake_mdns:
 			driver = ["dbus_shelly.py"]
 		else:
 			driver = ["tests/run_driver.py"]
-			self.env["SHELLY_TEST_TIME_SCALE"] = str(self.time_scale)
+			if self.time_scale is not None:
+				self.env["SHELLY_TEST_TIME_SCALE"] = str(self.time_scale)
+			if self.fake_mdns:
+				self.env["SHELLY_TEST_FAKE_MDNS"] = self.mdns_file
 		self._start("driver", [sys.executable, *driver, "--dbus", "session", "--debug"])
 		self.wait_for(lambda: self.client.has_name(SHELLY_SERVICE), f"{SHELLY_SERVICE} on D-Bus")
 
@@ -238,6 +245,13 @@ class Stack:
 				proc.wait()
 		if log is not None:
 			log.close()
+
+	def announce(self, *mocks):
+		""" Simulate mDNS announcements of mocks (needs fake_mdns). """
+		assert self.fake_mdns
+		with open(self.mdns_file, "w") as f:
+			json.dump([{"serial": m.serial, "host": m.endpoint} for m in mocks], f)
+		self.procs["driver"][0].send_signal(signal.SIGUSR1)
 
 	def driver_log_tail(self, lines=40):
 		try:
@@ -319,11 +333,11 @@ class Stack:
 			f"{service}{path} == {expected!r}", timeout=timeout)
 
 
-def make_stack(tmp_path_factory, name, setup, preseed_ips=False, time_scale=None):
+def make_stack(tmp_path_factory, name, setup, preseed_ips=False, time_scale=None, fake_mdns=False):
 	""" Generator for module-scoped fixtures: setup(stack) adds mocks. """
 	if subprocess.run(["which", "dbus-daemon"], capture_output=True).returncode != 0:
 		pytest.skip("dbus-daemon not installed")
-	s = Stack(str(tmp_path_factory.mktemp(name)), time_scale=time_scale)
+	s = Stack(str(tmp_path_factory.mktemp(name)), time_scale=time_scale, fake_mdns=fake_mdns)
 	setup(s)
 	try:
 		s.start(preseed_ips=preseed_ips)
