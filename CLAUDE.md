@@ -105,4 +105,4 @@ class ShellyHandler_switch(ShellyHandler_switch_base): ...
 
 - `shelly_device.py` does `from __main__ import VERSION`, so modules must be run through `dbus_shelly.py`. Importing them from some other entrypoint breaks. `VERSION` lives in `dbus_shelly.py`.
 - Capabilities are stored in lowercase (`register_handler` lowercases them). Compare them in lowercase.
-- Product IDs: `0xB034` (EM) and `0xB075` (switch). Smoke and Flood share the placeholder `0xB0A0`.
+- Product IDs: `0xB034` (EM) and `0xB075` (switch). Smoke and Flood share `0xB0A0` (`PRODUCT_ID_INPUT`).

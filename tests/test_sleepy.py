@@ -21,7 +21,7 @@ import time
 
 import pytest
 
-from shelly_stack import make_stack, service_name, PRODUCT_ID_SMOKE_FLOOD
+from shelly_stack import make_stack, service_name, PRODUCT_ID_INPUT
 
 SLEEP = "aabbccdd3001"
 WAKE_SHORT = "aabbccdd3002"
@@ -90,7 +90,7 @@ def test_sleep_keeps_service_with_last_values(stack):
 	stack.hold(lambda: stack.client.has_name(name) and stack.client.get_value(name, "/Connected") == 0,
 		f"{name} to stay registered while asleep", 5)
 	items = stack.client.get_items(name)
-	assert items["/ProductId"] == PRODUCT_ID_SMOKE_FLOOD
+	assert items["/ProductId"] == PRODUCT_ID_INPUT
 	assert items["/Alarm"] == 2
 	assert items["/State"] == 9
 	assert stack.client.owner_changes(name)[owner_changes:] == [], "service must stay registered while asleep"

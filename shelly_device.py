@@ -24,11 +24,10 @@ from __main__ import VERSION, __file__ as processName
 
 PRODUCT_ID_SHELLY_EM = 0xB034
 PRODUCT_ID_SHELLY_SWITCH = 0xB075
+PRODUCT_ID_INPUT = 0xB0A0
+
 PING_RETRIES = 3
 CONNECTION_RETRIES = 5
-PRODUCT_ID_SHELLY_SMOKE = 0xB0A0
-# No product ID has been assigned for the Flood sensor yet; reusing Smoke's until one is.
-PRODUCT_ID_SHELLY_FLOOD = 0xB0A0
 CONNECTION_RETRIES = 10
 background_tasks = set()
 
@@ -611,10 +610,9 @@ class ShellyDevice(object):
 				# A device only ever exposes one of these RPC components, so this tells them apart.
 				if 'flood' in self._capabilities:
 					name = "Shelly Flood"
-					id = PRODUCT_ID_SHELLY_FLOOD
 				else:
 					name = "Shelly Smoke"
-					id = PRODUCT_ID_SHELLY_SMOKE
+				id = PRODUCT_ID_INPUT
 			else:
 				name = "Shelly EM"
 				id = PRODUCT_ID_SHELLY_EM

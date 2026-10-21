@@ -6,7 +6,7 @@ The tests build on each other and must run in file order (pytest's default).
 import pytest
 
 from shelly_stack import (make_stack, service_name, SHELLY_SERVICE,
-	PRODUCT_ID_SWITCH, PRODUCT_ID_SMOKE_FLOOD)
+	PRODUCT_ID_SWITCH, PRODUCT_ID_INPUT)
 
 SWITCH_SERIAL = "aabbccdd0001"
 SMOKE_SERIAL = "aabbccdd0002"
@@ -50,7 +50,7 @@ def test_manual_ip_discovery(stack):
 def test_smoke_sensor_enabled_by_default(stack):
 	items = stack.wait_service(SMOKE_SERVICE)
 	assert items["/Serial"] == SMOKE_SERIAL
-	assert items["/ProductId"] == PRODUCT_ID_SMOKE_FLOOD
+	assert items["/ProductId"] == PRODUCT_ID_INPUT
 	assert items["/ProductName"] == "Shelly Smoke"
 	assert items["/Type"] == 6
 	assert items["/Alarm"] == 0

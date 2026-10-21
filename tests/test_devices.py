@@ -7,7 +7,7 @@ All mocks are listed in /Settings/Shelly/IpAddresses before the driver starts.
 import pytest
 from pytest import approx
 
-from shelly_stack import make_stack, service_name, SHELLY_SERVICE, PRODUCT_ID_EM, PRODUCT_ID_SWITCH, PRODUCT_ID_SMOKE_FLOOD
+from shelly_stack import make_stack, service_name, SHELLY_SERVICE, PRODUCT_ID_EM, PRODUCT_ID_SWITCH, PRODUCT_ID_INPUT
 
 VOLTAGE = 230.0
 APOWER = 1000.0
@@ -255,7 +255,7 @@ def test_flood(stack):
 	# Enabled by default, like Smoke
 	name = service_name("digitalinput", FLOOD)
 	items = stack.wait_service(name)
-	assert items["/ProductId"] == PRODUCT_ID_SMOKE_FLOOD
+	assert items["/ProductId"] == PRODUCT_ID_INPUT
 	assert items["/Type"] == 4	# Bilge alarm
 	assert items["/Alarm"] == 0
 	assert stack.enabled_setting(FLOOD, 1) == 1
