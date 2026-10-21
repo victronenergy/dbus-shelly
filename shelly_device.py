@@ -147,6 +147,7 @@ class ShellyDevice(object):
 		self._reconnect_task = None
 		self._channel_info = {}
 		self._capabilities = []
+		self._component_ids = {}
 		self._subscribed = None
 
 	async def get_event(self):
@@ -421,8 +422,9 @@ class ShellyDevice(object):
 				cap_changed = True
 				break
 		# Capability added for which we have a handler
+		channel_id = self._channels[ch]["channel"]._channel_id
 		for cap in self._capabilities:
-			if cap not in handlers and shelly_handlers.get_handler_class(cap, ch_type) is not None:
+			if cap not in handlers and self._get_channel_handler_class(cap, ch_type, channel_id) is not None:
 				cap_changed = True
 				break
 
@@ -509,6 +511,7 @@ class ShellyDevice(object):
 			cid = int(id_str)
 			ids_by_cap.setdefault(cap, set()).add(cid)
 			config_by_cap_id[(cap, cid)] = comp.get("config") or {}
+		self._component_ids = ids_by_cap
 
 		def name_for(caps, cid):
 			for cap in caps:
@@ -547,6 +550,16 @@ class ShellyDevice(object):
 					# Order: Switch, em1, em. Add new types at the end of the FUNCTIONAL_HANDLERS list in shelly_handlers.py.
 					channels[index] = entry
 		return channels
+
+	# Generic handlers (e.g. Temperature) use the channel's id for their component, so skip them when the
+	# device has no such id. E.g. switch:0 with only temperature:100 from a Sensor Add-on.
+	def _get_channel_handler_class(self, cap, ch_type, channel_id):
+		cls = shelly_handlers.get_handler_class(cap, ch_type)
+		if cls is not None and shelly_handlers.get_handler_kind(cap) == shelly_handlers.HANDLER_KIND_GENERIC:
+			ids = self._component_ids.get(cap)
+			if ids is not None and channel_id not in ids:
+				return None
+		return cls
 
 	async def start(self):
 		async with self._device_lock:
@@ -622,7 +635,7 @@ class ShellyDevice(object):
 				# Create handlers for the generic + switching OR EM capabilities
 				cap_ids = {}
 				for cap in self._capabilities:
-					cls = shelly_handlers.get_handler_class(cap, ch_type)
+					cls = self._get_channel_handler_class(cap, ch_type, ch._channel_id)
 					if cls is None:
 						continue
 					cap_ids[cap.lower()] = list(channel_ids or [ch._channel_id])
