@@ -280,4 +280,4 @@ def test_flood(stack):
 
 def test_flood_product_name(stack):
 	items = stack.wait_service(service_name("digitalinput", FLOOD))
-	assert items["/ProductName"] == "Shelly Flood"
+	assert items["/ProductName"] == "Shelly input device"

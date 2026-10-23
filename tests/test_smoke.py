@@ -51,7 +51,7 @@ def test_smoke_sensor_enabled_by_default(stack):
 	items = stack.wait_service(SMOKE_SERVICE)
 	assert items["/Serial"] == SMOKE_SERIAL
 	assert items["/ProductId"] == PRODUCT_ID_INPUT
-	assert items["/ProductName"] == "Shelly Smoke"
+	assert items["/ProductName"] == "Shelly input device"
 	assert items["/Type"] == 6
 	assert items["/Alarm"] == 0
 	assert items["/BatteryPercent"] == 100.0

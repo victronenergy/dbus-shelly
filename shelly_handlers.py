@@ -21,10 +21,12 @@ HANDLER_KIND_SWITCH = "switch"
 HANDLER_KIND_EM1 = "em1"
 HANDLER_KIND_EM = "em"
 HANDLER_KIND_DIGITALINPUT = "digitalinput"
+HANDLER_KIND_TEMPERATURE = "temperature"
 HANDLER_KIND_GENERIC = "generic"
 
 # Handler type generic is not included here because a channel which only has generic capabilities (or unsupported ones) should not be listed.
-FUNCTIONAL_HANDLERS = [HANDLER_KIND_SWITCH, HANDLER_KIND_EM1, HANDLER_KIND_EM, HANDLER_KIND_DIGITALINPUT]
+# Kinds with a secondary handler (see register_secondary_handler) must come after the kinds whose channels it can be added to.
+FUNCTIONAL_HANDLERS = [HANDLER_KIND_SWITCH, HANDLER_KIND_EM1, HANDLER_KIND_EM, HANDLER_KIND_DIGITALINPUT, HANDLER_KIND_TEMPERATURE]
 
 _HANDLER_REGISTRY = {}
 _CAPS_BY_KIND = {kind: [] for kind in FUNCTIONAL_HANDLERS}
@@ -34,20 +36,42 @@ def register_handler(*capabilities, kind, aggregate=False):
 		# Store caps in lowercase because shellyDevice._capabilities are in lowercase.
 		for _cap in capabilities:
 			cap = _cap.lower()
-			_HANDLER_REGISTRY[cap] = {"cls": handler_cls, "kind": kind, "aggregate": aggregate}
+			_HANDLER_REGISTRY[cap] = {"cls": handler_cls, "kind": kind, "aggregate": aggregate, "secondary_cls": None}
 			if kind in FUNCTIONAL_HANDLERS and cap not in _CAPS_BY_KIND[kind]:
 				_CAPS_BY_KIND[kind].append(cap)
 		handler_cls._rpc_device_type = list(capabilities) if len(capabilities) > 1 else capabilities[0]
 		return handler_cls
 	return _decorator
 
+# Secondary handlers: a functional component (e.g. Temperature) can have a second, smaller handler class that is used
+# when the component does not get a channel of its own. The component gets its own channel (and the handler from
+# register_handler) only when its id is not used by an earlier channel. Otherwise it is part of that channel, and the
+# secondary handler is added to it, like a generic handler. E.g. temperature:0 next to switch:0 only adds /Temperature
+# to the switch channel, while a Sensor Add-on's temperature:100 gets a temperature service.
+# The component must be registered with register_handler first.
+def register_secondary_handler(*capabilities):
+	def _decorator(secondary_cls):
+		for _cap in capabilities:
+			_HANDLER_REGISTRY[_cap.lower()]["secondary_cls"] = secondary_cls
+		secondary_cls._rpc_device_type = list(capabilities) if len(capabilities) > 1 else capabilities[0]
+		return secondary_cls
+	return _decorator
+
 def is_aggregate_handler(capability):
 	info = _HANDLER_REGISTRY.get(capability)
 	return info["aggregate"] if info else False
 
+def has_secondary_handler(capability):
+	info = _HANDLER_REGISTRY.get(capability)
+	return info["secondary_cls"] is not None if info else False
+
 def get_handler_class(capability, kind=None):
 	info = _HANDLER_REGISTRY.get(capability)
-	return info["cls"] if info and (kind is None or info["kind"] == kind or info["kind"] == HANDLER_KIND_GENERIC) else None
+	if not info:
+		return None
+	if kind is None or info["kind"] == kind or info["kind"] == HANDLER_KIND_GENERIC:
+		return info["cls"]
+	return info["secondary_cls"]
 
 def get_handler_kind(capability):
 	info = _HANDLER_REGISTRY.get(capability)
@@ -70,7 +94,7 @@ class ShellyHandler(object):
 
 	@classmethod
 	async def create(cls, cap, rpc_callback=None, restart_callback=None, shelly_channel=None):
-		handler_cls = get_handler_class(cap)
+		handler_cls = get_handler_class(cap, getattr(shelly_channel, "_ch_type", None))
 		if handler_cls is None:
 			return None
 
@@ -182,23 +206,8 @@ class ShellyHandler(object):
 	async def em_supported(self):
 		return False
 
-# Temperature handler, puts temperature readings on dbus.
-@register_handler('Temperature', kind=HANDLER_KIND_GENERIC)
-class ShellyHandler_temperature(ShellyHandler):
-	async def handler_ainit(self):
-		# Temperature path must be updated.
-		self.service.add_item(DoubleItem(f'/Temperature', None, text=fmt['celsius']))
-		return True
-
-	def update(self, status_json, cap=None):
-		try:
-			with self.service as s:
-				s[f'/Temperature'] = status_json["tC"]
-		except:
-			pass
-
 # DevicePower handler, puts battery voltage/percentage readings on dbus.
-# Tacks onto whichever channel the component is found on, same as the Temperature handler.
+# Tacks onto whichever channel the component is found on, with a matching id.
 @register_handler('DevicePower', kind=HANDLER_KIND_GENERIC)
 class ShellyHandler_devicepower(ShellyHandler):
 	async def handler_ainit(self):
@@ -741,6 +750,67 @@ class ShellyHandler_flood(ShellyHandler_digitalinput_alarm_base):
 	_digitalinput_type = 4  # Bilge alarm
 	_digitalinput_type_text = "Bilge alarm"
 	_supports_remote_mute = False
+
+
+# Temperature sensor handler, registers a com.victronenergy.temperature service for a Temperature component
+# that has its own id, e.g. the probes of a Sensor Add-on (temperature:100 and up).
+@register_handler('Temperature', kind=HANDLER_KIND_TEMPERATURE)
+class ShellyHandler_temperature_sensor(ShellyHandler_channel_config_mixin, ShellyHandler):
+	# See the com.victronenergy.temperature service in https://github.com/victronenergy/venus/wiki/dbus
+	STATUS_OK = 0
+	STATUS_UNKNOWN = 4
+	TEMPERATURE_TYPE_GENERIC = 2
+	TEMPERATURE_TYPE_MAX = 6
+
+	async def handler_ainit(self):
+		if not await super().handler_ainit():
+			return False
+		await self.add_customname_path()
+
+		self._temperature_type_alias = f'TemperatureType_{self._serial}_{self._channel_id}'
+		await self.settings.add_settings(
+			Setting(self._settings_base + 'TemperatureType', self.TEMPERATURE_TYPE_GENERIC, 0, self.TEMPERATURE_TYPE_MAX, alias=self._temperature_type_alias)
+		)
+		temperature_type = self.settings.get_value(self.settings.alias(self._temperature_type_alias))
+
+		self.service.add_item(DoubleItem('/Temperature', None, text=fmt['celsius']))
+		self.service.add_item(IntegerItem('/TemperatureType', temperature_type, writeable=True, onchange=self.set_temperature_type))
+		self.service.add_item(IntegerItem('/Status', None))
+		self.set_service_name('temperature')
+		return True
+
+	def update(self, status_json, cap=None):
+		if status_json is None:
+			return
+		# tC is null and errors is set ('read', 'out_of_range') when the sensor can't be read.
+		temperature = status_json.get("tC")
+		with self.service as s:
+			s['/Temperature'] = temperature
+			s['/Status'] = self.STATUS_OK if temperature is not None and not status_json.get("errors") else self.STATUS_UNKNOWN
+
+	async def set_temperature_type(self, item, value):
+		if not isinstance(value, int) or not 0 <= value <= self.TEMPERATURE_TYPE_MAX:
+			return
+		await self.settings.set_value(self.settings.alias(self._temperature_type_alias), value)
+		item.set_local_value(value)
+
+
+# Temperature secondary handler, puts temperature readings on dbus.
+# Used when the Temperature component shares its id with another channel (e.g. switch:0 and temperature:0),
+# see register_secondary_handler.
+@register_secondary_handler('Temperature')
+class ShellyHandler_temperature(ShellyHandler):
+	async def handler_ainit(self):
+		# Temperature path must be updated.
+		self.service.add_item(DoubleItem(f'/Temperature', None, text=fmt['celsius']))
+		return True
+
+	def update(self, status_json, cap=None):
+		try:
+			with self.service as s:
+				s[f'/Temperature'] = status_json["tC"]
+		except:
+			pass
 
 
 class ShellyHandler_switch_base(ShellyHandler_channel_config_mixin, Shelly_EM_base, ShellyHandler):
