@@ -22,9 +22,8 @@ HANDLER_KIND_EM1 = "em1"
 HANDLER_KIND_EM = "em"
 HANDLER_KIND_DIGITALINPUT = "digitalinput"
 HANDLER_KIND_TEMPERATURE = "temperature"
-HANDLER_KIND_GENERIC = "generic"
 
-# Handler type generic is not included here because a channel which only has generic capabilities (or unsupported ones) should not be listed.
+# Components with only a secondary handler have no kind, because a channel which only has those (or unsupported ones) should not be listed.
 # Kinds with a secondary handler (see register_secondary_handler) must come after the kinds whose channels it can be added to.
 FUNCTIONAL_HANDLERS = [HANDLER_KIND_SWITCH, HANDLER_KIND_EM1, HANDLER_KIND_EM, HANDLER_KIND_DIGITALINPUT, HANDLER_KIND_TEMPERATURE]
 
@@ -36,23 +35,27 @@ def register_handler(*capabilities, kind, aggregate=False):
 		# Store caps in lowercase because shellyDevice._capabilities are in lowercase.
 		for _cap in capabilities:
 			cap = _cap.lower()
-			_HANDLER_REGISTRY[cap] = {"cls": handler_cls, "kind": kind, "aggregate": aggregate, "secondary_cls": None}
+			# Keep a secondary handler that was registered before this one.
+			info = _HANDLER_REGISTRY.setdefault(cap, {"secondary_cls": None})
+			info.update({"cls": handler_cls, "kind": kind, "aggregate": aggregate})
 			if kind in FUNCTIONAL_HANDLERS and cap not in _CAPS_BY_KIND[kind]:
 				_CAPS_BY_KIND[kind].append(cap)
 		handler_cls._rpc_device_type = list(capabilities) if len(capabilities) > 1 else capabilities[0]
 		return handler_cls
 	return _decorator
 
-# Secondary handlers: a functional component (e.g. Temperature) can have a second, smaller handler class that is used
-# when the component does not get a channel of its own. The component gets its own channel (and the handler from
-# register_handler) only when its id is not used by an earlier channel. Otherwise it is part of that channel, and the
-# secondary handler is added to it, like a generic handler. E.g. temperature:0 next to switch:0 only adds /Temperature
-# to the switch channel, while a Sensor Add-on's temperature:100 gets a temperature service.
-# The component must be registered with register_handler first.
+# Secondary handlers are added to a channel of another kind that has a component with the channel's id.
+# They add paths to that channel's service, e.g. battery readings from DevicePower.
+# A component with only a secondary handler (DevicePower, Sys) never gets a channel of its own, and does not make a
+# device supported. A functional component (e.g. Temperature) can have both: it gets its own channel (and the handler
+# from register_handler) only when its id is not used by an earlier channel. Otherwise it is part of that channel, and
+# its secondary handler is added to it. E.g. temperature:0 next to switch:0 only adds /Temperature to the switch
+# channel, while a Sensor Add-on's temperature:100 gets a temperature service.
 def register_secondary_handler(*capabilities):
 	def _decorator(secondary_cls):
 		for _cap in capabilities:
-			_HANDLER_REGISTRY[_cap.lower()]["secondary_cls"] = secondary_cls
+			info = _HANDLER_REGISTRY.setdefault(_cap.lower(), {"cls": None, "kind": None, "aggregate": False})
+			info["secondary_cls"] = secondary_cls
 		secondary_cls._rpc_device_type = list(capabilities) if len(capabilities) > 1 else capabilities[0]
 		return secondary_cls
 	return _decorator
@@ -65,11 +68,11 @@ def has_secondary_handler(capability):
 	info = _HANDLER_REGISTRY.get(capability)
 	return info["secondary_cls"] is not None if info else False
 
-def get_handler_class(capability, kind=None):
+def get_handler_class(capability, kind):
 	info = _HANDLER_REGISTRY.get(capability)
 	if not info:
 		return None
-	if kind is None or info["kind"] == kind or info["kind"] == HANDLER_KIND_GENERIC:
+	if info["kind"] == kind:
 		return info["cls"]
 	return info["secondary_cls"]
 
@@ -208,7 +211,7 @@ class ShellyHandler(object):
 
 # DevicePower handler, puts battery voltage/percentage readings on dbus.
 # Tacks onto whichever channel the component is found on, with a matching id.
-@register_handler('DevicePower', kind=HANDLER_KIND_GENERIC)
+@register_secondary_handler('DevicePower')
 class ShellyHandler_devicepower(ShellyHandler):
 	async def handler_ainit(self):
 		if not await super().handler_ainit():
@@ -230,7 +233,7 @@ class ShellyHandler_devicepower(ShellyHandler):
 			logger.error("Error in update: %s", e)
 
 # System handler placeholder
-@register_handler('Sys', kind=HANDLER_KIND_GENERIC)
+@register_secondary_handler('Sys')
 class ShellyHandler_sys(ShellyHandler):
 	async def handler_ainit(self):
 		return True
