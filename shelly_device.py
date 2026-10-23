@@ -607,11 +607,7 @@ class ShellyDevice(object):
 				name = "Shelly Switch"
 				id = PRODUCT_ID_SHELLY_SWITCH
 			elif ch_type == 'digitalinput':
-				# A device only ever exposes one of these RPC components, so this tells them apart.
-				if 'flood' in self._capabilities:
-					name = "Shelly Flood"
-				else:
-					name = "Shelly Smoke"
+				name = "Shelly input device"
 				id = PRODUCT_ID_INPUT
 			else:
 				name = "Shelly EM"
