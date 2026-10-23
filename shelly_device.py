@@ -101,8 +101,8 @@ class ShellyChannel(object):
 		self.service.add_item(TextItem('/Serial', self._serial))
 		# /State has a spec-defined, type-specific meaning on digitalinput services
 		# (owned by ShellyHandler_smoke / ShellyHandler_flood); elsewhere it's just this
-		# generic "connected" placeholder.
-		if self._ch_type != 'digitalinput':
+		# generic "connected" placeholder. The temperature service doesn't define /State.
+		if self._ch_type not in ('digitalinput', 'temperature'):
 			self.service.add_item(IntegerItem('/State', 0x100)) # Connected
 		self.service.add_item(TextItem('/ShellyModel', self.shellyModel))
 
@@ -186,7 +186,8 @@ class ShellyDevice(object):
 	def is_sleepy(self):
 		# Battery-powered devices (e.g. a smoke detector or flood sensor) spend most of their time in deep sleep
 		# with WiFi off, so losing the connection is expected and not a sign of a real failure.
-		return any(ch.get('type') == 'digitalinput' for ch in self._channel_info.values())
+		# Battery-powered devices are recognized by their DevicePower component.
+		return 'devicepower' in self._capabilities
 
 	@property
 	def serial(self):
@@ -451,7 +452,7 @@ class ShellyDevice(object):
 		if components == []:
 			# A marginal connection (e.g. a sleepy device about to drop again) can have its
 			# channel enumeration RPCs silently fail and come back empty. Don't let that wipe
-			# out previously-known channel info -- is_sleepy depends on it, and losing it on a
+			# out previously-known channel info and capabilities -- is_sleepy depends on them, and losing them on a
 			# flaky reconnect misclassifies the device as non-sleepy, causing it to be torn
 			# down instead of just marked disconnected. Only a genuine first-time connect must
 			# actually find channels.
@@ -530,6 +531,12 @@ class ShellyDevice(object):
 			# ids = [0, 1] for relevant_caps = 'Switch' and
 			# ids = [0] for relevant_caps = ['EM1']
 			ids = sorted(set().union(*(ids_by_cap.get(c, set()) for c in relevant_caps)))
+			# Components with a secondary handler only get their own channel when no earlier channel has the same id.
+			# Otherwise they belong to that channel, e.g. temperature:0 is part of switch:0, but a Sensor Add-on's
+			# temperature:100 is a channel of its own. For an aggregated channel only its primary id counts.
+			if shelly_handlers.has_secondary_handler(relevant_caps[0]):
+				used_ids = {int(ch["id"].rsplit("_", 1)[1]) for ch in channels.values()}
+				ids = [cid for cid in ids if cid not in used_ids]
 			if not ids:
 				continue
 
@@ -550,11 +557,11 @@ class ShellyDevice(object):
 					channels[index] = entry
 		return channels
 
-	# Generic handlers (e.g. Temperature) use the channel's id for their component, so skip them when the
-	# device has no such id. E.g. switch:0 with only temperature:100 from a Sensor Add-on.
+	# Generic and secondary handlers (e.g. Temperature on a switch channel) use the channel's id for their component,
+	# so skip them when the device has no such id. E.g. switch:0 with only temperature:100 from a Sensor Add-on.
 	def _get_channel_handler_class(self, cap, ch_type, channel_id):
 		cls = shelly_handlers.get_handler_class(cap, ch_type)
-		if cls is not None and shelly_handlers.get_handler_kind(cap) == shelly_handlers.HANDLER_KIND_GENERIC:
+		if cls is not None and shelly_handlers.get_handler_kind(cap) != ch_type:
 			ids = self._component_ids.get(cap)
 			if ids is not None and channel_id not in ids:
 				return None
@@ -606,7 +613,7 @@ class ShellyDevice(object):
 			if ch_type == 'switch':
 				name = "Shelly Switch"
 				id = PRODUCT_ID_SHELLY_SWITCH
-			elif ch_type == 'digitalinput':
+			elif ch_type in ('digitalinput', 'temperature'):
 				name = "Shelly input device"
 				id = PRODUCT_ID_INPUT
 			else:
@@ -632,7 +639,11 @@ class ShellyDevice(object):
 					cls = self._get_channel_handler_class(cap, ch_type, ch._channel_id)
 					if cls is None:
 						continue
-					cap_ids[cap.lower()] = list(channel_ids or [ch._channel_id])
+					# Generic and secondary handlers only handle the component with the channel's primary id.
+					if shelly_handlers.get_handler_kind(cap) != ch_type:
+						cap_ids[cap.lower()] = [ch._channel_id]
+					else:
+						cap_ids[cap.lower()] = list(channel_ids or [ch._channel_id])
 					create_new = True
 
 					# Reuse existing handler if the same handler class is used for more capabilities (e.g. EM1 and EM1Data)

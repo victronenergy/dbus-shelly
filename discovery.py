@@ -1023,7 +1023,9 @@ class ShellyManager(object):
 			# device's sleep cycle for the first enable: this runs right after a successful _get_device_info(),
 			# while the device is confirmed awake, instead of requiring a manual GUI toggle at some later,
 			# possibly-asleep moment.
-			default_enabled = 1 if ch_type == 'digitalinput' else 0
+			# The same goes for temperature channels of sleepy devices. Temperature channels of other devices
+			# default to disabled, so existing installations don't suddenly get a service for every probe.
+			default_enabled = 1 if ch_type == 'digitalinput' or (ch_type == 'temperature' and state.endpoint.sleepy) else 0
 			await self.settings.add_settings(Setting(f'/Settings/Devices/shelly_{serial}/{i + 1}/Enabled', default_enabled, alias=f"enabled_{serial}_{i}"))
 			enabled = self.settings.get_value(self.settings.alias(f"enabled_{serial}_{i}"))
 

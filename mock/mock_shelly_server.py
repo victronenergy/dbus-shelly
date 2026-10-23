@@ -29,6 +29,8 @@ class MockShellyDevice:
 		light_channels=0,
 		rgb=False,
 		cct=False,
+		temperature_ids=(),
+		devicepower=False,
 	):
 		self.name = device_name
 		self.channel_name = channel_name
@@ -47,6 +49,10 @@ class MockShellyDevice:
 		self._flood_mute = False
 		self._battery_percent = float(battery_percent)
 		self._battery_voltage = float(battery_voltage)
+		# Battery-powered devices have a DevicePower component. Smoke and Flood always have one.
+		self.devicepower = devicepower or smoke or flood
+		# Temperature components, keyed by id. A Sensor Add-on uses ids 100 and up.
+		self._temperatures = {cid: {"tC": 21.5 + cid % 100, "errors": None, "name": None} for cid in temperature_ids}
 		self._start = time.time()
 
 		self._switch_outputs = [False] * switch_channels
@@ -164,10 +170,12 @@ class MockShellyDevice:
 			status[f"rgbcct:{i}"] = self._rgbcct_status(i)
 		if self.smoke:
 			status["smoke:0"] = self.smoke_get_status({"id": 0})
-			status["devicepower:0"] = self.devicepower_get_status({"id": 0})
 		if self.flood:
 			status["flood:0"] = self.flood_get_status({"id": 0})
+		if self.devicepower:
 			status["devicepower:0"] = self.devicepower_get_status({"id": 0})
+		for cid in self._temperatures:
+			status[f"temperature:{cid}"] = self.temperature_get_status({"id": cid})
 		if self.em:
 			status["em:0"] = self.em_get_status({"id": 0})
 			status["emdata:0"] = self.emdata_get_status({"id": 0})
@@ -197,8 +205,10 @@ class MockShellyDevice:
 			components.append({"key": "smoke:0", "status": self.smoke_get_status({"id": 0}), "config": self.smoke_get_config({"id": 0})})
 		if self.flood:
 			components.append({"key": "flood:0", "status": self.flood_get_status({"id": 0}), "config": self.flood_get_config({"id": 0})})
-		if self.smoke or self.flood:
+		if self.devicepower:
 			components.append({"key": "devicepower:0", "status": self.devicepower_get_status({"id": 0}), "config": self.devicepower_get_config({"id": 0})})
+		for cid in self._temperatures:
+			components.append({"key": f"temperature:{cid}", "status": self.temperature_get_status({"id": cid}), "config": self.temperature_get_config({"id": cid})})
 		if self.em:
 			components.append({"key": "em:0", "status": self.em_get_status({"id": 0}), "config": self.meter_get_config("em", {"id": 0})})
 			components.append({"key": "emdata:0", "status": self.emdata_get_status({"id": 0}), "config": {"id": 0}})
@@ -347,14 +357,51 @@ class MockShellyDevice:
 
 	def devicepower_get_status(self, params):
 		channel = int(params.get("id", 0))
-		if channel != 0 or not (self.smoke or self.flood):
+		if channel != 0 or not self.devicepower:
 			return None
 		return {"id": channel, "battery": {"V": self._battery_voltage, "percent": self._battery_percent}}
 
 	def devicepower_get_config(self, params):
 		channel = int(params.get("id", 0))
-		if channel != 0 or not (self.smoke or self.flood):
+		if channel != 0 or not self.devicepower:
 			return None
+		return {}
+
+	def temperature_get_status(self, params):
+		t = self._temperatures.get(int(params.get("id", 0)))
+		if t is None:
+			return None
+		status = {"id": int(params["id"]), "tC": t["tC"], "tF": None if t["tC"] is None else t["tC"] * 9 / 5 + 32}
+		if t["errors"]:
+			status["errors"] = t["errors"]
+		return status
+
+	def temperature_get_config(self, params):
+		t = self._temperatures.get(int(params.get("id", 0)))
+		if t is None:
+			return None
+		return {"id": int(params["id"]), "name": t["name"], "report_thr_C": 0.5, "offset_C": 0.0}
+
+	def temperature_set_config(self, params):
+		t = self._temperatures.get(int(params.get("id", 0)))
+		if t is None:
+			return None
+		config = params.get("config", {}) or {}
+		if "name" in config:
+			t["name"] = config["name"]
+		return {"restart_required": False}
+
+	# Test hook, not a real Shelly method: set the reading (and errors) of a Temperature component.
+	def mock_set_temperature(self, params):
+		t = self._temperatures.get(int(params.get("id", 0)))
+		if t is None:
+			return None
+		t["tC"] = params.get("tC")
+		t["errors"] = params.get("errors")
+		try:
+			asyncio.get_running_loop().create_task(self.notify_full_status())
+		except RuntimeError:
+			pass
 		return {}
 
 	# Test hook, not a real Shelly method: trigger or clear the smoke/flood alarm.
@@ -512,6 +559,9 @@ class MockShellyDevice:
 			"Flood.SetConfig",
 			"DevicePower.GetStatus",
 			"DevicePower.GetConfig",
+			"Temperature.GetStatus",
+			"Temperature.GetConfig",
+			"Temperature.SetConfig",
 			"EM.GetStatus",
 			"EM.GetConfig",
 			"EM.SetConfig",
@@ -710,6 +760,18 @@ async def handle_rpc(device, frame, *, verbose=False):
 		resp = _json_response(device.devicepower_get_config(params), request_id)
 		resp["src"] = f"shelly-{device.mac}"
 		return resp
+	if method == "Temperature.GetStatus" and device._temperatures:
+		resp = _json_response(device.temperature_get_status(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "Temperature.GetConfig" and device._temperatures:
+		resp = _json_response(device.temperature_get_config(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "Temperature.SetConfig" and device._temperatures:
+		resp = _json_response(device.temperature_set_config(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
 	if method == "EM.GetStatus" and device.em:
 		resp = _json_response(device.em_get_status(params), request_id)
 		resp["src"] = f"shelly-{device.mac}"
@@ -780,6 +842,10 @@ async def handle_rpc(device, frame, *, verbose=False):
 		return resp
 	if method == "Mock.Freeze":
 		resp = _json_response(device.mock_freeze(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "Mock.SetTemperature":
+		resp = _json_response(device.mock_set_temperature(params), request_id)
 		resp["src"] = f"shelly-{device.mac}"
 		return resp
 	if method == "Mock.SetAlarm":
@@ -865,6 +931,8 @@ def parse_args():
 	parser.add_argument("--light-channels", type=int, default=0)
 	parser.add_argument("--rgb", action="store_true")
 	parser.add_argument("--cct", action="store_true")
+	parser.add_argument("--temperature-ids", default="", help="Comma-separated Temperature component ids, e.g. 100,101 for a Sensor Add-on")
+	parser.add_argument("--devicepower", action="store_true", help="Add a DevicePower component (battery-powered device)")
 	parser.add_argument("--notify-interval", type=float, default=5)
 	parser.add_argument("--verbose", action="store_true")
 	return parser.parse_args()
@@ -893,6 +961,8 @@ async def main():
 		light_channels=args.light_channels,
 		rgb=args.rgb,
 		cct=args.cct,
+		temperature_ids=[int(i) for i in args.temperature_ids.split(",") if i],
+		devicepower=args.devicepower,
 	)
 
 	app = web.Application()
