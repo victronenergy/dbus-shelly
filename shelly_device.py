@@ -557,7 +557,7 @@ class ShellyDevice(object):
 					channels[index] = entry
 		return channels
 
-	# Generic and secondary handlers (e.g. Temperature on a switch channel) use the channel's id for their component,
+	# Secondary handlers (e.g. DevicePower, or Temperature on a switch channel) use the channel's id for their component,
 	# so skip them when the device has no such id. E.g. switch:0 with only temperature:100 from a Sensor Add-on.
 	def _get_channel_handler_class(self, cap, ch_type, channel_id):
 		cls = shelly_handlers.get_handler_class(cap, ch_type)
@@ -633,13 +633,13 @@ class ShellyDevice(object):
 					channel_ids=channel_ids,
 				)
 
-				# Create handlers for the generic + switching OR EM capabilities
+				# Create handlers for the switching OR EM capabilities, plus the secondary handlers
 				cap_ids = {}
 				for cap in self._capabilities:
 					cls = self._get_channel_handler_class(cap, ch_type, ch._channel_id)
 					if cls is None:
 						continue
-					# Generic and secondary handlers only handle the component with the channel's primary id.
+					# Secondary handlers only handle the component with the channel's primary id.
 					if shelly_handlers.get_handler_kind(cap) != ch_type:
 						cap_ids[cap.lower()] = [ch._channel_id]
 					else:
