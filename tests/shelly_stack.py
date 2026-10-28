@@ -246,11 +246,13 @@ class Stack:
 		if log is not None:
 			log.close()
 
-	def announce(self, *mocks):
-		""" Simulate mDNS announcements of mocks (needs fake_mdns). """
+	def announce(self, *mocks, hostname=None):
+		""" Simulate mDNS announcements of mocks (needs fake_mdns). With hostname
+		    (e.g. "localhost"), mocks are announced by name instead of by IP address,
+		    like real mDNS announcements. """
 		assert self.fake_mdns
 		with open(self.mdns_file, "w") as f:
-			json.dump([{"serial": m.serial, "host": m.endpoint} for m in mocks], f)
+			json.dump([{"serial": m.serial, "host": f"{hostname}:{m.port}" if hostname else m.endpoint} for m in mocks], f)
 		self.procs["driver"][0].send_signal(signal.SIGUSR1)
 
 	def driver_log_tail(self, lines=40):
