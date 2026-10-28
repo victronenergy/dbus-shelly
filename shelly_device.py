@@ -3,7 +3,7 @@ import logging
 from functools import partial
 from enum import IntEnum
 
-from aioshelly.common import ConnectionOptions
+from aioshelly.common import ConnectionOptions, process_ip_or_options
 from aioshelly.rpc_device import RpcDevice, RpcUpdateType, WsServer
 from aioshelly.exceptions import DeviceConnectionError
 import asyncio
@@ -281,6 +281,13 @@ class ShellyDevice(object):
 			options = ConnectionOptions(host, "", "")
 		else:
 			options = ConnectionOptions(host, "", "", port=port)
+		# Resolve a hostname (e.g. found over mDNS) to an IP address. aioshelly 13.16.0+ no longer
+		# does this when it is passed ConnectionOptions, and the IP address is listed on dbus.
+		try:
+			options = await process_ip_or_options(options)
+		except Exception as e:
+			logger.debug("Failed to resolve shelly device host %s: %s", host, e)
+			return False
 		if self._aiohttp_session is not None:
 			try:
 				await self._aiohttp_session.close()
