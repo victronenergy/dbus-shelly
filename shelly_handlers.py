@@ -310,6 +310,9 @@ class ShellyHandler_channel_config_mixin():
 		# Name fetched and it is set; done
 		else:
 			self._custom_name_retries = 0
+		# The channel can be stopped while fetching the device name above.
+		if self.service is None or getattr(self.service, '_closed', False):
+			return
 		with self.service as s:
 			for path in self._custom_name_paths:
 				s[path] = name
