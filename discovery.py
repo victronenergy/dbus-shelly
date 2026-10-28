@@ -5,6 +5,7 @@ import sys
 import os
 import asyncio
 import re
+import hashlib
 from functools import partial
 from enum import Enum
 from typing import Any
@@ -29,7 +30,7 @@ from zeroconf.asyncio import (
 	AsyncZeroconf
 )
 
-from shelly_device import ShellyDevice, ShellyEvent
+from shelly_device import ShellyDevice, ShellyEvent, ShellyDeviceConnectionResult, HA1_PREFIX, AUTH_USERNAME, is_sha256_hex
 from shelly_handlers import get_channel_type
 from utils import logger, wait_for_settings
 
@@ -44,6 +45,11 @@ BACKOFF_INITIAL_SECONDS = 10 # Initial backoff for failed connection attempts, d
 BACKOFF_MAX_SECONDS = 10 * 60
 RECONNECT_LOOP_HEARTBEAT_SECONDS = BACKOFF_INITIAL_SECONDS # Interval for the reconnect loop to check device connectivity. Should be equal to or less than BACKOFF_INITIAL_SECONDS to ensure timely retries.
 
+# Retry interval for devices that throttle login attempts (brute-force protection, firmware 2.0.0+), doubles up to THROTTLED_RETRY_MAX_SECONDS.
+# The device counts failed logins in a 10 minute sliding window, and every attempt while it throttles may extend the throttling.
+THROTTLED_RETRY_INITIAL_SECONDS = 10 * 60
+THROTTLED_RETRY_MAX_SECONDS = 60 * 60
+
 CHANNEL_ENABLE_RETRY_INITIAL_SECONDS = BACKOFF_INITIAL_SECONDS
 CHANNEL_ENABLE_RETRY_MAX_SECONDS = BACKOFF_MAX_SECONDS
 
@@ -55,10 +61,48 @@ class ProbeStatus(str, Enum):
 	RECONNECTING = "reconnecting" # Device was reachable before and was active, but is now unreachable and is being retried by the ShellyDevice reconnect logic.
 	UNSUPPORTED = "unsupported" # Device is reachable but not supported
 	UNREACHABLE = "unreachable" # Device is unreachable, but may be retried later
+	PASSWORD_REQUIRED = "password_required" # Device is reachable and password protected, but no password is stored
+	AUTH_FAILED = "auth_failed" # Device is reachable and password protected, but the stored password was rejected
+	THROTTLED = "throttled" # Device rejects login attempts because there were too many (brute-force protection)
 	ERROR = "error"
 
 	def __str__(self) -> str:
 		return self.value
+
+# Whether a device is supported can only be determined after a successful (authenticated) connection.
+AUTH_PROBE_STATUSES = (ProbeStatus.PASSWORD_REQUIRED, ProbeStatus.AUTH_FAILED)
+# Don't connect to devices with these statuses outside of the ShellyConnectionManager's retries: every login attempt
+# fails, and failed attempts trigger (or extend) the device's brute-force protection.
+NO_LOGIN_STATUSES = AUTH_PROBE_STATUSES + (ProbeStatus.THROTTLED,)
+
+# Connection status of a device as published on /Devices/<serial>/ConnectionStatus.
+class ShellyDeviceConnectionStatus(int, Enum):
+	DISCOVERED = 0			# Device is found, but the first connection attempt has not finished yet.
+	READY = 1				# Device is reachable, authenticated (if needed) and supported. Its channels can be enabled.
+	ENABLED = 2				# At least one channel is enabled. Also while the device is temporarily offline and being reconnected.
+	AUTH_FAILED = -1		# Device is password protected and the stored password was rejected.
+	PASSWORD_REQUIRED = -2	# Device is password protected and no password is stored.
+	UNSUPPORTED = -3		# Device is reachable, but not supported.
+	UNREACHABLE = -4		# Device is known, but not reachable. Connecting is retried.
+	TOO_MANY_LOGIN_ATTEMPTS = -5	# Device rejects login attempts because there were too many. Connecting is retried after a while.
+
+	def __str__(self):
+		return {
+			ShellyDeviceConnectionStatus.DISCOVERED: 'Discovered',
+			ShellyDeviceConnectionStatus.READY: 'Ready',
+			ShellyDeviceConnectionStatus.ENABLED: 'Enabled',
+			ShellyDeviceConnectionStatus.AUTH_FAILED: 'Authentication failed',
+			ShellyDeviceConnectionStatus.PASSWORD_REQUIRED: 'Password required',
+			ShellyDeviceConnectionStatus.UNSUPPORTED: 'Unsupported',
+			ShellyDeviceConnectionStatus.UNREACHABLE: 'Unreachable',
+			ShellyDeviceConnectionStatus.TOO_MANY_LOGIN_ATTEMPTS: 'Too many login attempts',
+		}[self]
+
+def connection_status_text(value):
+	try:
+		return str(ShellyDeviceConnectionStatus(value))
+	except ValueError:
+		return 'Unknown'
 
 @dataclass
 class ChannelOperation:
@@ -161,6 +205,14 @@ class ConnectMeta:
 		self.next_retry_at = now + delay
 		self.success = False
 
+	# Login attempts are throttled by the device. Wait much longer than for an unreachable device.
+	def mark_throttled(self, now: float | None = None) -> None:
+		now = time.time() if now is None else now
+		self.attempts += 1
+		delay = min(THROTTLED_RETRY_INITIAL_SECONDS * (2 ** (self.attempts - 1)), THROTTLED_RETRY_MAX_SECONDS)
+		self.next_retry_at = now + delay
+		self.success = False
+
 	def mark_success(self, now: float | None = None) -> None:
 		now = time.time() if now is None else now
 		self.attempts = 0
@@ -175,6 +227,7 @@ class ShellyEndpointState:
 	connect: ConnectMeta | None = None
 	deviceInfo: dict[str, Any] | None = None
 	channel_info: dict[int, dict[str, Any]] = field(default_factory=dict)
+	status: ProbeStatus | None = None	# Result of the last connection attempt
 
 	@property
 	def is_connecting(self) -> bool:
@@ -264,9 +317,12 @@ class ShellyDeviceCache:
 	def refresh(self) -> None:
 		# Refresh all connect states in the cache, resetting their retry timers and clearing attempts.
 		# Also retry devices that were marked as unsupported, in case they are supported now (can happen when the profile is changed)
+		# and password protected devices, in case authentication was disabled on the device.
 		for target in self.all_targets():
 			if target.endpoint.supported is False:
 				target.endpoint.supported = None
+				target.start_connect()
+			elif target.status in AUTH_PROBE_STATUSES and target.connect is None:
 				target.start_connect()
 			if target.connect is not None:
 				target.connect.refresh()
@@ -285,7 +341,10 @@ class ShellyDeviceCache:
 				# If the device is already in the cache, but we do not know if it is supported yet, trigger a reconnect straight away
 				# NOTE: Unsupported devices will be retried upon refresh.
 				# A sleepy device that is seen again has likely just woken up. It is only reachable for a short time, so trigger a reconnect straight away.
-				if existing.endpoint.supported is None or existing.endpoint.sleepy:
+				# Don't retry a rejected password: failed attempts trigger the device's brute-force protection. A new password triggers a retry.
+				# For the same reason, don't cut short the wait for a device that throttles login attempts.
+				if (existing.endpoint.supported is None and existing.status not in (ProbeStatus.AUTH_FAILED, ProbeStatus.THROTTLED)) or \
+						(existing.endpoint.sleepy and existing.status != ProbeStatus.THROTTLED):
 					existing.start_connect()
 					self._queue_cache_change()
 				return
@@ -351,12 +410,41 @@ class ShellyDeviceCache:
 				if state.endpoint.supported is not None:
 					existing.endpoint.supported = state.endpoint.supported
 					existing.endpoint.sleepy = state.endpoint.sleepy
+				if state.status is not None:
+					existing.status = state.status
 				if state.connect is not None and state.connect.success:
 					existing.connect = state.connect
 				return existing
 			else:
 				self._cache[serial_key] = state # Device not present in cache keyed by serial, add it.
 				return state
+
+	# Mark a device whose password was rejected outside of a connection attempt of the ShellyConnectionManager,
+	# e.g. by a running device. Stop retrying until a new password is entered.
+	async def mark_auth_failed(self, serial: str, status: ProbeStatus = ProbeStatus.AUTH_FAILED) -> None:
+		async with cache_lock:
+			key = self._resolve_key(serial=serial)
+			if key is None:
+				return
+			state = self._cache[key]
+			state.status = status
+			state.stop_connect()
+			self._queue_device_change(status.value, state)
+
+	# Mark a device that throttles login attempts outside of a connection attempt of the ShellyConnectionManager,
+	# e.g. when a running device fails to reconnect. Retry after a long wait.
+	async def mark_throttled(self, serial: str) -> None:
+		async with cache_lock:
+			key = self._resolve_key(serial=serial)
+			if key is None:
+				return
+			state = self._cache[key]
+			state.status = ProbeStatus.THROTTLED
+			if state.connect is None:
+				state.start_connect()
+			state.connect.mark_throttled()
+			self._queue_device_change(ProbeStatus.THROTTLED.value, state)
+			self._queue_cache_change()
 
 	def all_targets(self) -> list[ShellyEndpointState]:
 		return list(self._cache.values())
@@ -451,6 +539,8 @@ class ShellyConnectionManager:
 						# The connect state has changed since we started the attempt, ignore this result.
 						return False
 
+					ep_state.status = result.status
+
 					# Reachable and supported device -> mark as supported and reset retry state
 					if result.status == ProbeStatus.REACHABLE:
 						if ep_state.is_reachable:
@@ -472,6 +562,31 @@ class ShellyConnectionManager:
 						ep_state.stop_connect()
 						ep_state.endpoint.supported = False
 						logger.info("Shelly device %s at %s is unsupported, will not retry", ep_state.endpoint.serial, ep_state.endpoint.host)
+					# Password protected device without a (valid) password -> whether it is supported is unknown.
+					# Stop retrying: a retry with the same password fails again and failed attempts trigger the device's brute-force protection.
+					# Retried when a password is entered, on refresh, or (password required only) when the device is announced again.
+					elif result.status in AUTH_PROBE_STATUSES:
+						ep_state.deviceInfo = result.info
+						ep_state.endpoint.host = result.ip or ep_state.endpoint.host
+						if ep_state.endpoint.serial is None and result.info is not None:
+							promote_serial = True
+						ep_state.stop_connect()
+						serial = ep_state.endpoint.serial or (result.info or {}).get('mac', 'unknown').replace(":", "")
+						if result.status == ProbeStatus.AUTH_FAILED:
+							logger.warning("Authentication failed for shelly device %s at %s, waiting for a new password", serial, ep_state.endpoint.host)
+						else:
+							logger.info("Shelly device %s at %s is password protected, waiting for a password", serial, ep_state.endpoint.host)
+					# The device throttles login attempts. Retrying soon may extend the throttling, so wait long.
+					elif result.status == ProbeStatus.THROTTLED:
+						if result.info is not None:
+							ep_state.deviceInfo = result.info
+						ep_state.endpoint.host = result.ip or ep_state.endpoint.host
+						if ep_state.endpoint.serial is None and result.info is not None:
+							promote_serial = True
+						ep_state.connect.mark_throttled(now)
+						serial = ep_state.endpoint.serial or (result.info or {}).get('mac', 'unknown').replace(":", "")
+						logger.warning("Shelly device %s at %s rejects login attempts (too many attempts), retrying in %d seconds",
+							serial, ep_state.endpoint.host, ep_state.connect.next_retry_at - now)
 					elif result.status == ProbeStatus.UNREACHABLE:
 						ep_state.connect.mark_failure(now)
 						logger.info("Failed to connect to shelly device %s at %s, retrying in %d seconds", ep_state.endpoint.serial, ep_state.endpoint.host, ep_state.connect.next_retry_at - now)
@@ -702,10 +817,45 @@ class ShellyManager(object):
 		elif action == ProbeStatus.UNSUPPORTED.value:
 			await self._add_device(state, supported=False)
 
+		# Password protected device without a (valid) password. Whether it is supported is unknown.
+		# A device that throttles login attempts is handled the same way, it can't be logged in to.
+		elif action in (ProbeStatus.PASSWORD_REQUIRED.value, ProbeStatus.AUTH_FAILED.value, ProbeStatus.THROTTLED.value):
+			await self._add_device(state, supported=None)
+
 		# Removed from cache.
 		elif action == "remove":
 			await self.stop_shelly_device(serial)
 			self.clear_discovered_device_paths(serial)
+			return
+
+		self._update_connection_status(serial)
+
+	def _get_connection_status(self, serial):
+		state = self.shelly_device_cache.get(serial=serial)
+		status = state.status if state is not None else None
+
+		# A rejected password takes precedence over enabled channels: the channels are stopped.
+		if status == ProbeStatus.AUTH_FAILED:
+			return ShellyDeviceConnectionStatus.AUTH_FAILED
+		# Enabled channels hide that the device is temporarily offline while it is being reconnected or,
+		# for sleepy devices, while it is asleep. When reconnecting fails, the device is stopped and the
+		# status falls back to the result of the last connection attempt.
+		if serial in self.shellies and self.shellies[serial]['device'].active_channels:
+			return ShellyDeviceConnectionStatus.ENABLED
+
+		return {
+			None: ShellyDeviceConnectionStatus.DISCOVERED,
+			ProbeStatus.REACHABLE: ShellyDeviceConnectionStatus.READY,
+			ProbeStatus.PASSWORD_REQUIRED: ShellyDeviceConnectionStatus.PASSWORD_REQUIRED,
+			ProbeStatus.UNSUPPORTED: ShellyDeviceConnectionStatus.UNSUPPORTED,
+			ProbeStatus.THROTTLED: ShellyDeviceConnectionStatus.TOO_MANY_LOGIN_ATTEMPTS,
+		}.get(status, ShellyDeviceConnectionStatus.UNREACHABLE)
+
+	def _update_connection_status(self, serial):
+		if self.service.get_item(f'/Devices/{serial}/ConnectionStatus') is None:
+			return
+		with self.service as s:
+			s[f'/Devices/{serial}/ConnectionStatus'] = self._get_connection_status(serial)
 
 	async def start_cache_sync(self) -> None:
 		if self._cache_sync_task is None or self._cache_sync_task.done():
@@ -743,6 +893,9 @@ class ShellyManager(object):
 			s['/Devices/{}/DiscoveryType'.format(serial)] = None
 			s['/Devices/{}/LastSeen'.format(serial)] = None
 			s['/Devices/{}/Reachable'.format(serial)] = None
+			s['/Devices/{}/ConnectionStatus'.format(serial)] = None
+			s['/Devices/{}/PasswordProtected'.format(serial)] = None
+			s['/Devices/{}/Password'.format(serial)] = None
 			for path in ['Enabled', 'Type', 'Name']:
 				i = 1
 				while self.service.get_item(key := f'/Devices/{serial}/{i}/{path}') is not None:
@@ -753,7 +906,8 @@ class ShellyManager(object):
 		s = ShellyDevice(
 			bus_type=self.bus_type,
 			serial=serial,
-			server=server
+			server=server,
+			password=await self._get_device_password(serial)
 		)
 
 		try:
@@ -764,6 +918,12 @@ class ShellyManager(object):
 
 		if not started:
 			await s.stop()
+			if s.connection_result == ShellyDeviceConnectionResult.INVALID_AUTH:
+				# The password was changed on the device since it was last probed.
+				logger.error("Authentication failed for shelly device %s", serial)
+				await self.shelly_device_cache.mark_auth_failed(serial, await self._auth_failure_status(serial))
+			elif s.connection_result == ShellyDeviceConnectionResult.THROTTLED:
+				await self.shelly_device_cache.mark_throttled(serial)
 			return False
 
 		e = asyncio.create_task(self._shelly_event_monitor(s))
@@ -778,6 +938,12 @@ class ShellyManager(object):
 		# when enabling multiple channels at once.
 		async with self._shelly_lock:
 			if serial not in self.shellies:
+				# Don't connect without a valid password: failed attempts trigger the device's brute-force protection.
+				# Channels that are enabled in the settings are started once a valid password is entered.
+				state = self.shelly_device_cache.get(serial=serial)
+				if state is not None and state.status in NO_LOGIN_STATUSES:
+					logger.debug("Not starting channel %s of shelly device %s, it can't be logged in to (%s)", channel, serial, state.status)
+					return False
 				if not await self.add_shelly_device(serial, server):
 					return False
 
@@ -806,6 +972,7 @@ class ShellyManager(object):
 			await self.shellies[serial]['device'].stop()
 
 			del self.shellies[serial]
+		self._update_connection_status(serial)
 
 	async def disable_shelly_channel(self, serial, channel):
 		async with self._shelly_lock:
@@ -857,6 +1024,21 @@ class ShellyManager(object):
 				elif e == ShellyEvent.STOPPED:
 					return
 
+				# The device rejected the password, e.g. because it was changed on the device. Stop the device
+				# (the monitor's done callback does that) and wait for a new password instead of retrying.
+				elif e == ShellyEvent.AUTH_FAILED:
+					await self.shelly_device_cache.mark_auth_failed(serial, await self._auth_failure_status(serial))
+					return
+
+				# Reconnecting failed because the device throttles login attempts. Stop the device and retry after a long wait.
+				elif e == ShellyEvent.THROTTLED:
+					await self.shelly_device_cache.mark_throttled(serial)
+					return
+
+				# Authentication may have been enabled or disabled on the device.
+				elif e == ShellyEvent.CONFIG_CHANGED:
+					await self._check_authentication_changed(shelly)
+
 				# Usually happens when the device profile has changed. E.g. from triphase measuring to monophase measuring.
 				# The number of channels and their capabilities have changed, so stop all channels and retry connecting to it.
 				elif e == ShellyEvent.CAPABILITIES_CHANGED:
@@ -895,14 +1077,39 @@ class ShellyManager(object):
 
 	async def _get_device_info(self, server, serial=None):
 		result = DeviceProbeResult()
+		password = await self._get_device_password(serial) if serial else ""
 		# Only server info is needed for obtaining device info
 		shelly = ShellyDevice(
 			server=server,
-			serial=serial
+			serial=serial,
+			password=password
 		)
 
 		try:
-			if not await shelly.connect():
+			connection_result = await shelly.connect()
+
+			# A manually added device is probed by IP first, so its serial and password are not known yet.
+			# The device info is available though, so retry once with the password stored for that serial.
+			if connection_result == ShellyDeviceConnectionResult.INVALID_AUTH and not password and shelly.shelly_info:
+				info_serial = shelly.shelly_info.get('mac', '').replace(":", "")
+				password = await self._get_device_password(info_serial) if info_serial else ""
+				if password:
+					shelly.set_password(password)
+					connection_result = await shelly.connect()
+
+			if connection_result == ShellyDeviceConnectionResult.INVALID_AUTH:
+				result.info = shelly.shelly_info
+				result.ip = shelly.resolved_server or shelly.server
+				result.status = ProbeStatus.AUTH_FAILED if password else ProbeStatus.PASSWORD_REQUIRED
+				raise Exception("authentication failed" if password else "password required")
+
+			if connection_result == ShellyDeviceConnectionResult.THROTTLED:
+				result.info = shelly.shelly_info
+				result.ip = shelly.resolved_server or shelly.server
+				result.status = ProbeStatus.THROTTLED
+				raise Exception("too many login attempts")
+
+			if connection_result != ShellyDeviceConnectionResult.SUCCESS:
 				result.status = ProbeStatus.UNREACHABLE
 				raise Exception()
 
@@ -994,9 +1201,18 @@ class ShellyManager(object):
 			if self.service.get_item('/Devices/{}/{}'.format(serial, p)) is None:
 				self.service.add_item(TextItem('/Devices/{}/{}'.format(serial, p), writeable=False))
 
-		for p in ['Reachable', 'Supported']:
+		for p in ['Reachable', 'Supported', 'PasswordProtected']:
 			if self.service.get_item('/Devices/{}/{}'.format(serial, p)) is None:
 				self.service.add_item(IntegerItem('/Devices/{}/{}'.format(serial, p), writeable=False))
+
+		if self.service.get_item(f'/Devices/{serial}/ConnectionStatus') is None:
+			self.service.add_item(IntegerItem(f'/Devices/{serial}/ConnectionStatus', writeable=False, text=connection_status_text))
+
+		# Write-only: reads back as "*****" when a password is stored, empty otherwise.
+		if self.service.get_item(f'/Devices/{serial}/Password') is None:
+			self.service.add_item(TextItem(f'/Devices/{serial}/Password', writeable=True, onchange=partial(self._on_password_changed, serial)))
+
+		password = await self._get_device_password(serial)
 
 		with self.service as s:
 			s['/Devices/{}/Ip'.format(serial)] = ip
@@ -1006,7 +1222,10 @@ class ShellyManager(object):
 			s['/Devices/{}/DiscoveryType'.format(serial)] = source
 			s['/Devices/{}/LastSeen'.format(serial)] = last_seen
 			s['/Devices/{}/Reachable'.format(serial)] = 1 if state.is_reachable else 0
-			s['/Devices/{}/Supported'.format(serial)] = 1 if supported else 0
+			# Unknown (None) for a password protected device without a valid password.
+			s['/Devices/{}/Supported'.format(serial)] = None if supported is None else (1 if supported else 0)
+			s['/Devices/{}/PasswordProtected'.format(serial)] = 1 if device_info.get('auth_en', False) else 0
+			s['/Devices/{}/Password'.format(serial)] = "*****" if password else ""
 
 		# Skip channel setup for already-known devices; their dbus items and settings are already configured
 		if skip_channel_setup or not supported:
@@ -1046,6 +1265,98 @@ class ShellyManager(object):
 			if enabled:
 				enabled_item = self.service.get_item(f'/Devices/{serial}/{i + 1}/Enabled')
 				await self._on_enabled_changed(serial, i, enabled_item, enabled)
+
+	async def _get_device_password(self, serial):
+		alias = f'password_{serial}'
+		if self.settings.alias(alias) is None:
+			await self.settings.add_settings(Setting(f'/Settings/Devices/shelly_{serial}/Password', "", alias=alias))
+		return self.settings.get_value(self.settings.alias(alias)) or ""
+
+	# A device that rejects a request while no password is stored has authentication enabled since it was connected.
+	async def _auth_failure_status(self, serial):
+		return ProbeStatus.AUTH_FAILED if await self._get_device_password(serial) else ProbeStatus.PASSWORD_REQUIRED
+
+	async def _check_authentication_changed(self, shelly):
+		serial = shelly.serial
+		info = await shelly.rpc_call("Shelly.GetDeviceInfo")
+		if info is None:
+			return
+		auth_en = bool(info.get('auth_en', False))
+		state = self.shelly_device_cache.get(serial=serial)
+		if state is not None and state.deviceInfo is not None:
+			state.deviceInfo['auth_en'] = auth_en
+		item = self.service.get_item(f'/Devices/{serial}/PasswordProtected')
+		if item is not None and item.value != (1 if auth_en else 0):
+			logger.info("Authentication %s on shelly device %s", "enabled" if auth_en else "disabled", serial)
+			with self.service as s:
+				s[f'/Devices/{serial}/PasswordProtected'] = 1 if auth_en else 0
+
+	async def _on_password_changed(self, serial, item, value):
+		if not isinstance(value, str):
+			return
+
+		value = value.strip()
+		if value == "":
+			# Only allow clearing the password of a device that is not protected.
+			protected = self.service.get_item(f'/Devices/{serial}/PasswordProtected')
+			if protected is not None and protected.value == 1:
+				logger.warning("Not clearing the password of password protected shelly device %s", serial)
+				return
+			stored_value = ""
+		elif value.lower().startswith(HA1_PREFIX):
+			# A precomputed HA1 digest
+			ha1 = value[len(HA1_PREFIX):].strip().lower()
+			if not is_sha256_hex(ha1):
+				logger.error("Invalid SHA256 digest for shelly device %s", serial)
+				return
+			stored_value = f"{HA1_PREFIX}{ha1}"
+		else:
+			# Only store the HA1 digest, never the plain password. The realm is the device's auth_domain, or its id.
+			state = self.shelly_device_cache.get(serial=serial)
+			info = (state.deviceInfo if state is not None else None) or {}
+			realm = info.get('auth_domain') or info.get('id')
+			if not realm:
+				logger.error("Failed to store password for shelly device %s: auth realm unknown", serial)
+				return
+			ha1 = hashlib.sha256(f"{AUTH_USERNAME}:{realm}:{value}".encode("utf-8")).hexdigest()
+			stored_value = f"{HA1_PREFIX}{ha1}"
+
+		# A running device stays connected with the old password, so a wrong new password would only show up
+		# after the next reconnect. Check the new password with a separate connection instead.
+		rejected = stored_value and await self._is_password_rejected_by_running_device(serial, stored_value)
+
+		logger.info("Password for shelly device %s changed", serial)
+		await self._get_device_password(serial)	# Make sure the setting exists
+		await self.settings.set_value(self.settings.alias(f'password_{serial}'), stored_value)
+		item.set_local_value("*****" if stored_value else "")
+
+		if serial in self.shellies:
+			self.shellies[serial]['device'].set_password(stored_value)
+			if rejected:
+				# Handled like a running device rejecting its password: the device is stopped and waits for a new password.
+				self.shellies[serial]['device'].set_event(ShellyEvent.AUTH_FAILED)
+				return
+
+		# Connect again with the new password. For a running device, this only checks if it is still reachable.
+		await self.shelly_device_cache.start_connect(serial)
+
+	async def _is_password_rejected_by_running_device(self, serial, password):
+		protected = self.service.get_item(f'/Devices/{serial}/PasswordProtected')
+		if serial not in self.shellies or protected is None or protected.value != 1:
+			return False
+		running = self.shellies[serial]['device']
+		if not running.is_connected:
+			return False
+		shelly = ShellyDevice(server=running.server, serial=serial, password=password)
+		try:
+			result = await shelly.connect()
+		finally:
+			await shelly.stop()
+		if result == ShellyDeviceConnectionResult.INVALID_AUTH:
+			logger.error("New password for shelly device %s was rejected", serial)
+			return True
+		# A connection error leaves the password unverified, it is checked on the next connection.
+		return False
 
 	async def _on_enabled_changed_from_dbus(self, serial, channel, item, value):
 		# A channel can only be enabled by the user while the device is reachable.
@@ -1145,8 +1456,12 @@ class ShellyManager(object):
 					)
 					if operation.value:
 						# Keep retrying an enabled channel even when the device stays reachable.
-						self._schedule_channel_enable_retry(serial, operation.channel)
+						# Not for a device that can't be logged in to, its enabled channels are started once it can.
+						state = self.shelly_device_cache.get(serial=serial)
+						if state is None or state.status not in NO_LOGIN_STATUSES:
+							self._schedule_channel_enable_retry(serial, operation.channel)
 
+				self._update_connection_status(serial)
 				operation.fut.set_result(ret)
 
 			except asyncio.CancelledError:

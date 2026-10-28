@@ -21,6 +21,27 @@ Switch and energy metering channels default to disabled and require an explicit 
 
 - Shelly humidity sensors are part of the `com.victronenergy.temperature` service, because Venus has no dedicated humidity service. A Humidity component that shares its id with another channel only adds `/Humidity` to that channel's service. That is the case for a sensor that measures both temperature and humidity (`temperature:0` and `humidity:0`, or `temperature:100` and `humidity:100` for a DHT22 on a Sensor Add-on), and for `humidity:0` next to `switch:0`. A Humidity component with an id of its own gets a `com.victronenergy.temperature` service with `/Humidity`, an invalid `/Temperature`, and `/Status`, which is 0 (Ok) while the sensor reports a valid reading and 4 (Unknown) when it reports an error. Like temperature channels, its channel defaults to disabled, except on battery-powered devices.
 
+## Device status
+`/Devices/<serial>/ConnectionStatus` shows the state of a found device:
+
+| Value | Status | Meaning |
+|---|---|---|
+| 0 | Discovered | Found, the first connection attempt has not finished yet. |
+| 1 | Ready | Reachable, authenticated if needed, and supported. Its channels can be enabled. |
+| 2 | Enabled | At least one channel is enabled. Stays Enabled while the device is temporarily offline and being reconnected, or while a sleepy device is asleep. |
+| -1 | Authentication failed | The device is password protected and the stored password was rejected. |
+| -2 | Password required | The device is password protected and no password is stored. |
+| -3 | Unsupported | Reachable, but not supported. |
+| -4 | Unreachable | Known, but not responding. Connecting is retried. |
+| -5 | Too many login attempts | The device rejects login attempts after too many failed ones (firmware 2.0.0+). Connecting is retried after 10 minutes, doubling up to an hour. |
+
+Whether a password protected device is supported can only be determined after logging in. Its channels are listed once a valid password is entered.
+
+## Password protected devices
+`/Devices/<serial>/PasswordProtected` is 1 when authentication is enabled on the device. Write the device password to `/Devices/<serial>/Password` to log in; the path reads back as `*****` when a password is stored. Only the HA1 digest (`SHA256("admin:<realm>:<password>")`) is stored, under `/Settings/Devices/shelly_<serial>/Password`, never the password itself. A precomputed digest can be written as `sha256:<64 hex digits>`.
+
+A rejected password is not retried, because failed logins trigger the device's brute-force protection (firmware 2.0.0+). While that protection is active, the device answers with "429 Too many requests" and every attempt may extend it, so the driver then waits at least 10 minutes between attempts. The device stays at Authentication failed until a new password is entered or `/Refresh` is triggered. When the password is changed on the device, its enabled channels are stopped and start again once the new password is entered. Authentication over the websocket for firmware 2.0.0+ requires aioshelly 13.25.0 or later; older aioshelly versions only work with firmware before 2.0.0.
+
 # Supported RPC components
 Shelly devices use Remote Procedure Calls (RPC) to send commands to devices and receive notifications and replies from the devices. More info [here](https://shelly-api-docs.shelly.cloud/gen2/General/RPCProtocol/). An [RPC component](https://shelly-api-docs.shelly.cloud/gen2/General/ComponentConcept) is an encapsulated functional unit which exposes methods used to control the device.
 

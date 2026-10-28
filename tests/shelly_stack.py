@@ -181,6 +181,10 @@ class Stack:
 		self.mocks = {}
 		self.client = None
 		self.env = None
+		# Extra settings that localsettings already has when the driver starts, {"/Settings/...": value}
+		self.initial_settings = {}
+		# Extra environment variables for the driver (tests/run_driver.py), e.g. SHELLY_TEST_THROTTLED_RETRY_SECONDS
+		self.driver_env = {}
 
 	def add_mock(self, name, serial, *args):
 		self.mocks[name] = MockDevice(self, name, serial, args)
@@ -204,7 +208,7 @@ class Stack:
 		for mock in self.mocks.values():
 			mock.start()
 
-		initial = {"/Settings/Shelly/AutoScan": 1 if self.fake_mdns else 0}
+		initial = {"/Settings/Shelly/AutoScan": 1 if self.fake_mdns else 0, **self.initial_settings}
 		if preseed_ips:
 			initial["/Settings/Shelly/IpAddresses"] = ",".join(m.endpoint for m in self.mocks.values())
 		self._start("localsettings", [sys.executable, "tests/fake_localsettings.py",
@@ -219,6 +223,7 @@ class Stack:
 				self.env["SHELLY_TEST_TIME_SCALE"] = str(self.time_scale)
 			if self.fake_mdns:
 				self.env["SHELLY_TEST_FAKE_MDNS"] = self.mdns_file
+			self.env.update(self.driver_env)
 		self._start("driver", [sys.executable, *driver, "--dbus", "session", "--debug"])
 		self.wait_for(lambda: self.client.has_name(SHELLY_SERVICE), f"{SHELLY_SERVICE} on D-Bus")
 
@@ -320,6 +325,12 @@ class Stack:
 
 	def set_enabled(self, serial, index, value):
 		assert self.client.set_value(SHELLY_SERVICE, f"/Devices/{serial}/{index}/Enabled", "i", value) == 0
+
+	def set_password(self, serial, password):
+		assert self.client.set_value(SHELLY_SERVICE, f"/Devices/{serial}/Password", "s", password) == 0
+
+	def wait_connection_status(self, serial, status):
+		self.wait_for(lambda: self.device(serial, "ConnectionStatus") == status, f"{serial} ConnectionStatus == {status}")
 
 	def wait_service(self, name, connected=True):
 		self.wait_for(lambda: self.client.has_name(name), name)

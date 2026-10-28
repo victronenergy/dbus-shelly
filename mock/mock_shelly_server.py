@@ -1,9 +1,22 @@
 #!/usr/bin/env python3
 import argparse
 import asyncio
+import base64
+import hashlib
 import json
+import secrets
 import time
 from aiohttp import web
+
+
+def _sha256(message):
+	return hashlib.sha256(message.encode("utf-8")).hexdigest()
+
+
+# Methods that a password protected Shelly answers without authentication.
+UNAUTHENTICATED_METHODS = {"Shelly.GetDeviceInfo"}
+# Digest auth over RPC uses fixed values for the method and URI.
+AUTH_HA2 = _sha256("dummy_method:dummy_uri")
 
 
 class MockShellyDevice:
@@ -34,6 +47,8 @@ class MockShellyDevice:
 		devicepower=False,
 		ret_energy=True,
 		energy_wh=12345.0,
+		password=None,
+		legacy_auth=False,
 	):
 		self.name = device_name
 		self.channel_name = channel_name
@@ -105,9 +120,93 @@ class MockShellyDevice:
 		self._ws_clients = set()
 		self._notify_task = None
 
+		# Digest authentication, only enforced on the websocket. None => authentication disabled.
+		# legacy_auth emulates firmware before 2.0.0: numeric nonces and nc is not tracked.
+		# Firmware 2.0.0+ issues random nonces and requires nc to increase for every request with the same nonce.
+		self.auth_ha1 = _sha256(f"admin:{self.device_id}:{password}") if password else None
+		self.legacy_auth = legacy_auth
+		self._nonces = {}	# nonce -> last nc used
+		self.auth_failures = 0
+		self.auth_challenges = 0
+		# Brute-force protection: until this time, requests that need authentication get a 429 error.
+		self.throttled_until = 0.0
+		self.throttled_requests = 0
+
 	@property
 	def device_id(self):
 		return f"shellyplus-{self.mac}"
+
+	@property
+	def auth_en(self):
+		return self.auth_ha1 is not None
+
+	def _new_nonce(self):
+		if self.legacy_auth:
+			nonce = int(time.time())
+		else:
+			nonce = base64.b64encode(secrets.token_bytes(24)).decode("ascii")
+		self._nonces[nonce] = 0
+		return nonce
+
+	def auth_challenge(self):
+		self.auth_challenges += 1
+		challenge = {"auth_type": "digest", "nonce": self._new_nonce(), "realm": self.device_id, "algorithm": "SHA-256"}
+		if self.legacy_auth:
+			challenge["nc"] = 1
+		return json.dumps(challenge)
+
+	# Returns None when the request is authenticated, otherwise (code, message) to send back as error.
+	def check_auth(self, frame):
+		if not self.auth_en or frame.get("method") in UNAUTHENTICATED_METHODS or str(frame.get("method", "")).startswith("Mock."):
+			return None
+		if time.time() < self.throttled_until:
+			self.throttled_requests += 1
+			return 429, "Too many requests"
+		challenge = self._check_digest(frame)
+		return None if challenge is None else (401, challenge)
+
+	def _check_digest(self, frame):
+		auth = frame.get("auth")
+		if not auth:
+			return self.auth_challenge()
+		try:
+			nonce = auth["nonce"]
+			nc = auth.get("nc", 1)
+			expected = _sha256(f"{self.auth_ha1}:{nonce}:{nc}:{auth['cnonce']}:auth:{AUTH_HA2}")
+			ok = auth.get("realm") == self.device_id and auth.get("algorithm") == "SHA-256" and auth.get("response") == expected
+			if self.legacy_auth:
+				# Legacy firmware accepts any numeric nonce, including one made up by the client.
+				ok = ok and isinstance(nonce, int)
+			else:
+				nc_value = nc if isinstance(nc, int) else int(str(nc), 16)
+				ok = ok and nonce in self._nonces and nc_value > self._nonces[nonce]
+				if ok:
+					self._nonces[nonce] = nc_value
+		except (KeyError, TypeError, ValueError):
+			ok = False
+		if ok:
+			return None
+		self.auth_failures += 1
+		return self.auth_challenge()
+
+	# Shelly.SetAuth: ha1 null disables authentication.
+	def shelly_set_auth(self, params):
+		ha1 = params.get("ha1")
+		self.auth_ha1 = ha1.lower() if ha1 else None
+		self._nonces = {}
+		self._emit_event("sys", "config_changed")
+		return None
+
+	# Test hook, not a real Shelly method: authentication statistics.
+	def mock_get_auth_stats(self, params):
+		return {"auth_en": self.auth_en, "failures": self.auth_failures, "challenges": self.auth_challenges,
+			"throttled": self.throttled_requests}
+
+	# Test hook, not a real Shelly method: throttle requests that need authentication for "seconds", like the
+	# brute-force protection of firmware 2.0.0+ does after too many failed logins. 0 stops throttling.
+	def mock_set_throttle(self, params):
+		self.throttled_until = time.time() + float(params.get("seconds", 0))
+		return {"throttled_until": self.throttled_until}
 
 	def _update_energy(self):
 		now = time.time()
@@ -128,8 +227,8 @@ class MockShellyDevice:
 			"gen": 2,
 			"fw_id": "20240101_1234",
 			"ver": "1.0.0",
-			"auth": False,
-			"auth_en": False,
+			"auth": self.auth_en,
+			"auth_en": self.auth_en,
 			"auth_domain": self.device_id,
 		}
 
@@ -143,7 +242,7 @@ class MockShellyDevice:
 			"gen": 2,
 			"fw_id": "20240101_1234",
 			"ver": "1.0.0",
-			"auth_en": False,
+			"auth_en": self.auth_en,
 			"auth_domain": self.device_id,
 			"profile": "switch",
 		}
@@ -599,6 +698,7 @@ class MockShellyDevice:
 			"Shelly.GetConfig",
 			"Shelly.ListMethods",
 			"Shelly.GetComponents",
+			"Shelly.SetAuth",
 			"Sys.GetConfig",
 			"Sys.SetConfig",
 			"Switch.GetStatus",
@@ -930,6 +1030,18 @@ async def handle_rpc(device, frame, *, verbose=False):
 		resp = _json_response(device.mock_set_alarm(params), request_id)
 		resp["src"] = f"shelly-{device.mac}"
 		return resp
+	if method == "Mock.GetAuthStats":
+		resp = _json_response(device.mock_get_auth_stats(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "Mock.SetThrottle":
+		resp = _json_response(device.mock_set_throttle(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "Shelly.SetAuth":
+		resp = _json_response(device.shelly_set_auth(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
 	resp = _json_error(f"Unknown method: {method}", request_id)
 	resp["src"] = f"shelly-{device.mac}"
 	return resp
@@ -969,6 +1081,15 @@ async def ws_rpc_handler(request):
 				continue
 			_vprint(request, f"mock ws frame={frame}")
 			device.call_log.append((time.time(), frame.get("method", "")))
+			auth_error = device.check_auth(frame)
+			if auth_error is not None:
+				code, message = auth_error
+				response = _json_error(message, frame.get("id"), code=code)
+				response["src"] = f"shelly-{device.mac}"
+				if "src" in frame:
+					response["dst"] = frame["src"]
+				await ws.send_json(response)
+				continue
 			response = await handle_rpc(device, frame, verbose=request.app.get('verbose', False))
 			if response is not None:
 				await ws.send_json(response)
@@ -1014,6 +1135,9 @@ def parse_args():
 	parser.add_argument("--devicepower", action="store_true", help="Add a DevicePower component (battery-powered device)")
 	parser.add_argument("--no-ret-energy", action="store_true", help="Leave out the returned energy counters, like a device that has none")
 	parser.add_argument("--energy-wh", type=float, default=12345.0, help="Forward energy counter of the EM, EM1 and PM1 components")
+	parser.add_argument("--password", default=None, help="Enable digest authentication with this password (user admin)")
+	parser.add_argument("--legacy-auth", action="store_true", help="Authenticate like firmware before 2.0.0 (numeric nonces, nc not tracked)")
+	parser.add_argument("--throttle-seconds", type=float, default=0, help="Start with requests that need authentication throttled (429) for this long")
 	parser.add_argument("--notify-interval", type=float, default=5)
 	parser.add_argument("--verbose", action="store_true")
 	return parser.parse_args()
@@ -1047,6 +1171,8 @@ async def main():
 		devicepower=args.devicepower,
 		ret_energy=not args.no_ret_energy,
 		energy_wh=args.energy_wh,
+		password=args.password,
+		legacy_auth=args.legacy_auth,
 	)
 
 	app = web.Application()
@@ -1060,6 +1186,8 @@ async def main():
 		]
 	)
 
+	if args.throttle_seconds:
+		device.mock_set_throttle({"seconds": args.throttle_seconds})
 	await device.start_notifier(args.notify_interval)
 	runner = web.AppRunner(app)
 	await runner.setup()
