@@ -54,6 +54,14 @@ if SCALE != 1:
 
 	discovery.BACKOFF_INITIAL_SECONDS *= SCALE
 	discovery.RECONNECT_LOOP_HEARTBEAT_SECONDS *= SCALE
+	discovery.THROTTLED_RETRY_INITIAL_SECONDS *= SCALE
+	discovery.THROTTLED_RETRY_MAX_SECONDS *= SCALE
+
+# The wait for a device that throttles login attempts is long (minutes), even when scaled. Allow setting it directly.
+THROTTLED_RETRY = os.environ.get("SHELLY_TEST_THROTTLED_RETRY_SECONDS")
+if THROTTLED_RETRY:
+	discovery.THROTTLED_RETRY_INITIAL_SECONDS = float(THROTTLED_RETRY)
+	discovery.THROTTLED_RETRY_MAX_SECONDS = 2 * float(THROTTLED_RETRY)
 
 FAKE_MDNS = os.environ.get("SHELLY_TEST_FAKE_MDNS")
 if FAKE_MDNS:

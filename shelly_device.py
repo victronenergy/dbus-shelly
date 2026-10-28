@@ -1,11 +1,13 @@
 import aiohttp
 import logging
+import string
 from functools import partial
 from enum import IntEnum
 
 from aioshelly.common import ConnectionOptions, process_ip_or_options
 from aioshelly.rpc_device import RpcDevice, RpcUpdateType, WsServer
-from aioshelly.exceptions import DeviceConnectionError
+from aioshelly.rpc_device.wsrpc import AuthData
+from aioshelly.exceptions import DeviceConnectionError, InvalidAuthError, RpcCallError
 import asyncio
 import async_timeout
 try:
@@ -22,6 +24,53 @@ import shelly_handlers
 from utils import logger
 from __main__ import VERSION, __file__ as processName
 
+# Passwords are stored as "sha256:<HA1>", where HA1 is SHA256("admin:<realm>:<password>").
+HA1_PREFIX = "sha256:"
+AUTH_USERNAME = "admin"
+
+
+def is_sha256_hex(value):
+	return len(value) == 64 and all(c in string.hexdigits for c in value)
+
+
+def _enable_aioshelly_ha1_password_support():
+	"""Allow passing a precomputed HA1 as password, formatted as 'sha256:<64 hex>'"""
+	if getattr(AuthData, "_dbus_shelly_ha1_support", False):
+		return
+
+	original_post_init = AuthData.__post_init__
+
+	def patched_post_init(self):
+		password = self.password if isinstance(self.password, str) else ""
+		if password.lower().startswith(HA1_PREFIX):
+			ha1 = password[len(HA1_PREFIX):].strip()
+			if is_sha256_hex(ha1):
+				# aioshelly uses this precomputed HA1 for RPC digest auth.
+				self.ha1 = ha1.lower()
+				return
+
+		original_post_init(self)
+
+	AuthData.__post_init__ = patched_post_init
+	AuthData._dbus_shelly_ha1_support = True
+
+
+_enable_aioshelly_ha1_password_support()
+
+HTTP_TOO_MANY_REQUESTS = 429
+
+
+# Firmware 2.0.0+ answers with 429 instead of 401 while it throttles login attempts (brute-force protection).
+# aioshelly reports it as a DeviceConnectionError caused by an RpcCallError.
+def is_too_many_requests_error(e):
+	while e is not None:
+		if isinstance(e, RpcCallError) and e.code == HTTP_TOO_MANY_REQUESTS:
+			return True
+		if e.args and isinstance(e.args[0], RpcCallError) and e.args[0].code == HTTP_TOO_MANY_REQUESTS:
+			return True
+		e = e.__cause__
+	return False
+
 PRODUCT_ID_SHELLY_EM = 0xB034
 PRODUCT_ID_SHELLY_SWITCH = 0xB075
 PRODUCT_ID_INPUT = 0xB0A0
@@ -37,8 +86,20 @@ class ShellyEvent(IntEnum):
 	RECONNECTED = 3
 	CAPABILITIES_CHANGED = 4
 	STOPPED = 5
+	AUTH_FAILED = 6
+	CONFIG_CHANGED = 7
+	THROTTLED = 8
+
+class ShellyDeviceConnectionResult(IntEnum):
+	SUCCESS = 0
+	CONNECTION_ERROR = 1
+	INVALID_AUTH = 2
+	THROTTLED = 3	# The device throttles login attempts (brute-force protection)
 
 class ShellyConnectionError(Exception):
+	pass
+
+class ShellyThrottledError(Exception):
 	pass
 
 class ShellyChannel(object):
@@ -127,9 +188,13 @@ class ShellyChannel(object):
 # Creates an instance of ShellyChannel for each enabled channel.
 class ShellyDevice(object):
 
-	def __init__(self, bus_type=None, serial=None, server=None):
+	def __init__(self, bus_type=None, serial=None, server=None, password=""):
 		self._bus_type= bus_type
 		self._serial = serial
+		self._password = password or ""	# Plain password or "sha256:<HA1>". Empty when the device is not protected.
+		self._connection_result = None	# Result of the last connect() attempt
+		self._auth_failed = False
+		self._resolved_server = None	# IP address (and port) the server resolved to in the last connect() attempt
 		self._event_queue = asyncio.Queue()
 		self._shelly_device = None
 		self._shelly_info = None
@@ -191,6 +256,19 @@ class ShellyDevice(object):
 	@property
 	def serial(self):
 		return self._serial
+
+	@property
+	def connection_result(self):
+		return self._connection_result
+
+	# Like server, but also available after a failed connection attempt, e.g. when authentication failed.
+	@property
+	def resolved_server(self):
+		return self._resolved_server
+
+	def set_password(self, password):
+		# Used for the next connection attempt. An active connection stays authenticated with the old password.
+		self._password = password or ""
 
 	@property
 	def shelly_info(self):
@@ -266,20 +344,27 @@ class ShellyDevice(object):
 		return self._server, None
 
 	async def connect(self):
+		self._connection_result = await self._connect()
+		return self._connection_result
+
+	async def _connect(self):
 		host, port = self._parse_server()
 		if host is None:
-			return False
+			return ShellyDeviceConnectionResult.CONNECTION_ERROR
+		# aioshelly only authenticates when the device has authentication enabled.
+		username = AUTH_USERNAME if self._password else ""
 		if port is None:
-			options = ConnectionOptions(host, "", "")
+			options = ConnectionOptions(host, username, self._password)
 		else:
-			options = ConnectionOptions(host, "", "", port=port)
+			options = ConnectionOptions(host, username, self._password, port=port)
 		# Resolve a hostname (e.g. found over mDNS) to an IP address. aioshelly 13.16.0+ no longer
 		# does this when it is passed ConnectionOptions, and the IP address is listed on dbus.
 		try:
 			options = await process_ip_or_options(options)
 		except Exception as e:
 			logger.debug("Failed to resolve shelly device host %s: %s", host, e)
-			return False
+			return ShellyDeviceConnectionResult.CONNECTION_ERROR
+		self._resolved_server = f"{options.ip_address}:{port}" if port is not None else options.ip_address
 		if self._aiohttp_session is not None:
 			try:
 				await self._aiohttp_session.close()
@@ -299,7 +384,11 @@ class ShellyDevice(object):
 				# Let aioshelly manage RPC call timeouts internally to avoid
 				# cancelling in-flight RPC futures from an outer timeout wrapper.
 				await self._shelly_device.initialize()
+			except InvalidAuthError:
+				raise
 			except Exception as e:
+				if is_too_many_requests_error(e):
+					raise ShellyThrottledError()
 				# A sleepy device (Smoke, Flood) can take a few retries to become reachable
 				# while it's mid-wake-up -- that's routine, not worth a WARNING each time.
 				level = logging.DEBUG if self.is_sleepy else logging.WARNING
@@ -332,14 +421,34 @@ class ShellyDevice(object):
 				logger.warning("Failed to get channel info for shelly device %s", self.serial_or_server)
 				raise ShellyConnectionError()
 
-			return True
+			self._auth_failed = False
+			return ShellyDeviceConnectionResult.SUCCESS
+		except (InvalidAuthError, ShellyThrottledError) as e:
+			# Shelly.GetDeviceInfo does not require authentication, so aioshelly already has the device info.
+			# Keep it, so a protected device can still be listed and its auth realm is known.
+			try:
+				self._shelly_info = self._shelly_device.shelly
+			except Exception:
+				pass
+			if not self._serial and self._shelly_info and 'mac' in self._shelly_info:
+				self._serial = self._shelly_info['mac']
+			if self._shelly_device:
+				await self._shelly_device.shutdown()
+			if self._aiohttp_session:
+				await self._aiohttp_session.close()
+			self._shelly_device = None
+			if isinstance(e, ShellyThrottledError):
+				logger.warning("Shelly device %s rejects requests: too many login attempts", self.serial_or_server)
+				return ShellyDeviceConnectionResult.THROTTLED
+			logger.debug("Authentication failed for shelly device %s", self.serial_or_server)
+			return ShellyDeviceConnectionResult.INVALID_AUTH
 		except Exception:
 			if self._shelly_device:
 				await self._shelly_device.shutdown()
 			if self._aiohttp_session:
 				await self._aiohttp_session.close()
 			self._shelly_device = None
-			return False
+			return ShellyDeviceConnectionResult.CONNECTION_ERROR
 
 	async def wait_for_reconnect(self):
 		if self._reconnect_task:
@@ -395,12 +504,27 @@ class ShellyDevice(object):
 		# needs to keep trying, since the device's RPC server can take a few attempts to
 		# become reachable after its WiFi comes up. Only the per-attempt log is toned down
 		# for sleepy devices, since retrying while it's mid-wake-up is routine, not a fault.
+		self._connection_result = None
 		for i in range(CONNECTION_RETRIES):
 			level = logging.DEBUG if self.is_sleepy else logging.INFO
 			logger.log(level, "Attempting to reconnect to shelly device %s (%d/%d)", self.serial_or_server, i + 1, CONNECTION_RETRIES)
 
 			if await self.start():
 				break
+			# Retrying with the same password won't help, and failed attempts trigger the device's brute-force protection.
+			# While the device throttles login attempts, every attempt may extend the throttling.
+			if self._connection_result in (ShellyDeviceConnectionResult.INVALID_AUTH, ShellyDeviceConnectionResult.THROTTLED):
+				break
+
+		if self._connection_result == ShellyDeviceConnectionResult.INVALID_AUTH:
+			self._invalidate()
+			self._on_auth_failed()
+			return False
+
+		if self._connection_result == ShellyDeviceConnectionResult.THROTTLED:
+			self._invalidate()
+			self.set_event(ShellyEvent.THROTTLED)
+			return False
 
 		if not self.is_connected:
 			if not self.is_sleepy:
@@ -573,7 +697,7 @@ class ShellyDevice(object):
 				return True
 
 			if not (await self.ping_shelly()):
-				if not await self.connect():
+				if await self.connect() != ShellyDeviceConnectionResult.SUCCESS:
 					return False
 
 			logger.info(f"Starting shelly device {self.serial_or_server}")
@@ -796,6 +920,9 @@ class ShellyDevice(object):
 						return None
 					if not self.is_connected:
 						return None
+				except InvalidAuthError:
+					self._on_auth_failed()
+					return None
 				except:
 					return None
 				else:
@@ -811,9 +938,21 @@ class ShellyDevice(object):
 			logger.error("Failed to call RPC method on shelly device %s", self.serial_or_server)
 			self.do_reconnect()
 			return None
+		except InvalidAuthError:
+			self._on_auth_failed()
+			return None
 		except:
 			return None
 		return resp
+
+	# The device rejected the password, e.g. because it was changed on the device.
+	# Notify once; the discovery service stops the device and waits for a new password.
+	def _on_auth_failed(self):
+		if self._auth_failed:
+			return
+		self._auth_failed = True
+		logger.error("Authentication failed for shelly device %s", self.serial_or_server)
+		self.set_event(ShellyEvent.AUTH_FAILED)
 
 	async def _rpc_call(self, method, params=None):
 		async with self._rpc_lock:
@@ -858,6 +997,9 @@ class ShellyDevice(object):
 
 		elif update_type == RpcUpdateType.EVENT:
 			for event in cb_device.event['events']:
+				# Sent when e.g. authentication is enabled or disabled on the device. Not sent when only the password changes.
+				if event.get('component') == 'sys' and event.get('event') == 'config_changed':
+					self.set_event(ShellyEvent.CONFIG_CHANGED)
 				for channel in self._channels.keys():
 					entry = self._channels[channel]
 					handlers = entry.get("handlers", {})

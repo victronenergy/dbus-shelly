@@ -17,6 +17,27 @@ Switch and energy metering channels default to disabled and require an explicit 
 
   Note that these sensors are battery-powered and spend almost all their time in deep sleep (waking roughly once every 24h, plus on button press or an actual alarm). Their dbus service stays registered with its last known values (and `/Connected` set to 0) while asleep, and reconnects automatically once seen again over mDNS on its next wake-up. Keep automatic scanning (`/AutoScan`) enabled for these sensors: with scanning disabled, a sensor added through `/IpAddresses` is not reliably reconnected after it wakes up. In that case, trigger `/Refresh` while the sensor is awake (e.g. after pressing its button) to make the driver connect to it.
 
+## Device status
+`/Devices/<serial>/ConnectionStatus` shows the state of a found device:
+
+| Value | Status | Meaning |
+|---|---|---|
+| 0 | Discovered | Found, the first connection attempt has not finished yet. |
+| 1 | Ready | Reachable, authenticated if needed, and supported. Its channels can be enabled. |
+| 2 | Enabled | At least one channel is enabled. Stays Enabled while the device is temporarily offline and being reconnected, or while a sleepy device is asleep. |
+| -1 | Authentication failed | The device is password protected and the stored password was rejected. |
+| -2 | Password required | The device is password protected and no password is stored. |
+| -3 | Unsupported | Reachable, but not supported. |
+| -4 | Unreachable | Known, but not responding. Connecting is retried. |
+| -5 | Too many login attempts | The device rejects login attempts after too many failed ones (firmware 2.0.0+). Connecting is retried after 10 minutes, doubling up to an hour. |
+
+Whether a password protected device is supported can only be determined after logging in. Its channels are listed once a valid password is entered.
+
+## Password protected devices
+`/Devices/<serial>/PasswordProtected` is 1 when authentication is enabled on the device. Write the device password to `/Devices/<serial>/Password` to log in; the path reads back as `*****` when a password is stored. Only the HA1 digest (`SHA256("admin:<realm>:<password>")`) is stored, under `/Settings/Devices/shelly_<serial>/Password`, never the password itself. A precomputed digest can be written as `sha256:<64 hex digits>`.
+
+A rejected password is not retried, because failed logins trigger the device's brute-force protection (firmware 2.0.0+). While that protection is active, the device answers with "429 Too many requests" and every attempt may extend it, so the driver then waits at least 10 minutes between attempts. The device stays at Authentication failed until a new password is entered or `/Refresh` is triggered. When the password is changed on the device, its enabled channels are stopped and start again once the new password is entered. Authentication over the websocket for firmware 2.0.0+ requires aioshelly 13.25.0 or later; older aioshelly versions only work with firmware before 2.0.0.
+
 # Supported RPC components
 Shelly devices use Remote Procedure Calls (RPC) to send commands to devices and receive notifications and replies from the devices. More info [here](https://shelly-api-docs.shelly.cloud/gen2/General/RPCProtocol/). An [RPC component](https://shelly-api-docs.shelly.cloud/gen2/General/ComponentConcept) is an encapsulated functional unit which exposes methods used to control the device.
 
