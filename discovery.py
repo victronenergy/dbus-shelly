@@ -49,6 +49,11 @@ RECONNECT_LOOP_HEARTBEAT_SECONDS = BACKOFF_INITIAL_SECONDS # Interval for the re
 THROTTLED_RETRY_INITIAL_SECONDS = 10 * 60
 THROTTLED_RETRY_MAX_SECONDS = 60 * 60
 
+# The connection of a successful probe is kept this long, so the channels that are enabled in the settings can be started
+# right after discovery without a new login. Every login uses a nonce slot on the device (firmware 2.0.0+).
+# With all slots in use, a new login within 2 seconds of the previous one gets a 429.
+PROBED_DEVICE_KEEP_SECONDS = 10
+
 CHANNEL_ENABLE_RETRY_INITIAL_SECONDS = BACKOFF_INITIAL_SECONDS
 CHANNEL_ENABLE_RETRY_MAX_SECONDS = BACKOFF_MAX_SECONDS
 
@@ -754,6 +759,7 @@ class ShellyManager(object):
 		self.settings = settings
 		self.shelly_device_cache = shelly_device_cache
 		self.shellies = {}
+		self._probed_devices: dict[str, tuple[ShellyDevice, asyncio.Task]] = {}	# serial -> (connected device from a probe, expiry task)
 		self._shelly_lock = asyncio.Lock()
 		self._cache_sync_task: asyncio.Task | None = None
 		self._channel_op_queue: asyncio.Queue[ChannelOperation] = asyncio.Queue()
@@ -774,6 +780,7 @@ class ShellyManager(object):
 	async def stop(self):
 		self._stopping = True
 		await asyncio.gather(*(self.stop_shelly_device(shelly) for shelly in self.shellies))
+		await asyncio.gather(*(self._drop_probed_device(serial) for serial in list(self._probed_devices)))
 		await self.stop_cache_sync()
 		self._channel_op_worker.cancel()
 		try:
@@ -823,6 +830,7 @@ class ShellyManager(object):
 
 		# Removed from cache.
 		elif action == "remove":
+			await self._drop_probed_device(serial)
 			await self.stop_shelly_device(serial)
 			self.clear_discovered_device_paths(serial)
 			return
@@ -902,12 +910,17 @@ class ShellyManager(object):
 					i += 1
 
 	async def add_shelly_device(self, serial, server):
-		s = ShellyDevice(
-			bus_type=self.bus_type,
-			serial=serial,
-			server=server,
-			password=await self._get_device_password(serial)
-		)
+		# Use the connection of a recent probe if there is one. start() reconnects if it was lost in the meantime.
+		s = self._take_probed_device(serial)
+		if s is not None:
+			s.set_password(await self._get_device_password(serial))
+		else:
+			s = ShellyDevice(
+				bus_type=self.bus_type,
+				serial=serial,
+				server=server,
+				password=await self._get_device_password(serial)
+			)
 
 		try:
 			started = await s.start()
@@ -1079,10 +1092,12 @@ class ShellyManager(object):
 		password = await self._get_device_password(serial) if serial else ""
 		# Only server info is needed for obtaining device info
 		shelly = ShellyDevice(
+			bus_type=self.bus_type,
 			server=server,
 			serial=serial,
 			password=password
 		)
+		keep = False
 
 		try:
 			connection_result = await shelly.connect()
@@ -1126,13 +1141,51 @@ class ShellyManager(object):
 			result.ip = shelly.server
 			result.channel_info = shelly.channel_info
 			result.sleepy = shelly.is_sleepy
+			keep = True
 
 		except Exception as e:
 			logger.debug("Failed to get device info for %s: %s", server, e)
 		finally:
-			await shelly.stop()
+			if keep:
+				await self._keep_probed_device(shelly)
+			else:
+				await shelly.stop()
 			del shelly
 		return result
+
+	# Keep the connection of a successful probe, so starting the device doesn't need a new login.
+	# Stopped when it is not used within PROBED_DEVICE_KEEP_SECONDS.
+	async def _keep_probed_device(self, shelly):
+		serial = (shelly.serial or "").replace(":", "")
+		if not serial or self._stopping:
+			await shelly.stop()
+			return
+		await self._drop_probed_device(serial)
+
+		async def expire():
+			await asyncio.sleep(PROBED_DEVICE_KEEP_SECONDS)
+			entry = self._probed_devices.get(serial)
+			if entry is not None and entry[0] is shelly:
+				del self._probed_devices[serial]
+				await shelly.stop()
+
+		task = asyncio.create_task(expire())
+		background_tasks.add(task)
+		task.add_done_callback(background_tasks.discard)
+		self._probed_devices[serial] = (shelly, task)
+
+	def _take_probed_device(self, serial):
+		entry = self._probed_devices.pop(serial, None)
+		if entry is None:
+			return None
+		shelly, task = entry
+		task.cancel()
+		return shelly
+
+	async def _drop_probed_device(self, serial):
+		shelly = self._take_probed_device(serial)
+		if shelly is not None:
+			await shelly.stop()
 
 	async def _probe_device(self, server, serial=None):
 		async with self._shelly_lock:

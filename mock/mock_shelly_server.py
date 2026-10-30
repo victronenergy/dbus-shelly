@@ -44,6 +44,7 @@ class MockShellyDevice:
 		cct=False,
 		password=None,
 		legacy_auth=False,
+		nonce_throttle_seconds=0,
 	):
 		self.name = device_name
 		self.channel_name = channel_name
@@ -118,6 +119,10 @@ class MockShellyDevice:
 		# Brute-force protection: until this time, requests that need authentication get a 429 error.
 		self.throttled_until = 0.0
 		self.throttled_requests = 0
+		# Nonce slots (firmware 2.0.0+): with all slots in use, a request for a new nonce within 2 seconds of the
+		# previous one gets a 429 error. Emulated as: a new nonce within this many seconds of the last one is refused.
+		self.nonce_throttle_seconds = nonce_throttle_seconds
+		self._last_nonce_at = None
 
 	@property
 	def device_id(self):
@@ -149,6 +154,12 @@ class MockShellyDevice:
 		if time.time() < self.throttled_until:
 			self.throttled_requests += 1
 			return 429, "Too many requests"
+		if not frame.get("auth") and self.nonce_throttle_seconds:
+			now = time.time()
+			if self._last_nonce_at is not None and now - self._last_nonce_at < self.nonce_throttle_seconds:
+				self.throttled_requests += 1
+				return 429, "Too many requests"
+			self._last_nonce_at = now
 		challenge = self._check_digest(frame)
 		return None if challenge is None else (401, challenge)
 
@@ -187,7 +198,7 @@ class MockShellyDevice:
 	# Test hook, not a real Shelly method: authentication statistics.
 	def mock_get_auth_stats(self, params):
 		return {"auth_en": self.auth_en, "failures": self.auth_failures, "challenges": self.auth_challenges,
-			"throttled": self.throttled_requests}
+			"throttled": self.throttled_requests, "connections": len(self._ws_clients)}
 
 	# Test hook, not a real Shelly method: throttle requests that need authentication for "seconds", like the
 	# brute-force protection of firmware 2.0.0+ does after too many failed logins. 0 stops throttling.
@@ -989,6 +1000,7 @@ def parse_args():
 	parser.add_argument("--password", default=None, help="Enable digest authentication with this password (user admin)")
 	parser.add_argument("--legacy-auth", action="store_true", help="Authenticate like firmware before 2.0.0 (numeric nonces, nc not tracked)")
 	parser.add_argument("--throttle-seconds", type=float, default=0, help="Start with requests that need authentication throttled (429) for this long")
+	parser.add_argument("--nonce-throttle-seconds", type=float, default=0, help="Refuse (429) a new nonce within this many seconds of the previous one, like firmware 2.0.0+ with all nonce slots in use")
 	parser.add_argument("--notify-interval", type=float, default=5)
 	parser.add_argument("--verbose", action="store_true")
 	return parser.parse_args()
@@ -1019,6 +1031,7 @@ async def main():
 		cct=args.cct,
 		password=args.password,
 		legacy_auth=args.legacy_auth,
+		nonce_throttle_seconds=args.nonce_throttle_seconds,
 	)
 
 	app = web.Application()
