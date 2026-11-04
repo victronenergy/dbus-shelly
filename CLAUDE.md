@@ -14,7 +14,6 @@ The following rules override all other preferences.
 - Do not push commits
 - Only suggest git commits, do not commit
 - Suggested git commits must not include "Fixes ..." or "Closes ..." when referencing a git issue. Instead, reference the issue without closing it.
-- Never add AI attribution text to git commits (no "Generated with Claude Code", "Co-Authored-By: Claude", or similar).
 
 When in doubt:
 - Ask a question
@@ -90,8 +89,8 @@ Each RPC component maps to a handler class through a decorator:
 class ShellyHandler_switch(ShellyHandler_switch_base): ...
 ```
 
-- `kind` decides which channel type the handler serves: `switch`, `em1`, `em`, `digitalinput`, or `temperature`.
-- `register_secondary_handler` registers a handler that is added to channels of another kind with a matching component id. Components with only a secondary handler, such as `DevicePower` and `Sys`, never get a channel of their own and don't make a device "supported". A functional component can also have a secondary handler: it then gets a channel of its own only when its id is not used by an earlier channel. Otherwise the secondary handler is added to that channel. `Temperature` does this: a Sensor Add-on's `temperature:100` gets a temperature service, `temperature:0` next to `switch:0` only adds `/Temperature` to the switch channel.
+- `kind` decides which channel type the handler serves: `switch`, `em1`, `em`, `digitalinput`, `temperature`, or `humidity`. A `humidity` channel is registered as a `com.victronenergy.temperature` service.
+- `register_secondary_handler` registers a handler that is added to channels of another kind with a matching component id. Components with only a secondary handler, such as `DevicePower` and `Sys`, never get a channel of their own and don't make a device "supported". A functional component can also have a secondary handler: it then gets a channel of its own only when its id is not used by an earlier channel. Otherwise the secondary handler is added to that channel. `Temperature` does this: a Sensor Add-on's `temperature:100` gets a temperature service, `temperature:0` next to `switch:0` only adds `/Temperature` to the switch channel. `Humidity` works the same way and comes after `Temperature`, so `humidity:100` next to `temperature:100` adds `/Humidity` to the temperature channel.
 - `aggregate=True` collapses every id of that component into a single channel. `Voltmeter` does this.
 - A handler registered for several components (e.g. `EM1` + `EM1Data`) is instantiated once per channel. `_check_rpc_type_supported` removes the components the device doesn't actually expose.
 - Lifecycle: `ShellyHandler.create` → `ainit()`, which checks `GetStatus`, calls `handler_ainit()` to add D-Bus paths and settings, then calls `force_update()`. After that, `update(status_json, cap)` receives status notifications. `refresh()` runs after a short reconnect, and the `restart` callback does a full channel restart.
@@ -106,4 +105,4 @@ class ShellyHandler_switch(ShellyHandler_switch_base): ...
 
 - `shelly_device.py` does `from __main__ import VERSION`, so modules must be run through `dbus_shelly.py`. Importing them from some other entrypoint breaks. `VERSION` lives in `dbus_shelly.py`.
 - Capabilities are stored in lowercase (`register_handler` lowercases them). Compare them in lowercase.
-- Product IDs: `0xB034` (EM) and `0xB075` (switch). Smoke, Flood and Temperature share `0xB0A0` (`PRODUCT_ID_INPUT`). Product name and ID are tied: `0xB0A0` is always "Shelly input device".
+- Product IDs: `0xB034` (EM) and `0xB075` (switch). Smoke, Flood, Temperature and Humidity share `0xB0A0` (`PRODUCT_ID_INPUT`). Product name and ID are tied: `0xB0A0` is always "Shelly input device".

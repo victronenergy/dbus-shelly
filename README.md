@@ -19,6 +19,8 @@ Switch and energy metering channels default to disabled and require an explicit 
 
 - Shelly temperature sensors are registered as `com.victronenergy.temperature`. This applies to a Temperature component with an id of its own, such as the probes of a Sensor Add-on (`temperature:100` and up). A Temperature component that shares its id with another channel (e.g. `temperature:0` next to `switch:0`) is part of that channel and only adds `/Temperature` to its service. `/Status` is 0 (Ok) while the sensor reports a valid reading and 4 (Unknown) when it reports an error. Temperature channels default to disabled, except on battery-powered devices.
 
+- Shelly humidity sensors are part of the `com.victronenergy.temperature` service, because Venus has no dedicated humidity service. A Humidity component that shares its id with another channel only adds `/Humidity` to that channel's service. That is the case for a sensor that measures both temperature and humidity (`temperature:0` and `humidity:0`, or `temperature:100` and `humidity:100` for a DHT22 on a Sensor Add-on), and for `humidity:0` next to `switch:0`. A Humidity component with an id of its own gets a `com.victronenergy.temperature` service with `/Humidity`, an invalid `/Temperature`, and `/Status`, which is 0 (Ok) while the sensor reports a valid reading and 4 (Unknown) when it reports an error. Like temperature channels, its channel defaults to disabled, except on battery-powered devices.
+
 # Supported RPC components
 Shelly devices use Remote Procedure Calls (RPC) to send commands to devices and receive notifications and replies from the devices. More info [here](https://shelly-api-docs.shelly.cloud/gen2/General/RPCProtocol/). An [RPC component](https://shelly-api-docs.shelly.cloud/gen2/General/ComponentConcept) is an encapsulated functional unit which exposes methods used to control the device.
 
@@ -47,6 +49,7 @@ Since V2.00, dbus-shelly implements handlers for RPC components, which enables c
 | Smoke              | *.digitalinput                   | Smoke alarm. DevicePower (if present) adds battery info to the same service                |
 | Flood              | *.digitalinput                   | Bilge alarm (no dedicated flood type in Venus). DevicePower (if present) adds battery info |
 | Temperature        | *.temperature                    | Only when its id is not used by another channel (e.g. Sensor Add-on). Otherwise adds /Temperature to that channel's service. DevicePower (if present) adds battery info |
+| Humidity           | *.temperature                    | Only when its id is not used by another channel. Otherwise adds /Humidity to that channel's service (e.g. the temperature channel with the same id). DevicePower (if present) adds battery info |
 
 If a device exposes x instances of an RPC component listed above, then x channels of that type will show up in the integration menu.
 

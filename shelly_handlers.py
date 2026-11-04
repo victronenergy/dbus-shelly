@@ -22,10 +22,11 @@ HANDLER_KIND_EM1 = "em1"
 HANDLER_KIND_EM = "em"
 HANDLER_KIND_DIGITALINPUT = "digitalinput"
 HANDLER_KIND_TEMPERATURE = "temperature"
+HANDLER_KIND_HUMIDITY = "humidity"
 
 # Components with only a secondary handler have no kind, because a channel which only has those (or unsupported ones) should not be listed.
 # Kinds with a secondary handler (see register_secondary_handler) must come after the kinds whose channels it can be added to.
-FUNCTIONAL_HANDLERS = [HANDLER_KIND_SWITCH, HANDLER_KIND_EM1, HANDLER_KIND_EM, HANDLER_KIND_DIGITALINPUT, HANDLER_KIND_TEMPERATURE]
+FUNCTIONAL_HANDLERS = [HANDLER_KIND_SWITCH, HANDLER_KIND_EM1, HANDLER_KIND_EM, HANDLER_KIND_DIGITALINPUT, HANDLER_KIND_TEMPERATURE, HANDLER_KIND_HUMIDITY]
 
 _HANDLER_REGISTRY = {}
 _CAPS_BY_KIND = {kind: [] for kind in FUNCTIONAL_HANDLERS}
@@ -812,6 +813,55 @@ class ShellyHandler_temperature(ShellyHandler):
 		try:
 			with self.service as s:
 				s[f'/Temperature'] = status_json["tC"]
+		except:
+			pass
+
+
+# Humidity sensor handler, registers a com.victronenergy.temperature service for a Humidity component that has its own id.
+# Venus has no humidity service; /Humidity is part of the temperature service. A Humidity component that shares its id
+# with a Temperature component (e.g. temperature:100 and humidity:100 of a DHT22 on a Sensor Add-on) is part of that
+# temperature channel instead.
+@register_handler('Humidity', kind=HANDLER_KIND_HUMIDITY)
+class ShellyHandler_humidity_sensor(ShellyHandler_channel_config_mixin, ShellyHandler):
+	# See the com.victronenergy.temperature service in https://github.com/victronenergy/venus/wiki/dbus
+	STATUS_OK = 0
+	STATUS_UNKNOWN = 4
+
+	async def handler_ainit(self):
+		if not await super().handler_ainit():
+			return False
+		await self.add_customname_path()
+
+		# There is no temperature reading on this service.
+		self.service.add_item(DoubleItem('/Temperature', None, text=fmt['celsius']))
+		self.service.add_item(DoubleItem('/Humidity', None, text=fmt['percent']))
+		self.service.add_item(IntegerItem('/Status', None))
+		self.set_service_name('temperature')
+		return True
+
+	def update(self, status_json, cap=None):
+		if status_json is None:
+			return
+		# rh is null and errors is set when the sensor can't be read.
+		humidity = status_json.get("rh")
+		with self.service as s:
+			s['/Humidity'] = humidity
+			s['/Status'] = self.STATUS_OK if humidity is not None else self.STATUS_UNKNOWN
+
+
+# Humidity secondary handler, puts humidity readings on dbus.
+# Used when the Humidity component shares its id with another channel (e.g. temperature:0 and humidity:0),
+# see register_secondary_handler.
+@register_secondary_handler('Humidity')
+class ShellyHandler_humidity(ShellyHandler):
+	async def handler_ainit(self):
+		self.service.add_item(DoubleItem('/Humidity', None, text=fmt['percent']))
+		return True
+
+	def update(self, status_json, cap=None):
+		try:
+			with self.service as s:
+				s['/Humidity'] = status_json["rh"]
 		except:
 			pass
 
