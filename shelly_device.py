@@ -56,8 +56,8 @@ class ShellyChannel(object):
 		# The class prefix only matters as an initial default: EM-capable channels immediately
 		# overwrite it with the selected role (see Shelly_EM_base.init_em), but an input
 		# channel has no such role to pick, so its class needs to already be correct here.
-		# Input channels are registered as com.victronenergy.digitalinput services.
-		device_class = 'digitalinput' if c._ch_type == 'input' else c._ch_type
+		# Input channels are registered as com.victronenergy.digitalinput services, humidity channels as temperature services.
+		device_class = {'input': 'digitalinput', 'humidity': 'temperature'}.get(c._ch_type, c._ch_type)
 		await c.settings.add_settings(
 			Setting(settings_base + 'ClassAndVrmInstance', f'{device_class}:50', alias=f'instance_{c._serial}_{c._channel_id}')
 		)
@@ -106,8 +106,8 @@ class ShellyChannel(object):
 		self.service.add_item(TextItem('/Serial', self._serial))
 		# /State has a spec-defined, type-specific meaning on digitalinput services
 		# (owned by ShellyHandler_smoke / ShellyHandler_flood); elsewhere it's just this
-		# generic "connected" placeholder. The temperature service doesn't define /State.
-		if self._ch_type not in ('input', 'temperature'):
+		# generic "connected" placeholder. The temperature service (also used by humidity channels) doesn't define /State.
+		if self._ch_type not in ('input', 'temperature', 'humidity'):
 			self.service.add_item(IntegerItem('/State', 0x100)) # Connected
 		self.service.add_item(TextItem('/ShellyModel', self.shellyModel))
 
@@ -564,7 +564,7 @@ class ShellyDevice(object):
 					channels[index] = entry
 		return channels
 
-	# Secondary handlers (e.g. DevicePower, or Temperature on a switch channel) use the channel's id for their component,
+	# Secondary handlers (e.g. DevicePower, Temperature on a switch channel or Humidity on a temperature channel) use the channel's id for their component,
 	# so skip them when the device has no such id. E.g. switch:0 with only temperature:100 from a Sensor Add-on.
 	def _get_channel_handler_class(self, cap, ch_type, channel_id):
 		cls = shelly_handlers.get_handler_class(cap, ch_type)
@@ -620,7 +620,7 @@ class ShellyDevice(object):
 			if ch_type == 'switch':
 				name = "Shelly Switch"
 				id = PRODUCT_ID_SHELLY_SWITCH
-			elif ch_type in ('input', 'temperature'):
+			elif ch_type in ('input', 'temperature', 'humidity'):
 				name = "Shelly input device"
 				id = PRODUCT_ID_INPUT
 			else:
