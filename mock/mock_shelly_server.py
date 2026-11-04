@@ -30,6 +30,7 @@ class MockShellyDevice:
 		rgb=False,
 		cct=False,
 		temperature_ids=(),
+		humidity_ids=(),
 		devicepower=False,
 	):
 		self.name = device_name
@@ -53,6 +54,8 @@ class MockShellyDevice:
 		self.devicepower = devicepower or smoke or flood
 		# Temperature components, keyed by id. A Sensor Add-on uses ids 100 and up.
 		self._temperatures = {cid: {"tC": 21.5 + cid % 100, "errors": None, "name": None} for cid in temperature_ids}
+		# Humidity components, keyed by id, like the Temperature components.
+		self._humidities = {cid: {"rh": 55.0 + cid % 100, "errors": None, "name": None} for cid in humidity_ids}
 		self._start = time.time()
 
 		self._switch_outputs = [False] * switch_channels
@@ -176,6 +179,8 @@ class MockShellyDevice:
 			status["devicepower:0"] = self.devicepower_get_status({"id": 0})
 		for cid in self._temperatures:
 			status[f"temperature:{cid}"] = self.temperature_get_status({"id": cid})
+		for cid in self._humidities:
+			status[f"humidity:{cid}"] = self.humidity_get_status({"id": cid})
 		if self.em:
 			status["em:0"] = self.em_get_status({"id": 0})
 			status["emdata:0"] = self.emdata_get_status({"id": 0})
@@ -209,6 +214,8 @@ class MockShellyDevice:
 			components.append({"key": "devicepower:0", "status": self.devicepower_get_status({"id": 0}), "config": self.devicepower_get_config({"id": 0})})
 		for cid in self._temperatures:
 			components.append({"key": f"temperature:{cid}", "status": self.temperature_get_status({"id": cid}), "config": self.temperature_get_config({"id": cid})})
+		for cid in self._humidities:
+			components.append({"key": f"humidity:{cid}", "status": self.humidity_get_status({"id": cid}), "config": self.humidity_get_config({"id": cid})})
 		if self.em:
 			components.append({"key": "em:0", "status": self.em_get_status({"id": 0}), "config": self.meter_get_config("em", {"id": 0})})
 			components.append({"key": "emdata:0", "status": self.emdata_get_status({"id": 0}), "config": {"id": 0}})
@@ -391,6 +398,43 @@ class MockShellyDevice:
 			t["name"] = config["name"]
 		return {"restart_required": False}
 
+	def humidity_get_status(self, params):
+		h = self._humidities.get(int(params.get("id", 0)))
+		if h is None:
+			return None
+		status = {"id": int(params["id"]), "rh": h["rh"]}
+		if h["errors"]:
+			status["errors"] = h["errors"]
+		return status
+
+	def humidity_get_config(self, params):
+		h = self._humidities.get(int(params.get("id", 0)))
+		if h is None:
+			return None
+		return {"id": int(params["id"]), "name": h["name"], "report_thr": 1.0, "offset": 0.0}
+
+	def humidity_set_config(self, params):
+		h = self._humidities.get(int(params.get("id", 0)))
+		if h is None:
+			return None
+		config = params.get("config", {}) or {}
+		if "name" in config:
+			h["name"] = config["name"]
+		return {"restart_required": False}
+
+	# Test hook, not a real Shelly method: set the reading (and errors) of a Humidity component.
+	def mock_set_humidity(self, params):
+		h = self._humidities.get(int(params.get("id", 0)))
+		if h is None:
+			return None
+		h["rh"] = params.get("rh")
+		h["errors"] = params.get("errors")
+		try:
+			asyncio.get_running_loop().create_task(self.notify_full_status())
+		except RuntimeError:
+			pass
+		return {}
+
 	# Test hook, not a real Shelly method: set the reading (and errors) of a Temperature component.
 	def mock_set_temperature(self, params):
 		t = self._temperatures.get(int(params.get("id", 0)))
@@ -562,6 +606,9 @@ class MockShellyDevice:
 			"Temperature.GetStatus",
 			"Temperature.GetConfig",
 			"Temperature.SetConfig",
+			"Humidity.GetStatus",
+			"Humidity.GetConfig",
+			"Humidity.SetConfig",
 			"EM.GetStatus",
 			"EM.GetConfig",
 			"EM.SetConfig",
@@ -772,6 +819,18 @@ async def handle_rpc(device, frame, *, verbose=False):
 		resp = _json_response(device.temperature_set_config(params), request_id)
 		resp["src"] = f"shelly-{device.mac}"
 		return resp
+	if method == "Humidity.GetStatus" and device._humidities:
+		resp = _json_response(device.humidity_get_status(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "Humidity.GetConfig" and device._humidities:
+		resp = _json_response(device.humidity_get_config(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "Humidity.SetConfig" and device._humidities:
+		resp = _json_response(device.humidity_set_config(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
 	if method == "EM.GetStatus" and device.em:
 		resp = _json_response(device.em_get_status(params), request_id)
 		resp["src"] = f"shelly-{device.mac}"
@@ -846,6 +905,10 @@ async def handle_rpc(device, frame, *, verbose=False):
 		return resp
 	if method == "Mock.SetTemperature":
 		resp = _json_response(device.mock_set_temperature(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "Mock.SetHumidity":
+		resp = _json_response(device.mock_set_humidity(params), request_id)
 		resp["src"] = f"shelly-{device.mac}"
 		return resp
 	if method == "Mock.SetAlarm":
@@ -932,6 +995,7 @@ def parse_args():
 	parser.add_argument("--rgb", action="store_true")
 	parser.add_argument("--cct", action="store_true")
 	parser.add_argument("--temperature-ids", default="", help="Comma-separated Temperature component ids, e.g. 100,101 for a Sensor Add-on")
+	parser.add_argument("--humidity-ids", default="", help="Comma-separated Humidity component ids, e.g. 100 for a DHT22 on a Sensor Add-on")
 	parser.add_argument("--devicepower", action="store_true", help="Add a DevicePower component (battery-powered device)")
 	parser.add_argument("--notify-interval", type=float, default=5)
 	parser.add_argument("--verbose", action="store_true")
@@ -962,6 +1026,7 @@ async def main():
 		rgb=args.rgb,
 		cct=args.cct,
 		temperature_ids=[int(i) for i in args.temperature_ids.split(",") if i],
+		humidity_ids=[int(i) for i in args.humidity_ids.split(",") if i],
 		devicepower=args.devicepower,
 	)
 
