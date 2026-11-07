@@ -122,14 +122,21 @@ class ShellyHandler(object):
 	# RPC components are supported by the device and removes unsupported ones from the list.
 	async def _check_rpc_type_supported(self):
 		if isinstance(self._rpc_device_type, list):
+			# register_handler sets _rpc_device_type as a class attribute, so every instance of
+			# the handler shares one list object. Collect the supported components in a new list
+			# and bind that to the instance: removing from the shared one made the first device
+			# that lacks a component strip it for every later device too (an EM1 device would
+			# leave the EM1/EM1Data/PM1 handler without 'PM1', breaking a PM1 device enabled
+			# afterwards). Building a new list also avoids mutating the list being iterated,
+			# which skipped the entry after every removal.
+			supported = []
 			for rpc in self._rpc_device_type:
 				resp = await self.rpc_call('GetStatus', {"id": self._channel_id}, rpc_device_types=rpc)
-				if resp is None:
-					self._rpc_device_type.remove(rpc)
+				if resp is not None:
+					supported.append(rpc)
 
 			# Turn it into a single RPC component handler if only one is left.
-			if len(self._rpc_device_type) == 1:
-				self._rpc_device_type = self._rpc_device_type[0]
+			self._rpc_device_type = supported[0] if len(supported) == 1 else supported
 
 	@property
 	def init_done(self):
