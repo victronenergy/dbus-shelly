@@ -427,6 +427,20 @@ class ShellyDevice(object):
 				cap_changed = True
 				break
 
+		# This channel's own component is gone, while its capability is still there. A device can
+		# come back with fewer instances of the same component (switch:0 + switch:1 becoming just
+		# switch:0), which leaves the capability set unchanged, so the checks above see nothing.
+		# Without this the orphaned channel keeps its dbus service and its handlers then refresh
+		# against a component that no longer answers.
+		if not cap_changed:
+			channel_ids = set(self._channels[ch]["channel"]._channel_ids)
+			for cap in handlers:
+				ids = self._component_ids.get(cap)
+				# An aggregated channel survives as long as one of its ids is left.
+				if ids is not None and not channel_ids & ids:
+					cap_changed = True
+					break
+
 		# Capabilities changed, Stop all channels and let the discovery service refresh the device.
 		if cap_changed:
 			self._invalidate()
