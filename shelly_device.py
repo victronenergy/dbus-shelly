@@ -56,8 +56,10 @@ class ShellyChannel(object):
 		# The class prefix only matters as an initial default: EM-capable channels immediately
 		# overwrite it with the selected role (see Shelly_EM_base.init_em), but a digitalinput
 		# channel has no such role to pick, so its class needs to already be correct here.
-		# A humidity channel is registered as a temperature service.
-		device_class = 'temperature' if c._ch_type == 'humidity' else c._ch_type
+		# A humidity channel is registered as a temperature service, and a channel for a Shelly
+		# Input component as a switch service, which is where gui-v2 documents the generic
+		# input paths.
+		device_class = {'humidity': 'temperature', 'genericinput': 'switch'}.get(c._ch_type, c._ch_type)
 		await c.settings.add_settings(
 			Setting(settings_base + 'ClassAndVrmInstance', f'{device_class}:50', alias=f'instance_{c._serial}_{c._channel_id}')
 		)
