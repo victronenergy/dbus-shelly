@@ -116,6 +116,15 @@ class ShellyChannel(object):
 	async def stop(self):
 		await self.service.close()
 		self.service = None
+		# The channel owns the connection it was created on (see create()), and the
+		# localsettings client lives on it too. Service.close() unexports the objects and
+		# releases the well-known name, but that leaves the connection itself open, so it
+		# has to be dropped here. Channels are stopped on every disable, on every role
+		# change and whenever a device is torn down, so skipping this accumulates
+		# connections for the lifetime of the driver.
+		if self.bus is not None:
+			self.bus.disconnect()
+			self.bus = None
 
 	# Reinitialize the callbacks without restarting the service.
 	async def reinit(self, rpc_callback, restart):
