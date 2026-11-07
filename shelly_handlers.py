@@ -1,6 +1,6 @@
 from aiovelib.localsettings import Setting
 from aiovelib.service import IntegerItem, TextItem, DoubleItem, IntegerArrayItem, TextArrayItem
-from utils import logger, formatters as fmt, STATUS_OFF, STATUS_ON, OutputType, OutputFunction
+from utils import logger, formatters as fmt, STATUS_OFF, STATUS_ON, OutputType, OutputFunction, InputType, InputStatus, EVENT_TOGGLE_BIT, EVENT_SINGLE_TAP
 
 from functools import partial
 import asyncio
@@ -23,10 +23,11 @@ HANDLER_KIND_EM = "em"
 HANDLER_KIND_DIGITALINPUT = "digitalinput"
 HANDLER_KIND_TEMPERATURE = "temperature"
 HANDLER_KIND_HUMIDITY = "humidity"
+HANDLER_KIND_INPUT = "input"
 
 # Components with only a secondary handler have no kind, because a channel which only has those (or unsupported ones) should not be listed.
 # Kinds with a secondary handler (see register_secondary_handler) must come after the kinds whose channels it can be added to.
-FUNCTIONAL_HANDLERS = [HANDLER_KIND_SWITCH, HANDLER_KIND_EM1, HANDLER_KIND_EM, HANDLER_KIND_DIGITALINPUT, HANDLER_KIND_TEMPERATURE, HANDLER_KIND_HUMIDITY]
+FUNCTIONAL_HANDLERS = [HANDLER_KIND_SWITCH, HANDLER_KIND_EM1, HANDLER_KIND_EM, HANDLER_KIND_DIGITALINPUT, HANDLER_KIND_TEMPERATURE, HANDLER_KIND_HUMIDITY, HANDLER_KIND_INPUT]
 
 _HANDLER_REGISTRY = {}
 _CAPS_BY_KIND = {kind: [] for kind in FUNCTIONAL_HANDLERS}
@@ -209,6 +210,120 @@ class ShellyHandler(object):
 
 	async def em_supported(self):
 		return False
+
+# Input handler. Puts a Shelly Input component on the Venus generic input API, so the value shows
+# up read-only in the switching pane next to the device's switchable outputs.
+# See https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/Input for the component and
+# https://github.com/victronenergy/venus/wiki/dbus#generic-input-api for the dbus side.
+# Attaches to whichever channel has the same id as the component, same as the Temperature handler.
+@register_secondary_handler('Input')
+class ShellyHandler_input(ShellyHandler):
+	# The Shelly input type decides how the value can be shown.
+	_TYPE_BY_MODE = {
+		'switch': InputType.DISCRETE,
+		'button': InputType.DISCRETE,
+		'analog': InputType.VALUE_WITH_RANGE,
+		'count': InputType.VALUE_NO_RANGE,
+	}
+
+	def __init__(self):
+		super().__init__()
+		self._mode = None
+		self._event_value = 0
+
+	@property
+	def _base(self):
+		return f'/GenericInput/{self._channel_id}/'
+
+	async def handler_ainit(self):
+		config = await self.rpc_call('GetConfig', {"id": self._channel_id})
+		if config is None:
+			return False
+		self._mode = config.get('type')
+		input_type = self._TYPE_BY_MODE.get(self._mode)
+		if input_type is None:
+			logger.warning("Unknown Shelly input type %s on input:%d, not exposing it", self._mode, self._channel_id)
+			return False
+
+		base = self._base
+		# A button is stateless: it has no value to show, only events.
+		if self._mode != 'button':
+			self.service.add_item(DoubleItem(base + 'Value', None))
+		self.service.add_item(IntegerItem(base + 'Status', int(InputStatus.OK)))
+		self.service.add_item(TextItem(base + 'Name', f'Input {self._channel_id}', writeable=False))
+		# The type is configured on the shelly itself, so offer no choice: a ValidTypes with only
+		# the one bit set keeps the GUI from presenting the other types.
+		self.service.add_item(IntegerItem(base + 'Settings/Type', int(input_type), writeable=False))
+		self.service.add_item(IntegerItem(base + 'Settings/ValidTypes', 1 << int(input_type), writeable=False))
+
+		if self._mode == 'switch':
+			# Reserved keywords, translated by the GUI.
+			self.service.add_item(TextArrayItem(base + 'Settings/Labels', ["/off", "/on"], writeable=False))
+		elif self._mode == 'button':
+			self.service.add_item(IntegerItem(base + 'Event', self._event_value, writeable=False))
+		elif self._mode == 'analog':
+			# range_map remaps the raw 0-100% onto a device-configured range.
+			range_map = config.get('range_map') or [0, 100]
+			self.service.add_item(DoubleItem(base + 'Settings/RangeMin', float(range_map[0]), writeable=False))
+			self.service.add_item(DoubleItem(base + 'Settings/RangeMax', float(range_map[-1]), writeable=False))
+			self.service.add_item(TextItem(base + 'Settings/Unit', self._unit_from_config(config, 'xpercent', "%"), writeable=False))
+			self.service.add_item(IntegerItem(base + 'Settings/Decimals', 1, writeable=False))
+		elif self._mode == 'count':
+			self.service.add_item(TextItem(base + 'Settings/PrimaryLabel', "Count", writeable=False))
+			self.service.add_item(TextItem(base + 'Settings/Unit', self._unit_from_config(config, 'xcounts', ""), writeable=False))
+			self.service.add_item(IntegerItem(base + 'Settings/Decimals', 0, writeable=False))
+
+		return True
+
+	# The x-prefixed status keys only exist when the shelly has both an expression and a unit
+	# configured for them, in which case that unit describes the transformed value.
+	def _unit_from_config(self, config, key, default):
+		transform = config.get(key) or {}
+		return transform.get('unit') or default
+
+	def update(self, status_json, cap=None):
+		if status_json is None:
+			return
+		try:
+			with self.service as s:
+				if self._mode == 'switch':
+					state = status_json.get('state')
+					# null while the input is disabled on the device, and for a stateless input.
+					s[self._base + 'Value'] = None if state is None else int(bool(state))
+				elif self._mode == 'analog':
+					s[self._base + 'Value'] = status_json.get('percent')
+				elif self._mode == 'count':
+					s[self._base + 'Value'] = (status_json.get('counts') or {}).get('total')
+				s[self._base + 'Status'] = int(InputStatus.FAULT if status_json.get('errors') else InputStatus.OK)
+		except Exception as e:
+			logger.error("Error in update: %s", e)
+
+	# Only single tap has a defined encoding on the Venus side, so the other push events are
+	# counted as one. btn_down/btn_up are the raw edges behind them and would double-report.
+	def on_event(self, event):
+		if self._mode != 'button' or event.get('component') != f'input:{self._channel_id}':
+			return
+		if event.get('event') not in ('single_push', 'double_push', 'triple_push', 'long_push'):
+			return
+		self._event_value = EVENT_SINGLE_TAP | (~self._event_value & EVENT_TOGGLE_BIT)
+		try:
+			with self.service as s:
+				s[self._base + 'Event'] = self._event_value
+		except Exception as e:
+			logger.error("Error in on_event: %s", e)
+
+# Registers a service for an Input component that has no other channel with its id, so the inputs
+# of a device without any switchable output or meter (e.g. an i4) are reachable too. The generic
+# input paths are the same either way, only the service differs; gui-v2 documents them under
+# com.victronenergy.switch, so that is the service type used here.
+@register_handler('Input', kind=HANDLER_KIND_INPUT)
+class ShellyHandler_input_channel(ShellyHandler_input):
+	async def handler_ainit(self):
+		if not await super().handler_ainit():
+			return False
+		self.set_service_name('switch')
+		return True
+
 
 # DevicePower handler, puts battery voltage/percentage readings on dbus.
 # Tacks onto whichever channel the component is found on, with a matching id.

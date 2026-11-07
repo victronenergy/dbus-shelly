@@ -46,12 +46,17 @@ Since V2.00, dbus-shelly implements handlers for RPC components, which enables c
 | CCT                | *.switch                         | Switch type: CCT                                                                           |
 | RGBCCT             | *.switch                         | Switch type: RGB or CCT                                                                    |
 | CB                 | *.switch                         | Switch type: Toggle                                                                        |
+| Input              | (adds to the channel's service)  | Read-only value on the [generic input API](https://github.com/victronenergy/venus/wiki/dbus#generic-input-api). switch/analog/count show a value, button only reports events |
 | Smoke              | *.digitalinput                   | Smoke alarm. DevicePower (if present) adds battery info to the same service                |
 | Flood              | *.digitalinput                   | Bilge alarm (no dedicated flood type in Venus). DevicePower (if present) adds battery info |
 | Temperature        | *.temperature                    | Only when its id is not used by another channel (e.g. Sensor Add-on). Otherwise adds /Temperature to that channel's service. DevicePower (if present) adds battery info |
 | Humidity           | *.temperature                    | Only when its id is not used by another channel. Otherwise adds /Humidity to that channel's service (e.g. the temperature channel with the same id). DevicePower (if present) adds battery info |
 
 If a device exposes x instances of an RPC component listed above, then x channels of that type will show up in the integration menu.
+
+The Input component does not get a channel of its own: like Temperature and DevicePower it is
+added to the channel that has the same id, so `input:0` shows up on the service of `switch:0` as
+`/GenericInput/0/`. An input whose id has no matching channel is not published.
 
 # Tested devices
 

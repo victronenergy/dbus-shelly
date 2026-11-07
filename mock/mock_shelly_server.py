@@ -32,12 +32,26 @@ class MockShellyDevice:
 		temperature_ids=(),
 		humidity_ids=(),
 		devicepower=False,
+		input_modes=None,
 	):
 		self.name = device_name
 		self.channel_name = channel_name
 		self.model = model
 		self.app = app
 		self.mac = mac.lower()
+		# One entry per Input component, in id order: "switch", "button", "analog" or "count".
+		self.input_modes = list(input_modes or [])
+		self._input_state = {}
+		for i, mode in enumerate(self.input_modes):
+			self._input_state[i] = {
+				"enable": True,
+				"invert": False,
+				"state": False if mode in ("switch", "button") else None,
+				"percent": 12.5 if mode == "analog" else None,
+				"counts": 7 if mode == "count" else None,
+				"freq": 3.5 if mode == "count" else None,
+				"errors": [],
+			}
 		self.switch_channels = switch_channels
 		self.voltage = float(voltage)
 		self.default_apower = float(apower)
@@ -169,6 +183,8 @@ class MockShellyDevice:
 		}
 		for i in range(self.switch_channels):
 			status[f"switch:{i}"] = self._switch_status(i)
+		for i in range(len(self.input_modes)):
+			status[f"input:{i}"] = self.input_get_status({"id": i})
 		for i in range(self.rgbcct_channels):
 			status[f"rgbcct:{i}"] = self._rgbcct_status(i)
 		if self.smoke:
@@ -204,6 +220,8 @@ class MockShellyDevice:
 		components = []
 		for i in range(self.switch_channels):
 			components.append({"key": f"switch:{i}", "status": self._switch_status(i), "config": self.switch_get_config({"id": i})})
+		for i in range(len(self.input_modes)):
+			components.append({"key": f"input:{i}", "status": self.input_get_status({"id": i}), "config": self.input_get_config({"id": i})})
 		for i in range(self.rgbcct_channels):
 			components.append({"key": f"rgbcct:{i}", "status": self._rgbcct_status(i), "config": self.rgbcct_get_config({"id": i})})
 		if self.smoke:
@@ -318,6 +336,89 @@ class MockShellyDevice:
 		except RuntimeError:
 			pass
 		return {}
+
+	# Input component. Status keys depend on the configured type, per
+	# https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/Input
+	def input_get_status(self, params):
+		channel = int(params.get("id", 0))
+		if channel not in self._input_state:
+			return None
+		mode = self.input_modes[channel]
+		st = self._input_state[channel]
+		enabled = st["enable"]
+		out = {"id": channel}
+		if mode in ("switch", "button"):
+			# A button is stateless, and a disabled input reports null.
+			out["state"] = None if (mode == "button" or not enabled) else bool(st["state"])
+		elif mode == "analog":
+			out["percent"] = st["percent"] if enabled else None
+		elif mode == "count":
+			total = st["counts"] if enabled else None
+			out["counts"] = {"total": total, "by_minute": [0, 0, 0], "minute_ts": 0}
+			out["freq"] = st["freq"] if enabled else None
+		if st["errors"]:
+			out["errors"] = list(st["errors"])
+		return out
+
+	def input_get_config(self, params):
+		channel = int(params.get("id", 0))
+		if channel not in self._input_state:
+			return None
+		mode = self.input_modes[channel]
+		st = self._input_state[channel]
+		cfg = {"id": channel, "name": None, "type": mode, "enable": st["enable"]}
+		if mode in ("switch", "button", "analog"):
+			cfg["invert"] = st["invert"]
+		if mode == "analog":
+			cfg["report_thr"] = 5.0
+			cfg["range_map"] = None
+		return cfg
+
+	def input_set_config(self, params):
+		channel = int(params.get("id", 0))
+		if channel not in self._input_state:
+			return None
+		cfg = params.get("config", {}) or {}
+		if "name" in cfg:
+			pass
+		for field in ("enable", "invert"):
+			if field in cfg:
+				self._input_state[channel][field] = bool(cfg[field])
+		return {"restart_required": False}
+
+	def input_trigger(self, params):
+		channel = int(params.get("id", 0))
+		if channel not in self._input_state:
+			return None
+		event = params.get("event_type", "single_push")
+		if event not in ("btn_down", "btn_up", "single_push", "double_push", "triple_push", "long_push"):
+			return None
+		self._emit_event(f"input:{channel}", event)
+		return {}
+
+	def input_reset_counters(self, params):
+		channel = int(params.get("id", 0))
+		if channel not in self._input_state or self.input_modes[channel] != "count":
+			return None
+		self._input_state[channel]["counts"] = 0
+		return {"counts": {"total": 0}}
+
+	# Test hook, not a real Shelly method: drive an input's value, enable flag or error list.
+	def mock_set_input(self, params):
+		channel = int(params.get("id", 0))
+		if channel not in self._input_state:
+			return None
+		st = self._input_state[channel]
+		for field in ("state", "percent", "counts", "freq", "enable", "invert"):
+			if field in params:
+				st[field] = params[field]
+		if "errors" in params:
+			st["errors"] = list(params["errors"] or [])
+		try:
+			asyncio.get_running_loop().create_task(self.notify_full_status())
+		except RuntimeError:
+			pass
+		return self.input_get_status({"id": channel})
 
 	def smoke_get_status(self, params):
 		channel = int(params.get("id", 0))
@@ -594,6 +695,11 @@ class MockShellyDevice:
 			"RGBCCT.GetConfig",
 			"RGBCCT.SetConfig",
 			"RGBCCT.Set",
+			"Input.GetStatus",
+			"Input.GetConfig",
+			"Input.SetConfig",
+			"Input.Trigger",
+			"Input.ResetCounters",
 			"Smoke.GetStatus",
 			"Smoke.GetConfig",
 			"Smoke.SetConfig",
@@ -771,6 +877,24 @@ async def handle_rpc(device, frame, *, verbose=False):
 			resp = _json_error(str(e), request_id, code=-103)
 		resp["src"] = f"shelly-{device.mac}"
 		return resp
+	if method == "Input.GetStatus":
+		return _json_response(device.input_get_status(params), request_id)
+
+	if method == "Input.GetConfig":
+		return _json_response(device.input_get_config(params), request_id)
+
+	if method == "Input.SetConfig":
+		return _json_response(device.input_set_config(params), request_id)
+
+	if method == "Input.Trigger":
+		return _json_response(device.input_trigger(params), request_id)
+
+	if method == "Input.ResetCounters":
+		return _json_response(device.input_reset_counters(params), request_id)
+
+	if method == "Mock.SetInput":
+		return _json_response(device.mock_set_input(params), request_id)
+
 	if method == "Smoke.GetStatus":
 		resp = _json_response(device.smoke_get_status(params), request_id)
 		resp["src"] = f"shelly-{device.mac}"
@@ -998,6 +1122,8 @@ def parse_args():
 	parser.add_argument("--humidity-ids", default="", help="Comma-separated Humidity component ids, e.g. 100 for a DHT22 on a Sensor Add-on")
 	parser.add_argument("--devicepower", action="store_true", help="Add a DevicePower component (battery-powered device)")
 	parser.add_argument("--notify-interval", type=float, default=5)
+	parser.add_argument("--input-modes", default="",
+		help="comma separated Input types in id order, e.g. switch,analog,count")
 	parser.add_argument("--verbose", action="store_true")
 	return parser.parse_args()
 
@@ -1028,6 +1154,7 @@ async def main():
 		temperature_ids=[int(i) for i in args.temperature_ids.split(",") if i],
 		humidity_ids=[int(i) for i in args.humidity_ids.split(",") if i],
 		devicepower=args.devicepower,
+		input_modes=[m for m in args.input_modes.split(",") if m],
 	)
 
 	app = web.Application()
