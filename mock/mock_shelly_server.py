@@ -29,11 +29,13 @@ class MockShellyDevice:
 		light_channels=0,
 		rgb=False,
 		cct=False,
+		firmware_version="1.0.0",
 	):
 		self.name = device_name
 		self.channel_name = channel_name
 		self.model = model
 		self.app = app
+		self.firmware_version = firmware_version
 		self.mac = mac.lower()
 		self.switch_channels = switch_channels
 		self.voltage = float(voltage)
@@ -114,7 +116,7 @@ class MockShellyDevice:
 			"app": self.app,
 			"gen": 2,
 			"fw_id": "20240101_1234",
-			"ver": "1.0.0",
+			"ver": self.firmware_version,
 			"auth": False,
 			"auth_en": False,
 			"auth_domain": self.device_id,
@@ -129,7 +131,7 @@ class MockShellyDevice:
 			"app": self.app,
 			"gen": 2,
 			"fw_id": "20240101_1234",
-			"ver": "1.0.0",
+			"ver": self.firmware_version,
 			"auth_en": False,
 			"auth_domain": self.device_id,
 			"profile": "switch",
@@ -866,6 +868,7 @@ def parse_args():
 	parser.add_argument("--rgb", action="store_true")
 	parser.add_argument("--cct", action="store_true")
 	parser.add_argument("--notify-interval", type=float, default=5)
+	parser.add_argument("--firmware-version", default="1.0.0")
 	parser.add_argument("--verbose", action="store_true")
 	return parser.parse_args()
 
@@ -893,6 +896,7 @@ async def main():
 		light_channels=args.light_channels,
 		rgb=args.rgb,
 		cct=args.cct,
+		firmware_version=args.firmware_version,
 	)
 
 	app = web.Application()
