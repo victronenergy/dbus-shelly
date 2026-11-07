@@ -1024,7 +1024,28 @@ class ShellyManager(object):
 			# while the device is confirmed awake, instead of requiring a manual GUI toggle at some later,
 			# possibly-asleep moment.
 			default_enabled = 1 if ch_type == 'digitalinput' else 0
-			await self.settings.add_settings(Setting(f'/Settings/Devices/shelly_{serial}/{i + 1}/Enabled', default_enabled, alias=f"enabled_{serial}_{i}"))
+			await self.settings.add_settings(
+				Setting(f'/Settings/Devices/shelly_{serial}/{i + 1}/Enabled', default_enabled, alias=f"enabled_{serial}_{i}"),
+				# Remembers which channel type the Enabled next to it was last agreed for, so a
+				# device that comes back with a different one can be told apart from a device
+				# that comes back unchanged. The dbus /Devices/<serial>/<n>/Type item cannot be
+				# used for this: it is invalidated when the device is removed. Empty means this
+				# index has not been set up before.
+				Setting(f'/Settings/Devices/shelly_{serial}/{i + 1}/Type', "", alias=f"chtype_{serial}_{i}"),
+			)
+
+			# Because Enabled is keyed by index and not by type, a device that comes back with a
+			# different component at the same index (two switches replaced by a single EM1 meter)
+			# would inherit the old channel's Enabled and silently start a channel the user never
+			# enabled. Fall back to the default for the new type instead.
+			stored_type = self.settings.get_value(self.settings.alias(f"chtype_{serial}_{i}"))
+			if stored_type and stored_type != ch_type:
+				logger.info("Channel %d of shelly device %s changed from %s to %s, resetting Enabled to %d",
+					i + 1, serial, stored_type, ch_type, default_enabled)
+				await self.settings.set_value(self.settings.alias(f"enabled_{serial}_{i}"), default_enabled)
+			if stored_type != ch_type:
+				await self.settings.set_value(self.settings.alias(f"chtype_{serial}_{i}"), ch_type)
+
 			enabled = self.settings.get_value(self.settings.alias(f"enabled_{serial}_{i}"))
 
 			if self.service.get_item(f'/Devices/{serial}/{i + 1}/Enabled') is None:
@@ -1043,6 +1064,23 @@ class ShellyManager(object):
 			if enabled:
 				enabled_item = self.service.get_item(f'/Devices/{serial}/{i + 1}/Enabled')
 				await self._on_enabled_changed(serial, i, enabled_item, enabled)
+
+		# A device can also come back with fewer channels than it had. The indices it no longer
+		# uses keep their stored Enabled, which would start a channel unasked as soon as the
+		# device grows back to that many channels. Channel indices are contiguous, so stop at
+		# the first index that was never set up.
+		orphan = len(channel_info)
+		while True:
+			await self.settings.add_settings(
+				Setting(f'/Settings/Devices/shelly_{serial}/{orphan + 1}/Enabled', 0, alias=f"enabled_{serial}_{orphan}"),
+				Setting(f'/Settings/Devices/shelly_{serial}/{orphan + 1}/Type', "", alias=f"chtype_{serial}_{orphan}"),
+			)
+			if not self.settings.get_value(self.settings.alias(f"chtype_{serial}_{orphan}")):
+				break
+			logger.info("Channel %d of shelly device %s is gone, clearing its Enabled setting", orphan + 1, serial)
+			await self.settings.set_value(self.settings.alias(f"enabled_{serial}_{orphan}"), 0)
+			await self.settings.set_value(self.settings.alias(f"chtype_{serial}_{orphan}"), "")
+			orphan += 1
 
 	async def _on_enabled_changed_from_dbus(self, serial, channel, item, value):
 		# A channel can only be enabled by the user while the device is reachable.
