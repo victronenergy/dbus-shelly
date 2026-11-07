@@ -256,8 +256,6 @@ def test_channel_count_change_within_reconnect_loop(stack):
 	stack.wait_for(lambda: stack.device(CH_COUNT, "2/Type") is None, "removed channel gone from /Devices")
 
 
-@pytest.mark.xfail(strict=True, reason="discovery.py _add_device reuses the old Enabled=1 setting of channel 1 "
-	"for the new em1 channel and starts it, instead of disabling the channels of the changed device")
 def test_capability_change_while_offline(stack):
 	# Two switches become a single EM1 meter after the driver gave up reconnecting.
 	enable_all(stack, CAP_OFFLINE, 2)
