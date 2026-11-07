@@ -46,9 +46,9 @@ class ShellyConnectionError(Exception):
 
 class ShellyChannel(object):
 	@classmethod
-	async def create(cls, bus_type, serial, channel_type_id, server, productid=0x0000, productName=None, shellyModel=None, channel_ids=None):
+	async def create(cls, bus_type, serial, channel_type_id, server, productid=0x0000, productName=None, shellyModel=None, channel_ids=None, firmwareVersion=None):
 		bus = await MessageBus(bus_type=bus_type).connect()
-		c = cls(bus_type, bus, productid, serial, channel_type_id, server, productName, shellyModel, channel_ids)
+		c = cls(bus_type, bus, productid, serial, channel_type_id, server, productName, shellyModel, channel_ids, firmwareVersion)
 		c.service = Service(bus, None)
 		c.settings = await wait_for_settings(bus, itemsChanged=c.itemsChanged)
 
@@ -65,7 +65,7 @@ class ShellyChannel(object):
 		await c.ainit()
 		return c
 
-	def __init__(self, bus_type, bus, productid, serial, channel_type_id, connection, productName, shellyModel=None, channel_ids=None):
+	def __init__(self, bus_type, bus, productid, serial, channel_type_id, connection, productName, shellyModel=None, channel_ids=None, firmwareVersion=None):
 		self.service = None
 		self.settings = None
 		self.channel_custom_name = ""
@@ -80,6 +80,8 @@ class ShellyChannel(object):
 		self.connection = connection
 		self.productName = productName
 		self.shellyModel = shellyModel
+		self.firmwareVersion = firmwareVersion
+		self._has_firmware_item = False
 
 	def itemsChanged(self, service, values):
 		# Check if the device instance is changed
@@ -104,6 +106,12 @@ class ShellyChannel(object):
 		self.service.add_item(TextItem('/ProductName', self.productName))
 		self.service.add_item(IntegerItem('/Connected', 1))
 		self.service.add_item(TextItem('/Serial', self._serial))
+		# Shelly.GetDeviceInfo reports both 'ver' (e.g. "1.4.4") and 'fw_id' (the build
+		# string, e.g. "20241011-114455/1.4.4-g6d2a586"). 'ver' is what the device's own
+		# web UI and the Shelly release notes show, so that is what goes on dbus here.
+		if self.firmwareVersion:
+			self.service.add_item(TextItem('/FirmwareVersion', self.firmwareVersion))
+			self._has_firmware_item = True
 		# /State has a spec-defined, type-specific meaning on digitalinput services
 		# (owned by ShellyHandler_smoke / ShellyHandler_flood); elsewhere it's just this
 		# generic "connected" placeholder. The temperature service (also used by humidity channels) doesn't define /State.
@@ -123,6 +131,16 @@ class ShellyChannel(object):
 	async def stop(self):
 		await self.service.close()
 		self.service = None
+
+	# A device that was updated over the air comes back on the same channel object, so
+	# ainit() does not run again and the reported version would stay at the pre-update one.
+	def set_firmware_version(self, version):
+		if not version or version == self.firmwareVersion:
+			return
+		self.firmwareVersion = version
+		if self._has_firmware_item and self.service is not None:
+			with self.service as s:
+				s['/FirmwareVersion'] = version
 
 	# Reinitialize the callbacks without restarting the service.
 	async def reinit(self, rpc_callback, restart):
@@ -448,6 +466,10 @@ class ShellyDevice(object):
 				with channel_obj.service as s:
 					s['/Connected'] = 1
 
+			# The reconnect re-read Shelly.GetDeviceInfo, so pick up a firmware update.
+			if self._shelly_info:
+				channel_obj.set_firmware_version(self._shelly_info.get('ver'))
+
 			# No need to wait for the handlers refresh task.
 			for handler in set(handlers.values()):
 				task = asyncio.create_task(handler.refresh())
@@ -638,6 +660,7 @@ class ShellyDevice(object):
 					server=self._shelly_device.ip_address or self._server,
 					shellyModel=self._shelly_info.get('model', 'Unknown'),
 					channel_ids=channel_ids,
+					firmwareVersion=self._shelly_info.get('ver'),
 				)
 
 				# Create handlers for the switching OR EM capabilities, plus the secondary handlers
