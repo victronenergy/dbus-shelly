@@ -89,7 +89,7 @@ Each RPC component maps to a handler class through a decorator:
 class ShellyHandler_switch(ShellyHandler_switch_base): ...
 ```
 
-- `kind` decides which channel type the handler serves: `switch`, `em1`, `em`, `input`, `temperature`, or `humidity`. A `humidity` channel is registered as a `com.victronenergy.temperature` service.
+- `kind` decides which channel type the handler serves: `switch`, `em1`, `em`, `input`, `temperature`, or `humidity`. A `humidity` channel is registered as a `com.victronenergy.temperature` service. `temperature` and `humidity` channels are listed with `/Devices/<serial>/<n>/Type` set to `input`.
 - `register_secondary_handler` registers a handler that is added to channels of another kind with a matching component id. Components with only a secondary handler, such as `DevicePower` and `Sys`, never get a channel of their own and don't make a device "supported". A functional component can also have a secondary handler: it then gets a channel of its own only when its id is not used by an earlier channel. Otherwise the secondary handler is added to that channel. `Temperature` does this: a Sensor Add-on's `temperature:100` gets a temperature service, `temperature:0` next to `switch:0` only adds `/Temperature` to the switch channel. `Humidity` works the same way and comes after `Temperature`, so `humidity:100` next to `temperature:100` adds `/Humidity` to the temperature channel.
 - `aggregate=True` collapses every id of that component into a single channel. `Voltmeter` does this.
 - A handler registered for several components (e.g. `EM1` + `EM1Data`) is instantiated once per channel. `_check_rpc_type_supported` removes the components the device doesn't actually expose.

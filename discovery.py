@@ -1037,8 +1037,10 @@ class ShellyManager(object):
 			if self.service.get_item(f'/Devices/{serial}/{i + 1}/Name') is None:
 				self.service.add_item(TextItem(f'/Devices/{serial}/{i + 1}/Name', value='', writeable=False))
 
+			# Temperature and humidity channels are input channels too. Their kinds are only kept apart internally,
+			# to pick the right handler and service class.
 			with self.service as s:
-				s[f'/Devices/{serial}/{i + 1}/Type'] = ch_type
+				s[f'/Devices/{serial}/{i + 1}/Type'] = 'input' if ch_type in ('temperature', 'humidity') else ch_type
 				s[f'/Devices/{serial}/{i + 1}/Enabled'] = enabled
 				s[f'/Devices/{serial}/{i + 1}/Name'] = ch_name
 

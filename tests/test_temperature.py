@@ -44,8 +44,8 @@ def test_addon_discovered(stack):
 	stack.wait_reachable(ADDON)
 	assert stack.device(ADDON, "Supported") == 1
 	assert stack.device(ADDON, "1/Type") == "switch"
-	assert stack.device(ADDON, "2/Type") == "temperature"
-	assert stack.device(ADDON, "3/Type") == "temperature"
+	assert stack.device(ADDON, "2/Type") == "input"
+	assert stack.device(ADDON, "3/Type") == "input"
 	assert not has_channel(stack, ADDON, 4)
 	# Not a sleepy device, so the temperature channels are not enabled by default.
 	assert stack.enabled_setting(ADDON, 2) == 0
@@ -130,7 +130,7 @@ def test_battery_device_enabled_by_default(stack):
 	# so its temperature channel is enabled by default and gets the battery paths.
 	stack.wait_reachable(BATTERY)
 	assert stack.device(BATTERY, "Supported") == 1
-	assert stack.device(BATTERY, "1/Type") == "temperature"
+	assert stack.device(BATTERY, "1/Type") == "input"
 	name = service_name("temperature", BATTERY)
 	items = stack.wait_service(name)
 	assert stack.enabled_setting(BATTERY, 1) == 1
