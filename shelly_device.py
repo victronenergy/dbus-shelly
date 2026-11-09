@@ -51,10 +51,12 @@ class ShellyChannel(object):
 
 		settings_base = f'/Settings/Devices/shelly_{serial}_{c._channel_id}/'
 		# The class prefix only matters as an initial default: EM-capable channels immediately
-		# overwrite it with the selected role (see Shelly_EM_base.init_em), but a digitalinput
+		# overwrite it with the selected role (see Shelly_EM_base.init_em), but an input
 		# channel has no such role to pick, so its class needs to already be correct here.
+		# Input channels are registered as com.victronenergy.digitalinput services.
+		device_class = 'digitalinput' if c._ch_type == 'input' else c._ch_type
 		await c.settings.add_settings(
-			Setting(settings_base + 'ClassAndVrmInstance', f'{c._ch_type}:50', alias=f'instance_{c._serial}_{c._channel_id}')
+			Setting(settings_base + 'ClassAndVrmInstance', f'{device_class}:50', alias=f'instance_{c._serial}_{c._channel_id}')
 		)
 
 		await c.ainit()
@@ -102,7 +104,7 @@ class ShellyChannel(object):
 		# /State has a spec-defined, type-specific meaning on digitalinput services
 		# (owned by ShellyHandler_smoke / ShellyHandler_flood); elsewhere it's just this
 		# generic "connected" placeholder.
-		if self._ch_type != 'digitalinput':
+		if self._ch_type != 'input':
 			self.service.add_item(IntegerItem('/State', 0x100)) # Connected
 		self.service.add_item(TextItem('/ShellyModel', self.shellyModel))
 
@@ -186,7 +188,7 @@ class ShellyDevice(object):
 	def is_sleepy(self):
 		# Battery-powered devices (e.g. a smoke detector or flood sensor) spend most of their time in deep sleep
 		# with WiFi off, so losing the connection is expected and not a sign of a real failure.
-		return any(ch.get('type') == 'digitalinput' for ch in self._channel_info.values())
+		return any(ch.get('type') == 'input' for ch in self._channel_info.values())
 
 	@property
 	def serial(self):
@@ -606,7 +608,7 @@ class ShellyDevice(object):
 			if ch_type == 'switch':
 				name = "Shelly Switch"
 				id = PRODUCT_ID_SHELLY_SWITCH
-			elif ch_type == 'digitalinput':
+			elif ch_type == 'input':
 				# A device only ever exposes one of these RPC components, so this tells them apart.
 				if 'flood' in self._capabilities:
 					name = "Shelly Flood"

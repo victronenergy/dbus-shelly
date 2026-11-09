@@ -31,7 +31,7 @@ DEVICES = {
 	DIMMER: (["--light-channels", "1"], ["switch"]),
 	RGB: (["--rgb"], ["switch"]),
 	CCT: (["--cct"], ["switch"]),
-	FLOOD: (["--flood"], ["digitalinput"]),
+	FLOOD: (["--flood"], ["input"]),
 	RGBCCT: (["--rgbcct-channels", "1"], ["switch"]),
 }
 
