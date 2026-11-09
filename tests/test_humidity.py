@@ -43,7 +43,7 @@ def enable(stack, serial, index):
 def test_dht22_is_part_of_temperature_channel(stack):
 	stack.wait_reachable(DHT22)
 	assert stack.device(DHT22, "1/Type") == "switch"
-	assert stack.device(DHT22, "2/Type") == "temperature"
+	assert stack.device(DHT22, "2/Type") == "input"
 	assert not has_channel(stack, DHT22, 3)
 	enable(stack, DHT22, 2)
 	items = stack.wait_service(service_name("temperature", DHT22, 100))
@@ -76,7 +76,7 @@ def test_standalone_discovered(stack):
 	stack.wait_reachable(STANDALONE)
 	assert stack.device(STANDALONE, "Supported") == 1
 	assert stack.device(STANDALONE, "1/Type") == "switch"
-	assert stack.device(STANDALONE, "2/Type") == "humidity"
+	assert stack.device(STANDALONE, "2/Type") == "input"
 	assert not has_channel(stack, STANDALONE, 3)
 	# Not a sleepy device, so the humidity channel is not enabled by default.
 	assert stack.enabled_setting(STANDALONE, 2) == 0
@@ -140,7 +140,7 @@ def test_battery_device_enabled_by_default(stack):
 	# temperature channel is enabled by default and gets the humidity and battery paths.
 	stack.wait_reachable(BATTERY)
 	assert stack.device(BATTERY, "Supported") == 1
-	assert stack.device(BATTERY, "1/Type") == "temperature"
+	assert stack.device(BATTERY, "1/Type") == "input"
 	assert not has_channel(stack, BATTERY, 2)
 	items = stack.wait_service(service_name("temperature", BATTERY))
 	assert stack.enabled_setting(BATTERY, 1) == 1
