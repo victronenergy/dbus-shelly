@@ -469,6 +469,12 @@ class ShellyConnectionManager:
 					# Unsupported device -> stop retrying and mark as unsupported
 					elif result.status == ProbeStatus.UNSUPPORTED:
 						ep_state.deviceInfo = result.info # Store device info so we can list the unsupported device details
+						# An unsupported device answered RPC, so its mac is known even when the
+						# endpoint was added as a bare IP. The inventory is keyed by serial, so
+						# without promoting it here the device is not listed at all and the
+						# details stored just above never reach dbus.
+						if ep_state.endpoint.serial is None and result.info is not None:
+							promote_serial = True
 						ep_state.stop_connect()
 						ep_state.endpoint.supported = False
 						logger.info("Shelly device %s at %s is unsupported, will not retry", ep_state.endpoint.serial, ep_state.endpoint.host)
