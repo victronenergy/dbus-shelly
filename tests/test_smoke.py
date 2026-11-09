@@ -43,7 +43,7 @@ def test_manual_ip_discovery(stack):
 
 	assert stack.device(SWITCH_SERIAL, "1/Type") == "switch"
 	assert stack.device(SWITCH_SERIAL, "1/Enabled") == 0
-	assert stack.device(SMOKE_SERIAL, "1/Type") == "digitalinput"
+	assert stack.device(SMOKE_SERIAL, "1/Type") == "input"
 	assert stack.setting("/Settings/Shelly/IpAddresses") == ips
 
 

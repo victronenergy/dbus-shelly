@@ -22,7 +22,7 @@ When in doubt:
 
 ## What this is
 
-A Venus OS (Victron GX) driver that exposes Gen2+ Shelly devices on D-Bus. It discovers Shellys (mDNS and manually entered IPs), lists them under `com.victronenergy.shelly/Devices/`, and for each channel the user enables it registers a dedicated service (`acload`/`pvinverter`/`genset`/`heatpump`, `switch`, or `digitalinput`). The README holds the RPC-component → service-type mapping and the list of tested devices. Update both when you add support for a device or component.
+A Venus OS (Victron GX) driver that exposes Gen2+ Shelly devices on D-Bus. It discovers Shellys (mDNS and manually entered IPs), lists them under `com.victronenergy.shelly/Devices/`, and for each channel the user enables it registers a dedicated service (`acload`/`pvinverter`/`genset`/`heatpump`, `switch`, or `digitalinput` for `input` channels). The README holds the RPC-component → service-type mapping and the list of tested devices. Update both when you add support for a device or component.
 
 ## Commands
 
@@ -79,7 +79,7 @@ There are two independent paths, both started from `dbus_shelly.py`:
 - `ShellyDevice` wraps one `aioshelly` `RpcDevice`. It gets capabilities from `Shelly.GetComponents` and builds `channel_info` from them. It also handles reconnection: it pings a few times before a full restart and emits `ShellyEvent`s on a queue. `_device_lock` guards lifecycle operations. Channel init is awaited *outside* that lock so that a reconnect can call `start()` in the meantime.
 - Channel indices in `channel_info` are assigned in the order of `FUNCTIONAL_HANDLERS`, and settings are indexed by them. Add new kinds only at the end of that list.
 - `ShellyChannel` owns one D-Bus `Service` plus the localsettings connection. It is named `com.victronenergy.<type>.shelly_<serial>_<channel>`, and its settings live under `/Settings/Devices/shelly_<serial>_<channel>/`.
-- Sleepy (battery) devices are those with a `digitalinput` channel. While they are asleep, their service stays registered with `/Connected=0`, and they are not reconnect-looped aggressively.
+- Sleepy (battery) devices are those with an `input` channel. While they are asleep, their service stays registered with `/Connected=0`, and they are not reconnect-looped aggressively.
 
 ### Handler layer (`shelly_handlers.py`)
 
@@ -90,7 +90,7 @@ Each RPC component maps to a handler class through a decorator:
 class ShellyHandler_switch(ShellyHandler_switch_base): ...
 ```
 
-- `kind` decides which channel type the handler serves: `switch`, `em1`, `em`, `digitalinput`, or `generic`. Generic handlers such as `Temperature`, `DevicePower` and `Sys` attach to any channel, but they don't make a device "supported" on their own.
+- `kind` decides which channel type the handler serves: `switch`, `em1`, `em`, `input`, or `generic`. Generic handlers such as `Temperature`, `DevicePower` and `Sys` attach to any channel, but they don't make a device "supported" on their own.
 - `aggregate=True` collapses every id of that component into a single channel. `Voltmeter` does this.
 - A handler registered for several components (e.g. `EM1` + `EM1Data`) is instantiated once per channel. `_check_rpc_type_supported` removes the components the device doesn't actually expose.
 - Lifecycle: `ShellyHandler.create` → `ainit()`, which checks `GetStatus`, calls `handler_ainit()` to add D-Bus paths and settings, then calls `force_update()`. After that, `update(status_json, cap)` receives status notifications. `refresh()` runs after a short reconnect, and the `restart` callback does a full channel restart.

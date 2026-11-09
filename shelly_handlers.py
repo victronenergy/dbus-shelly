@@ -20,11 +20,11 @@ background_tasks = set()
 HANDLER_KIND_SWITCH = "switch"
 HANDLER_KIND_EM1 = "em1"
 HANDLER_KIND_EM = "em"
-HANDLER_KIND_DIGITALINPUT = "digitalinput"
+HANDLER_KIND_INPUT = "input"
 HANDLER_KIND_GENERIC = "generic"
 
 # Handler type generic is not included here because a channel which only has generic capabilities (or unsupported ones) should not be listed.
-FUNCTIONAL_HANDLERS = [HANDLER_KIND_SWITCH, HANDLER_KIND_EM1, HANDLER_KIND_EM, HANDLER_KIND_DIGITALINPUT]
+FUNCTIONAL_HANDLERS = [HANDLER_KIND_SWITCH, HANDLER_KIND_EM1, HANDLER_KIND_EM, HANDLER_KIND_INPUT]
 
 _HANDLER_REGISTRY = {}
 _CAPS_BY_KIND = {kind: [] for kind in FUNCTIONAL_HANDLERS}
@@ -725,7 +725,7 @@ class ShellyHandler_digitalinput_alarm_base(ShellyHandler_channel_config_mixin, 
 			item.set_local_value(1)
 
 
-@register_handler('Smoke', kind=HANDLER_KIND_DIGITALINPUT)
+@register_handler('Smoke', kind=HANDLER_KIND_INPUT)
 class ShellyHandler_smoke(ShellyHandler_digitalinput_alarm_base):
 	_digitalinput_type = 6  # Smoke alarm
 	_digitalinput_type_text = "Smoke alarm"
@@ -736,7 +736,7 @@ class ShellyHandler_smoke(ShellyHandler_digitalinput_alarm_base):
 # the closest existing match for water-intrusion detection. Unlike Smoke, the Flood RPC component
 # has no Mute call: muting only happens via the device's physical button and is merely reported
 # back through its status.
-@register_handler('Flood', kind=HANDLER_KIND_DIGITALINPUT)
+@register_handler('Flood', kind=HANDLER_KIND_INPUT)
 class ShellyHandler_flood(ShellyHandler_digitalinput_alarm_base):
 	_digitalinput_type = 4  # Bilge alarm
 	_digitalinput_type_text = "Bilge alarm"
