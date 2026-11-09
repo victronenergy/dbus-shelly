@@ -54,10 +54,10 @@ class ShellyChannel(object):
 
 		settings_base = f'/Settings/Devices/shelly_{serial}_{c._channel_id}/'
 		# The class prefix only matters as an initial default: EM-capable channels immediately
-		# overwrite it with the selected role (see Shelly_EM_base.init_em), but an input
+		# overwrite it with the selected role (see Shelly_EM_base.init_em), but a digitalinput
 		# channel has no such role to pick, so its class needs to already be correct here.
-		# Input channels are registered as com.victronenergy.digitalinput services, humidity channels as temperature services.
-		device_class = {'input': 'digitalinput', 'humidity': 'temperature'}.get(c._ch_type, c._ch_type)
+		# A humidity channel is registered as a temperature service.
+		device_class = 'temperature' if c._ch_type == 'humidity' else c._ch_type
 		await c.settings.add_settings(
 			Setting(settings_base + 'ClassAndVrmInstance', f'{device_class}:50', alias=f'instance_{c._serial}_{c._channel_id}')
 		)
@@ -107,7 +107,7 @@ class ShellyChannel(object):
 		# /State has a spec-defined, type-specific meaning on digitalinput services
 		# (owned by ShellyHandler_smoke / ShellyHandler_flood); elsewhere it's just this
 		# generic "connected" placeholder. The temperature service (also used by humidity channels) doesn't define /State.
-		if self._ch_type not in ('input', 'temperature', 'humidity'):
+		if self._ch_type not in ('digitalinput', 'temperature', 'humidity'):
 			self.service.add_item(IntegerItem('/State', 0x100)) # Connected
 		self.service.add_item(TextItem('/ShellyModel', self.shellyModel))
 
@@ -620,7 +620,7 @@ class ShellyDevice(object):
 			if ch_type == 'switch':
 				name = "Shelly Switch"
 				id = PRODUCT_ID_SHELLY_SWITCH
-			elif ch_type in ('input', 'temperature', 'humidity'):
+			elif shelly_handlers.get_channel_type(ch_type) == shelly_handlers.CHANNEL_TYPE_INPUT:
 				name = "Shelly input device"
 				id = PRODUCT_ID_INPUT
 			else:

@@ -21,7 +21,7 @@ When in doubt:
 
 ## What this is
 
-A Venus OS (Victron GX) driver that exposes Gen2+ Shelly devices on D-Bus. It discovers Shellys (mDNS and manually entered IPs), lists them under `com.victronenergy.shelly/Devices/`, and for each channel the user enables it registers a dedicated service (`acload`/`pvinverter`/`genset`/`heatpump`, `switch`, or `digitalinput` for `input` channels). The README holds the RPC-component → service-type mapping and the list of tested devices. Update both when you add support for a device or component.
+A Venus OS (Victron GX) driver that exposes Gen2+ Shelly devices on D-Bus. It discovers Shellys (mDNS and manually entered IPs), lists them under `com.victronenergy.shelly/Devices/`, and for each channel the user enables it registers a dedicated service (`acload`/`pvinverter`/`genset`/`heatpump`, `switch`, `digitalinput`, or `temperature`). The README holds the RPC-component → service-type mapping and the list of tested devices. Update both when you add support for a device or component.
 
 ## Commands
 
@@ -89,7 +89,7 @@ Each RPC component maps to a handler class through a decorator:
 class ShellyHandler_switch(ShellyHandler_switch_base): ...
 ```
 
-- `kind` decides which channel type the handler serves: `switch`, `em1`, `em`, `input`, `temperature`, or `humidity`. A `humidity` channel is registered as a `com.victronenergy.temperature` service. `temperature` and `humidity` channels are listed with `/Devices/<serial>/<n>/Type` set to `input`.
+- `kind` decides which channel the handler serves: `switch`, `em1`, `em`, `digitalinput`, `temperature`, or `humidity`. It is internal: it decides the handler and the service class. A `humidity` channel is registered as a `com.victronenergy.temperature` service. `get_channel_type` maps a kind to the channel type shown in `/Devices/<serial>/<n>/Type`: `digitalinput`, `temperature` and `humidity` channels are shown as `input`, the other kinds as is.
 - `register_secondary_handler` registers a handler that is added to channels of another kind with a matching component id. Components with only a secondary handler, such as `DevicePower` and `Sys`, never get a channel of their own and don't make a device "supported". A functional component can also have a secondary handler: it then gets a channel of its own only when its id is not used by an earlier channel. Otherwise the secondary handler is added to that channel. `Temperature` does this: a Sensor Add-on's `temperature:100` gets a temperature service, `temperature:0` next to `switch:0` only adds `/Temperature` to the switch channel. `Humidity` works the same way and comes after `Temperature`, so `humidity:100` next to `temperature:100` adds `/Humidity` to the temperature channel.
 - `aggregate=True` collapses every id of that component into a single channel. `Voltmeter` does this.
 - A handler registered for several components (e.g. `EM1` + `EM1Data`) is instantiated once per channel. `_check_rpc_type_supported` removes the components the device doesn't actually expose.

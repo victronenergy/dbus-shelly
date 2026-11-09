@@ -30,6 +30,7 @@ from zeroconf.asyncio import (
 )
 
 from shelly_device import ShellyDevice, ShellyEvent
+from shelly_handlers import get_channel_type
 from utils import logger, wait_for_settings
 
 background_tasks = set()
@@ -1025,7 +1026,7 @@ class ShellyManager(object):
 			# possibly-asleep moment.
 			# The same goes for temperature and humidity channels of sleepy devices. Those channels of other devices
 			# default to disabled, so existing installations don't suddenly get a service for every probe.
-			default_enabled = 1 if ch_type == 'input' or (ch_type in ('temperature', 'humidity') and state.endpoint.sleepy) else 0
+			default_enabled = 1 if ch_type == 'digitalinput' or (ch_type in ('temperature', 'humidity') and state.endpoint.sleepy) else 0
 			await self.settings.add_settings(Setting(f'/Settings/Devices/shelly_{serial}/{i + 1}/Enabled', default_enabled, alias=f"enabled_{serial}_{i}"))
 			enabled = self.settings.get_value(self.settings.alias(f"enabled_{serial}_{i}"))
 
@@ -1037,10 +1038,8 @@ class ShellyManager(object):
 			if self.service.get_item(f'/Devices/{serial}/{i + 1}/Name') is None:
 				self.service.add_item(TextItem(f'/Devices/{serial}/{i + 1}/Name', value='', writeable=False))
 
-			# Temperature and humidity channels are input channels too. Their kinds are only kept apart internally,
-			# to pick the right handler and service class.
 			with self.service as s:
-				s[f'/Devices/{serial}/{i + 1}/Type'] = 'input' if ch_type in ('temperature', 'humidity') else ch_type
+				s[f'/Devices/{serial}/{i + 1}/Type'] = get_channel_type(ch_type)
 				s[f'/Devices/{serial}/{i + 1}/Enabled'] = enabled
 				s[f'/Devices/{serial}/{i + 1}/Name'] = ch_name
 

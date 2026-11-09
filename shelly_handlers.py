@@ -20,13 +20,22 @@ background_tasks = set()
 HANDLER_KIND_SWITCH = "switch"
 HANDLER_KIND_EM1 = "em1"
 HANDLER_KIND_EM = "em"
-HANDLER_KIND_INPUT = "input"
+HANDLER_KIND_DIGITALINPUT = "digitalinput"
 HANDLER_KIND_TEMPERATURE = "temperature"
 HANDLER_KIND_HUMIDITY = "humidity"
 
 # Components with only a secondary handler have no kind, because a channel which only has those (or unsupported ones) should not be listed.
 # Kinds with a secondary handler (see register_secondary_handler) must come after the kinds whose channels it can be added to.
-FUNCTIONAL_HANDLERS = [HANDLER_KIND_SWITCH, HANDLER_KIND_EM1, HANDLER_KIND_EM, HANDLER_KIND_INPUT, HANDLER_KIND_TEMPERATURE, HANDLER_KIND_HUMIDITY]
+FUNCTIONAL_HANDLERS = [HANDLER_KIND_SWITCH, HANDLER_KIND_EM1, HANDLER_KIND_EM, HANDLER_KIND_DIGITALINPUT, HANDLER_KIND_TEMPERATURE, HANDLER_KIND_HUMIDITY]
+
+# The channel type shown in com.victronenergy.shelly /Devices/<serial>/<n>/Type. Kinds are internal; they decide the
+# handler and the service class. Several kinds can share a channel type. Kinds not listed here are shown as is.
+CHANNEL_TYPE_INPUT = "input"
+_CHANNEL_TYPE_BY_KIND = {
+	HANDLER_KIND_DIGITALINPUT: CHANNEL_TYPE_INPUT,
+	HANDLER_KIND_TEMPERATURE: CHANNEL_TYPE_INPUT,
+	HANDLER_KIND_HUMIDITY: CHANNEL_TYPE_INPUT,
+}
 
 _HANDLER_REGISTRY = {}
 _CAPS_BY_KIND = {kind: [] for kind in FUNCTIONAL_HANDLERS}
@@ -76,6 +85,9 @@ def get_handler_class(capability, kind):
 	if info["kind"] == kind:
 		return info["cls"]
 	return info["secondary_cls"]
+
+def get_channel_type(kind):
+	return _CHANNEL_TYPE_BY_KIND.get(kind, kind)
 
 def get_handler_kind(capability):
 	info = _HANDLER_REGISTRY.get(capability)
@@ -738,7 +750,7 @@ class ShellyHandler_digitalinput_alarm_base(ShellyHandler_channel_config_mixin, 
 			item.set_local_value(1)
 
 
-@register_handler('Smoke', kind=HANDLER_KIND_INPUT)
+@register_handler('Smoke', kind=HANDLER_KIND_DIGITALINPUT)
 class ShellyHandler_smoke(ShellyHandler_digitalinput_alarm_base):
 	_digitalinput_type = 6  # Smoke alarm
 	_digitalinput_type_text = "Smoke alarm"
@@ -749,7 +761,7 @@ class ShellyHandler_smoke(ShellyHandler_digitalinput_alarm_base):
 # the closest existing match for water-intrusion detection. Unlike Smoke, the Flood RPC component
 # has no Mute call: muting only happens via the device's physical button and is merely reported
 # back through its status.
-@register_handler('Flood', kind=HANDLER_KIND_INPUT)
+@register_handler('Flood', kind=HANDLER_KIND_DIGITALINPUT)
 class ShellyHandler_flood(ShellyHandler_digitalinput_alarm_base):
 	_digitalinput_type = 4  # Bilge alarm
 	_digitalinput_type_text = "Bilge alarm"
