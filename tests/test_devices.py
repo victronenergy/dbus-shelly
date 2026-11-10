@@ -208,8 +208,6 @@ def test_dimmer(stack):
 	stack.wait_for(lambda: mock.rpc("Light.GetStatus", id=0)["output"] is False, "mock off")
 
 
-@pytest.mark.xfail(strict=True, reason="shelly_handlers.py:789 handler_ainit -> _set_channel_type -> "
-	"on_channel_type_changed(RGB) sends RGB.Set with the still empty LightControls, blanking the light")
 def test_rgb_enable_keeps_device_state(stack):
 	enable(stack, RGB)
 	stack.wait_service(service_name("switch", RGB))

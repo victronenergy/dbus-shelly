@@ -1276,6 +1276,12 @@ class ShellyHandler_RGBW(ShellyHandler_switch_base, ThrottledUpdaterMixin):
 			pass
 
 	def on_channel_type_changed(self, channel, value):
+		# On init, the state of the device is leading, so only push it on a user change.
+		# handler_ainit calls _set_channel_type before the first force_update, so LightControls
+		# still holds its initial [0, 0, 0, 0, 0] here: pushing that would set the light to
+		# black at 0% brightness, switching off a lamp that was on.
+		if not self._init_done or value == self._type:
+			return
 		if value == OutputType.RGB:
 			# Set white channel to 0 when switching to RGB
 			item = self.service.get_item(f'/SwitchableOutput/{self._channel_id}/LightControls')
