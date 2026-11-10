@@ -22,6 +22,23 @@ class OutputType(IntEnum):
 	CCT = 12
 	TYPE_MAX = RGBW = 13
 
+# Venus generic input API, see https://github.com/victronenergy/venus/wiki/dbus#generic-input-api
+class InputType(IntEnum):
+	DISCRETE = 0		# discrete value indicator (0/1, but also more integers)
+	VALUE_NO_RANGE = 1	# value indicator without range
+	VALUE_WITH_RANGE = 2	# value indicator with range
+	TEMPERATURE = 3		# temperature indicator (with range)
+
+class InputStatus(IntEnum):
+	OK = 0x00
+	FAULT = 0x01
+	BATTERY_LOW = 0x02
+
+# /GenericInput/x/Event: bit 0 toggles with every new event, the other bits say what happened.
+# Only single tap is defined so far; double tap and swipe are reserved for future expansion.
+EVENT_TOGGLE_BIT = 0x01
+EVENT_SINGLE_TAP = 0x02
+
 class OutputFunction(IntEnum):
 	ALARM = 0
 	GENSET_START_STOP = 1

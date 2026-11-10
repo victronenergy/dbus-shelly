@@ -46,12 +46,18 @@ Since V2.00, dbus-shelly implements handlers for RPC components, which enables c
 | CCT                | *.switch                         | Switch type: CCT                                                                           |
 | RGBCCT             | *.switch                         | Switch type: RGB or CCT                                                                    |
 | CB                 | *.switch                         | Switch type: Toggle                                                                        |
+| Input              | *.switch                          | Read-only value on the [generic input API](https://github.com/victronenergy/venus/wiki/dbus#generic-input-api), on its own channel or on the channel with the same id. switch/analog/count show a value, button only reports events |
 | Smoke              | *.digitalinput                   | Smoke alarm. DevicePower (if present) adds battery info to the same service                |
 | Flood              | *.digitalinput                   | Bilge alarm (no dedicated flood type in Venus). DevicePower (if present) adds battery info |
 | Temperature        | *.temperature                    | Only when its id is not used by another channel (e.g. Sensor Add-on). Otherwise adds /Temperature to that channel's service. DevicePower (if present) adds battery info |
 | Humidity           | *.temperature                    | Only when its id is not used by another channel. Otherwise adds /Humidity to that channel's service (e.g. the temperature channel with the same id). DevicePower (if present) adds battery info |
 
 If a device exposes x instances of an RPC component listed above, then x channels of that type will show up in the integration menu.
+
+Like Temperature, the Input component prefers to join an existing channel: `input:0` shows up on
+the service of `switch:0` as `/GenericInput/0/`. An input whose id is not used by another channel
+gets a channel of its own, registered as a `*.switch` service and shown in the menu as an input,
+which is what makes an input-only device such as an i4 usable.
 
 # Tested devices
 
