@@ -22,6 +22,8 @@ RGB = "aabbccdd1005"
 CCT = "aabbccdd1006"
 FLOOD = "aabbccdd1007"
 RGBCCT = "aabbccdd1008"
+NO_RET = "aabbccdd1009"
+NO_RET_ZERO = "aabbccdd100a"
 
 DEVICES = {
 	# serial: (mock args, expected channel types)
@@ -33,6 +35,10 @@ DEVICES = {
 	CCT: (["--cct"], ["switch"]),
 	FLOOD: (["--flood"], ["input"]),
 	RGBCCT: (["--rgbcct-channels", "1"], ["switch"]),
+	# Like the Shelly Ogemray smart relay 25A: no returned energy counter at all.
+	NO_RET: (["--em1-channels", "1", "--no-ret-energy"], ["em1"]),
+	# Same, with a forward counter that is exactly 0.
+	NO_RET_ZERO: (["--em1-channels", "1", "--no-ret-energy", "--energy-wh", "0"], ["em1"]),
 }
 
 
@@ -103,6 +109,43 @@ def test_em_pvinverter_energy_swapped(stack):
 	stack.wait_service(acload)
 	stack.wait_value(acload, "/Ac/Energy/Forward", approx(3 * ENERGY_KWH))
 	assert stack.client.get_value(acload, "/Ac/Energy/Reverse") == approx(3 * RET_ENERGY_KWH)
+
+
+def test_em1_no_ret_energy(stack):
+	# A device without a returned energy counter counts energy in both directions on the forward counter.
+	enable(stack, NO_RET)
+	acload = service_name("acload", NO_RET)
+	stack.wait_service(acload)
+	stack.wait_value(acload, "/Ac/Energy/Forward", approx(ENERGY_KWH))
+	assert stack.client.get_value(acload, "/Ac/Energy/Reverse") == 0
+	assert stack.client.get_value(acload, "/Ac/L1/Energy/Forward") == approx(ENERGY_KWH)
+
+	# As a PV inverter, the forward counter is used as the produced energy.
+	pvinverter = service_name("pvinverter", NO_RET)
+	assert stack.client.set_value(acload, "/Role", "s", "pvinverter") == 0
+	stack.wait_service_gone(acload)
+	stack.wait_service(pvinverter)
+	stack.wait_value(pvinverter, "/Ac/Energy/Forward", approx(ENERGY_KWH))
+	items = stack.client.get_items(pvinverter)
+	assert items["/Ac/Energy/Reverse"] == 0
+	assert items["/Ac/L1/Energy/Forward"] == approx(ENERGY_KWH)
+	assert items["/Ac/L1/Energy/Reverse"] == 0
+
+
+def test_em1_no_ret_energy_zero(stack):
+	# A forward counter that is exactly 0 is not published, also when it is used for a PV inverter.
+	enable(stack, NO_RET_ZERO)
+	acload = service_name("acload", NO_RET_ZERO)
+	pvinverter = service_name("pvinverter", NO_RET_ZERO)
+	stack.wait_service(acload)
+	stack.wait_value(acload, "/Ac/Power", APOWER)
+	assert stack.client.get_value(acload, "/Ac/Energy/Forward") is None
+	assert stack.client.set_value(acload, "/Role", "s", "pvinverter") == 0
+	stack.wait_service_gone(acload)
+	stack.wait_service(pvinverter)
+	stack.wait_value(pvinverter, "/Ac/Power", APOWER)
+	stack.hold(lambda: stack.client.get_value(pvinverter, "/Ac/Energy/Forward") is None, "/Ac/Energy/Forward to stay unset", 1)
+	assert stack.client.get_value(pvinverter, "/Ac/Energy/Reverse") is None
 
 
 def test_em1_two_channels(stack):

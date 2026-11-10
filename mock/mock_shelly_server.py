@@ -32,6 +32,8 @@ class MockShellyDevice:
 		temperature_ids=(),
 		humidity_ids=(),
 		devicepower=False,
+		ret_energy=True,
+		energy_wh=12345.0,
 	):
 		self.name = device_name
 		self.channel_name = channel_name
@@ -68,8 +70,10 @@ class MockShellyDevice:
 		self.em = em
 		self.em1_channels = em1_channels
 		self.pm1_channels = pm1_channels
-		self.energy_wh = 12345.0
+		self.energy_wh = float(energy_wh)
 		self.ret_energy_wh = 2345.0
+		# Some devices (e.g. the Shelly Ogemray smart relay 25A) have no returned energy counter at all.
+		self.ret_energy = ret_energy
 
 		# Dimmable / color outputs, keyed by RPC component key (e.g. "light:0").
 		self._lights = {}
@@ -149,7 +153,7 @@ class MockShellyDevice:
 		output = self._switch_outputs[channel]
 		apower = self.default_apower if output else 0.0
 		current = apower / self.voltage if self.voltage else 0.0
-		return {
+		status = {
 			"id": channel,
 			"output": output,
 			"apower": apower,
@@ -157,8 +161,10 @@ class MockShellyDevice:
 			"current": current,
 			"pf": self.pf,
 			"aenergy": {"total": self._energy_total[channel]},
-			"ret_aenergy": {"total": self._ret_energy_total[channel]},
 		}
+		if self.ret_energy:
+			status["ret_aenergy"] = {"total": self._ret_energy_total[channel]}
+		return status
 
 	def shelly_get_status(self):
 		status = {
@@ -482,10 +488,13 @@ class MockShellyDevice:
 	def emdata_get_status(self, params):
 		if int(params.get("id", 0)) != 0 or not self.em:
 			return None
-		status = {"id": 0, "total_act": 3 * self.energy_wh, "total_act_ret": 3 * self.ret_energy_wh}
+		status = {"id": 0, "total_act": 3 * self.energy_wh}
+		if self.ret_energy:
+			status["total_act_ret"] = 3 * self.ret_energy_wh
 		for p in ("a", "b", "c"):
 			status[f"{p}_total_act_energy"] = self.energy_wh
-			status[f"{p}_total_act_ret_energy"] = self.ret_energy_wh
+			if self.ret_energy:
+				status[f"{p}_total_act_ret_energy"] = self.ret_energy_wh
 		return status
 
 	def em1_get_status(self, params):
@@ -499,15 +508,21 @@ class MockShellyDevice:
 		channel = int(params.get("id", 0))
 		if channel < 0 or channel >= self.em1_channels:
 			return None
-		return {"id": channel, "total_act_energy": self.energy_wh, "total_act_ret_energy": self.ret_energy_wh}
+		status = {"id": channel, "total_act_energy": self.energy_wh}
+		if self.ret_energy:
+			status["total_act_ret_energy"] = self.ret_energy_wh
+		return status
 
 	def pm1_get_status(self, params):
 		channel = int(params.get("id", 0))
 		if channel < 0 or channel >= self.pm1_channels:
 			return None
 		voltage, current, power = self._meter_values()
-		return {"id": channel, "voltage": voltage, "current": current, "apower": power, "pf": self.pf,
-			"aenergy": {"total": self.energy_wh}, "ret_aenergy": {"total": self.ret_energy_wh}}
+		status = {"id": channel, "voltage": voltage, "current": current, "apower": power, "pf": self.pf,
+			"aenergy": {"total": self.energy_wh}}
+		if self.ret_energy:
+			status["ret_aenergy"] = {"total": self.ret_energy_wh}
+		return status
 
 	# Shared by EM, EM1 and PM1. kind is the lowercase component name.
 	def meter_get_config(self, kind, params):
@@ -997,6 +1012,8 @@ def parse_args():
 	parser.add_argument("--temperature-ids", default="", help="Comma-separated Temperature component ids, e.g. 100,101 for a Sensor Add-on")
 	parser.add_argument("--humidity-ids", default="", help="Comma-separated Humidity component ids, e.g. 100 for a DHT22 on a Sensor Add-on")
 	parser.add_argument("--devicepower", action="store_true", help="Add a DevicePower component (battery-powered device)")
+	parser.add_argument("--no-ret-energy", action="store_true", help="Leave out the returned energy counters, like a device that has none")
+	parser.add_argument("--energy-wh", type=float, default=12345.0, help="Forward energy counter of the EM, EM1 and PM1 components")
 	parser.add_argument("--notify-interval", type=float, default=5)
 	parser.add_argument("--verbose", action="store_true")
 	return parser.parse_args()
@@ -1028,6 +1045,8 @@ async def main():
 		temperature_ids=[int(i) for i in args.temperature_ids.split(",") if i],
 		humidity_ids=[int(i) for i in args.humidity_ids.split(",") if i],
 		devicepower=args.devicepower,
+		ret_energy=not args.no_ret_energy,
+		energy_wh=args.energy_wh,
 	)
 
 	app = web.Application()
