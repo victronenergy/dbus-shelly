@@ -32,6 +32,8 @@ class MockShellyDevice:
 		temperature_ids=(),
 		humidity_ids=(),
 		devicepower=False,
+		fault_methods=None,
+		fault_mode="error",
 	):
 		self.name = device_name
 		self.channel_name = channel_name
@@ -84,8 +86,10 @@ class MockShellyDevice:
 		self._meter_names = {}
 
 		# Test hooks: methods that return an error, and a log of (time, method) of calls over websocket.
-		self.faults = set()
-		self.fault_mode = "error"
+		# Mock.SetFaults sets these at runtime; the constructor arguments let a fault be in
+		# place before the driver's first connection, which runtime hooks cannot do.
+		self.faults = set(fault_methods or [])
+		self.fault_mode = fault_mode
 		self.fault_delay = 0.0
 		# Cleared while the device is frozen (see mock_freeze).
 		self.running = asyncio.Event()
@@ -998,6 +1002,9 @@ def parse_args():
 	parser.add_argument("--humidity-ids", default="", help="Comma-separated Humidity component ids, e.g. 100 for a DHT22 on a Sensor Add-on")
 	parser.add_argument("--devicepower", action="store_true", help="Add a DevicePower component (battery-powered device)")
 	parser.add_argument("--notify-interval", type=float, default=5)
+	parser.add_argument("--fault-methods", default="",
+		help="comma separated RPC methods to fail from startup, e.g. Temperature.GetStatus")
+	parser.add_argument("--fault-mode", default="error", choices=["error", "timeout", "delay"])
 	parser.add_argument("--verbose", action="store_true")
 	return parser.parse_args()
 
@@ -1028,6 +1035,8 @@ async def main():
 		temperature_ids=[int(i) for i in args.temperature_ids.split(",") if i],
 		humidity_ids=[int(i) for i in args.humidity_ids.split(",") if i],
 		devicepower=args.devicepower,
+		fault_methods=[m for m in args.fault_methods.split(",") if m],
+		fault_mode=args.fault_mode,
 	)
 
 	app = web.Application()

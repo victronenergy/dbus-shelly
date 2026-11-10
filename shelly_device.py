@@ -121,7 +121,16 @@ class ShellyChannel(object):
 		return True
 
 	async def stop(self):
-		await self.service.close()
+		try:
+			await self.service.close()
+		except Exception as e:
+			# The handlers of a channel can fail to initialise, and set_service_name then never
+			# ran, so service.name is None. aiovelib's close() finishes with
+			# release_name(self.name), which raises on None -- after it has already unexported
+			# every item. Teardown must not be abortable, or the caller is left holding a
+			# half-closed service.
+			logger.warning("Error while closing the dbus service of shelly device %s channel %s: %s",
+				self._serial, self._channel_id, e)
 		self.service = None
 
 	# Reinitialize the callbacks without restarting the service.
@@ -259,7 +268,15 @@ class ShellyDevice(object):
 					await handler.stop()
 				channel_obj = entry.get("channel")
 				if channel_obj is not None:
-					await channel_obj.stop()
+					try:
+						await channel_obj.stop()
+					except Exception as e:
+						# Whatever happens to the service, the channel has to leave _channels.
+						# A channel left behind here is never retried, because start_channel
+						# returns early for a channel it is already holding, and every later
+						# reconnect calls _reinit_channel_and_handlers on it, which writes
+						# /Connected to a service whose items are gone and raises KeyError.
+						logger.error("Error while stopping channel %s of shelly device %s: %s", ch, self._serial, e)
 				del self._channels[ch]
 
 	def _parse_server(self):
