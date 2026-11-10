@@ -238,8 +238,6 @@ def test_capability_change_within_reconnect_loop(stack):
 	stack.hold(lambda: not stack.client.has_name(services[0]), "new em1 channel to stay disabled", 2)
 
 
-@pytest.mark.xfail(strict=True, reason="shelly_device.py _reinit_channel_and_handlers only compares capability "
-	"types, so a lost switch:1 keeps its service; its refresh then raises TypeError on a None status")
 def test_channel_count_change_within_reconnect_loop(stack):
 	# Same capabilities (Switch), but one channel less.
 	enable_all(stack, CH_COUNT, 2)
@@ -254,6 +252,18 @@ def test_channel_count_change_within_reconnect_loop(stack):
 	stack.wait_service_gone(second, timeout=10)
 	stack.wait_for(lambda: stack.enabled_setting(CH_COUNT, 2) == 0, "Enabled setting of the removed channel reset to 0")
 	stack.wait_for(lambda: stack.device(CH_COUNT, "2/Type") is None, "removed channel gone from /Devices")
+
+	# A changed component layout takes the existing "capabilities changed" route, which
+	# disables every channel of the device and lets discovery re-inventory it. Check that the
+	# component that is still there comes back and is usable again, i.e. the device recovered
+	# rather than being left in a dead state.
+	stack.wait_for(lambda: stack.device(CH_COUNT, "1/Type") == "switch", "remaining channel re-inventoried")
+	first = service_name("acload", CH_COUNT, 0)
+	enable_all(stack, CH_COUNT, 1)
+	assert stack.wait_service(first)["/Connected"] == 1
+	assert stack.client.set_value(first, "/SwitchableOutput/0/State", "i", 1) == 0
+	stack.wait_for(lambda: mock.rpc("Switch.GetStatus", id=0)["output"] is True,
+		"remaining channel switches after the layout change")
 
 
 @pytest.mark.xfail(strict=True, reason="discovery.py _add_device reuses the old Enabled=1 setting of channel 1 "
