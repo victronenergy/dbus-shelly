@@ -32,12 +32,16 @@ class MockShellyDevice:
 		temperature_ids=(),
 		humidity_ids=(),
 		devicepower=False,
+		ws_close_after_method=None,
 	):
 		self.name = device_name
 		self.channel_name = channel_name
 		self.model = model
 		self.app = app
 		self.mac = mac.lower()
+		# Test hook: close the websocket right after answering this RPC method, to land a
+		# drop at a known point in the driver's connect sequence.
+		self.ws_close_after_method = ws_close_after_method
 		self.switch_channels = switch_channels
 		self.voltage = float(voltage)
 		self.default_apower = float(apower)
@@ -957,6 +961,10 @@ async def ws_rpc_handler(request):
 			response = await handle_rpc(device, frame, verbose=request.app.get('verbose', False))
 			if response is not None:
 				await ws.send_json(response)
+			if device.ws_close_after_method and frame.get("method") == device.ws_close_after_method:
+				_vprint(request, f"mock ws closing after answering {device.ws_close_after_method}")
+				await ws.close()
+				break
 		elif msg.type == web.WSMsgType.ERROR:
 			break
 
@@ -998,6 +1006,8 @@ def parse_args():
 	parser.add_argument("--humidity-ids", default="", help="Comma-separated Humidity component ids, e.g. 100 for a DHT22 on a Sensor Add-on")
 	parser.add_argument("--devicepower", action="store_true", help="Add a DevicePower component (battery-powered device)")
 	parser.add_argument("--notify-interval", type=float, default=5)
+	parser.add_argument("--ws-close-after-method", default=None,
+		help="close the websocket right after answering this RPC method, e.g. Shelly.GetComponents")
 	parser.add_argument("--verbose", action="store_true")
 	return parser.parse_args()
 
@@ -1028,6 +1038,7 @@ async def main():
 		temperature_ids=[int(i) for i in args.temperature_ids.split(",") if i],
 		humidity_ids=[int(i) for i in args.humidity_ids.split(",") if i],
 		devicepower=args.devicepower,
+		ws_close_after_method=args.ws_close_after_method,
 	)
 
 	app = web.Application()

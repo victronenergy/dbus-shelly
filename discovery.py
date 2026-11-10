@@ -472,6 +472,18 @@ class ShellyConnectionManager:
 						ep_state.stop_connect()
 						ep_state.endpoint.supported = False
 						logger.info("Shelly device %s at %s is unsupported, will not retry", ep_state.endpoint.serial, ep_state.endpoint.host)
+					# A probe that neither connected nor failed outright. Two routes lead here:
+					# connect() reported a live link but the device was gone by the check right
+					# after it, and DeviceProbeResult defaults to ERROR, so any exception raised
+					# before a status is assigned ends up here too. Neither was matched, so the
+					# retry state was left untouched: no attempt counted, next_retry_at unmoved,
+					# and the endpoint stayed due to be re-probed on every heartbeat. Count it as
+					# a failure so the backoff advances, and report it separately from
+					# UNREACHABLE, which is a device that never answered at all.
+					elif result.status == ProbeStatus.ERROR:
+						ep_state.connect.mark_failure(now)
+						logger.warning("Probe of shelly device %s at %s did not complete, retrying in %d seconds",
+							ep_state.endpoint.serial, ep_state.endpoint.host, ep_state.connect.next_retry_at - now)
 					elif result.status == ProbeStatus.UNREACHABLE:
 						ep_state.connect.mark_failure(now)
 						logger.info("Failed to connect to shelly device %s at %s, retrying in %d seconds", ep_state.endpoint.serial, ep_state.endpoint.host, ep_state.connect.next_retry_at - now)
