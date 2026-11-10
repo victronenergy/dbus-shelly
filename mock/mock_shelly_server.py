@@ -32,11 +32,13 @@ class MockShellyDevice:
 		temperature_ids=(),
 		humidity_ids=(),
 		devicepower=False,
+		firmware_version="1.0.0",
 	):
 		self.name = device_name
 		self.channel_name = channel_name
 		self.model = model
 		self.app = app
+		self.firmware_version = firmware_version
 		self.mac = mac.lower()
 		self.switch_channels = switch_channels
 		self.voltage = float(voltage)
@@ -123,7 +125,7 @@ class MockShellyDevice:
 			"app": self.app,
 			"gen": 2,
 			"fw_id": "20240101_1234",
-			"ver": "1.0.0",
+			"ver": self.firmware_version,
 			"auth": False,
 			"auth_en": False,
 			"auth_domain": self.device_id,
@@ -138,7 +140,7 @@ class MockShellyDevice:
 			"app": self.app,
 			"gen": 2,
 			"fw_id": "20240101_1234",
-			"ver": "1.0.0",
+			"ver": self.firmware_version,
 			"auth_en": False,
 			"auth_domain": self.device_id,
 			"profile": "switch",
@@ -998,6 +1000,7 @@ def parse_args():
 	parser.add_argument("--humidity-ids", default="", help="Comma-separated Humidity component ids, e.g. 100 for a DHT22 on a Sensor Add-on")
 	parser.add_argument("--devicepower", action="store_true", help="Add a DevicePower component (battery-powered device)")
 	parser.add_argument("--notify-interval", type=float, default=5)
+	parser.add_argument("--firmware-version", default="1.0.0")
 	parser.add_argument("--verbose", action="store_true")
 	return parser.parse_args()
 
@@ -1028,6 +1031,7 @@ async def main():
 		temperature_ids=[int(i) for i in args.temperature_ids.split(",") if i],
 		humidity_ids=[int(i) for i in args.humidity_ids.split(",") if i],
 		devicepower=args.devicepower,
+		firmware_version=args.firmware_version,
 	)
 
 	app = web.Application()
