@@ -174,8 +174,6 @@ def test_em1_phase_setting(stack):
 	assert stack.setting(f"/Settings/Devices/shelly_{EM1}_1/1/PhaseSetting") == 2
 
 
-@pytest.mark.xfail(strict=True, reason="shelly_handlers.py:128 _check_rpc_type_supported removes from the "
-	"class-level _rpc_device_type list, so the EM1 device enabled before strips 'PM1' for all later devices")
 def test_pm1(stack):
 	# Enabled after EM1, which is handled by the same handler class.
 	enable(stack, PM1)
@@ -183,6 +181,22 @@ def test_pm1(stack):
 	assert items["/Ac/L1/Power"] == APOWER
 	assert items["/Ac/Power"] == APOWER
 	assert items["/Ac/Energy/Forward"] == approx(ENERGY_KWH)
+
+
+def test_em1_and_pm1_keep_their_components_in_either_order(stack):
+	# EM1/EM1Data/PM1 share one handler class. Its _rpc_device_type list used to be a class
+	# attribute that the first device mutated, so whichever of these was enabled second lost
+	# its component. Re-enable both in the opposite order to the one above and check that
+	# each still reports, whichever went first.
+	# /Devices/<serial>/<index>/Enabled is 1-based; the service channel id is 0-based.
+	pm1_name = service_name("acload", PM1)
+	em1_name = service_name("acload", EM1)
+	for serial, name in ((PM1, pm1_name), (EM1, em1_name)):
+		stack.set_enabled(serial, 1, 0)
+		stack.wait_service_gone(name)
+	for serial, name in ((PM1, pm1_name), (EM1, em1_name)):
+		enable(stack, serial)
+		assert stack.wait_service(name)["/Ac/L1/Power"] == APOWER
 
 
 def test_dimmer(stack):
