@@ -454,6 +454,16 @@ class MockShellyDevice:
 			pass
 		return {}
 
+	# Test hook, not a real Shelly method: change the power a switched-on output draws.
+	def mock_set_power(self, params):
+		self._update_energy()
+		self.default_apower = float(params.get("apower", self.default_apower))
+		try:
+			asyncio.get_running_loop().create_task(self.notify_full_status())
+		except RuntimeError:
+			pass
+		return {}
+
 	# Test hook, not a real Shelly method: trigger or clear the smoke/flood alarm.
 	def mock_set_alarm(self, params):
 		alarm = bool(params.get("alarm", True))
@@ -924,6 +934,10 @@ async def handle_rpc(device, frame, *, verbose=False):
 		return resp
 	if method == "Mock.SetHumidity":
 		resp = _json_response(device.mock_set_humidity(params), request_id)
+		resp["src"] = f"shelly-{device.mac}"
+		return resp
+	if method == "Mock.SetPower":
+		resp = _json_response(device.mock_set_power(params), request_id)
 		resp["src"] = f"shelly-{device.mac}"
 		return resp
 	if method == "Mock.SetAlarm":

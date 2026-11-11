@@ -19,7 +19,16 @@ With SHELLY_TEST_FAKE_MDNS set to a file path, MdnsDiscovery does not use
 zeroconf (so no real Shellys on the network are picked up). Instead, on
 SIGUSR1 it reads a JSON list of {"serial", "host"} from that file and hands
 each one to the driver the same way an mDNS announcement would.
+
+With SHELLY_TEST_LOG_IMPORTS set to a comma-separated list of module names,
+"TEST-IMPORT: <name>" is printed (to the driver log) when one of those modules
+is actually executed. Only finding a module, as importlib.util.find_spec()
+does, is not logged.
+
+With SHELLY_TEST_BLOCK_IMPORTS set to a comma-separated list of module names,
+those modules behave as if they were not installed.
 """
+import importlib.abc
 import os
 import re
 import runpy
@@ -37,6 +46,35 @@ __file__ = DRIVER
 
 sys.path.insert(0, REPO)
 sys.argv[0] = DRIVER
+
+for name in filter(None, os.environ.get("SHELLY_TEST_BLOCK_IMPORTS", "").split(",")):
+	# A None entry makes importlib.util.find_spec() return None and import raise ImportError.
+	sys.modules[name] = None
+
+LOG_IMPORTS = set(filter(None, os.environ.get("SHELLY_TEST_LOG_IMPORTS", "").split(",")))
+if LOG_IMPORTS:
+	class ImportLogger(importlib.abc.MetaPathFinder):
+		def find_spec(self, name, path, target=None):
+			if name not in LOG_IMPORTS:
+				return None
+			for finder in sys.meta_path:
+				if finder is self or not hasattr(finder, "find_spec"):
+					continue
+				spec = finder.find_spec(name, path, target)
+				if spec is not None:
+					break
+			else:
+				return None
+			exec_module = spec.loader.exec_module
+
+			def logged_exec_module(module):
+				print(f"TEST-IMPORT: {name}", file=sys.stderr, flush=True)
+				exec_module(module)
+
+			spec.loader.exec_module = logged_exec_module
+			return spec
+
+	sys.meta_path.insert(0, ImportLogger())
 
 import discovery
 from aioshelly.rpc_device import device as rpc_device_module, wsrpc

@@ -1,3 +1,6 @@
 [submodule "ext/aiovelib"]
 	path = ext/aiovelib
 	url = https://github.com/victronenergy/aiovelib.git
+[submodule "tests/ext/venus-s2-tools"]
+	path = tests/ext/venus-s2-tools
+	url = https://github.com/victronenergy/venus-s2-tools.git

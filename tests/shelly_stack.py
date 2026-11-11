@@ -170,12 +170,14 @@ class MockDevice:
 
 
 class Stack:
-	def __init__(self, logdir, time_scale=None, fake_mdns=False):
+	def __init__(self, logdir, time_scale=None, fake_mdns=False, driver_env=None):
 		""" With time_scale, the driver runs through tests/run_driver.py with all
-		    its timeouts and retry intervals scaled by that factor. """
+		    its timeouts and retry intervals scaled by that factor. driver_env
+		    adds environment variables for tests/run_driver.py (see there). """
 		self.logdir = logdir
 		self.time_scale = time_scale
 		self.fake_mdns = fake_mdns
+		self.driver_env = driver_env or {}
 		self.mdns_file = os.path.join(logdir, "mdns.json")
 		self.procs = {}
 		self.mocks = {}
@@ -211,10 +213,11 @@ class Stack:
 			"--initial", json.dumps(initial)])
 		self.wait_for(lambda: self.client.has_name(SETTINGS_SERVICE), "fake localsettings on D-Bus", timeout=10)
 
-		if self.time_scale is None and not self.fake_mdns:
+		if self.time_scale is None and not self.fake_mdns and not self.driver_env:
 			driver = ["dbus_shelly.py"]
 		else:
 			driver = ["tests/run_driver.py"]
+			self.env.update(self.driver_env)
 			if self.time_scale is not None:
 				self.env["SHELLY_TEST_TIME_SCALE"] = str(self.time_scale)
 			if self.fake_mdns:
@@ -252,6 +255,10 @@ class Stack:
 		with open(self.mdns_file, "w") as f:
 			json.dump([{"serial": m.serial, "host": m.endpoint} for m in mocks], f)
 		self.procs["driver"][0].send_signal(signal.SIGUSR1)
+
+	def driver_log(self):
+		with open(os.path.join(self.logdir, "driver.log")) as f:
+			return f.read()
 
 	def driver_log_tail(self, lines=40):
 		try:
@@ -333,11 +340,11 @@ class Stack:
 			f"{service}{path} == {expected!r}", timeout=timeout)
 
 
-def make_stack(tmp_path_factory, name, setup, preseed_ips=False, time_scale=None, fake_mdns=False):
+def make_stack(tmp_path_factory, name, setup, preseed_ips=False, time_scale=None, fake_mdns=False, driver_env=None):
 	""" Generator for module-scoped fixtures: setup(stack) adds mocks. """
 	if subprocess.run(["which", "dbus-daemon"], capture_output=True).returncode != 0:
 		pytest.skip("dbus-daemon not installed")
-	s = Stack(str(tmp_path_factory.mktemp(name)), time_scale=time_scale, fake_mdns=fake_mdns)
+	s = Stack(str(tmp_path_factory.mktemp(name)), time_scale=time_scale, fake_mdns=fake_mdns, driver_env=driver_env)
 	setup(s)
 	try:
 		s.start(preseed_ips=preseed_ips)
