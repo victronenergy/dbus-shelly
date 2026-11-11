@@ -351,7 +351,8 @@ class ShellyHandlerS2Mixin():
 		self.service.add_item(self.rm_item)
 
 	def _update_asset_details(self, name=None):
-		from shelly_s2_control import AssetDetails, Duration, Role, RoleType, phase_setting_to_commodity
+		from aiovelib.s2 import AssetDetails
+		from shelly_s2_control import Duration, Role, RoleType, phase_setting_to_commodity
 		if name is None:
 			# Get channel custom name, if not available use the default name
 			name = self.service.get_item(f'/SwitchableOutput/{self._channel_id}/Settings/CustomName').value or \

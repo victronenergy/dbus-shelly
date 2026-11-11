@@ -10,8 +10,7 @@ from datetime import datetime, timezone
 #aiovelib
 sys.path.insert(1, os.path.join(os.path.dirname(__file__), 'ext', 'aiovelib'))
 from aiovelib.s2 import S2ResourceManagerItem
-from s2python.s2_control_type import NoControlControlType, OMBCControlType
-from s2python.s2_asset_details import AssetDetails
+from aiovelib.s2 import NoControlControlType, OMBCControlType
 from s2python.generated.gen_s2 import CommodityQuantity, RoleType
 from s2python.common.power_range import PowerRange
 from s2python.common.transition import Transition
@@ -229,7 +228,7 @@ class ShellyOMBC(OMBCControlType):
 		task = asyncio.create_task(self._set_operation_mode(op_id, max(0, seconds)))
 		background_tasks.add(task)
 		task.add_done_callback(background_tasks.discard)
-		await send_okay
+		await send_okay()
 
 	async def _set_operation_mode(self, op_id, wait):
 		if (wait):

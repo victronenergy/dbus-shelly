@@ -4,6 +4,6 @@ aioshelly
 websockets<14
 zeroconf
 async_timeout
-s2_python==0.8.1
+s2_python==0.11.2
 aiohttp
 pytest
