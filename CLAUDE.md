@@ -3,6 +3,8 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this 
 repository.
 
+Follow the contribution guidelines in @CONTRIBUTING.md.
+
 ## AI rules
 The following rules override all other preferences.
 
