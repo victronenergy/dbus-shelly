@@ -121,6 +121,17 @@ class DbusClient:
 		return self._call(destination="org.freedesktop.DBus", path="/org/freedesktop/DBus",
 			interface="org.freedesktop.DBus", member="NameHasOwner", signature="s", body=[name])[0]
 
+	def list_names(self):
+		return self._call(destination="org.freedesktop.DBus", path="/org/freedesktop/DBus",
+			interface="org.freedesktop.DBus", member="ListNames")[0]
+
+	def connection_count(self):
+		""" Number of connections currently open on the bus. Every connection owns a
+		    unique name (":1.n") for as long as it is connected, whether or not it also
+		    owns a well-known name, so this counts connections that released their name
+		    but were never disconnected. """
+		return len([n for n in self.list_names() if n.startswith(":")])
+
 	def owner_changes(self, name):
 		self.pump()
 		return [e for e in self.name_events if e[0] == name]
