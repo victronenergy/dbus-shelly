@@ -82,3 +82,6 @@ This driver will only control runtime values like the on/off state and brightnes
 
 # Legacy driver
 The legacy shelly driver in which the shelly connects to the GX is still supported. This will likely be removed in a future version.
+
+# Contributing
+See [CONTRIBUTING.md](CONTRIBUTING.md).
